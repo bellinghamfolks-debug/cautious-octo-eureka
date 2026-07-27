@@ -1,5 +1,6 @@
 package com.abdullah.visionbridge.data.speech
 
+import java.text.Normalizer
 import java.util.Locale
 
 enum class SpeechLanguage(val locale: Locale) {
@@ -12,6 +13,8 @@ data class SpeechSegment(val text: String, val language: SpeechLanguage)
 object SpeechTextTools {
     private val arabicRange = Regex("[\\u0600-\\u06FF\\u0750-\\u077F\\u08A0-\\u08FF]")
     private val latinRange = Regex("[A-Za-z]")
+    private val arabicMarks = Regex("[\\u0610-\\u061A\\u064B-\\u065F\\u0670\\u06D6-\\u06ED]")
+    private val comparisonSeparators = Regex("[\\p{P}\\p{S}\\s]+")
 
     fun segment(text: String): List<SpeechSegment> {
         val tokens = text.trim().split(Regex("(?<=\\s)|(?=\\s)|(?<=[.!?؟،,:;\\n])"))
@@ -49,8 +52,76 @@ object SpeechTextTools {
         return if (arabic >= latin) SpeechLanguage.ARABIC else SpeechLanguage.ENGLISH
     }
 
-    fun normalizeForComparison(text: String): String = text
-        .lowercase(Locale.ROOT)
-        .replace(Regex("[\\p{Punct}\\s]+"), " ")
-        .trim()
+    /**
+     * Canonical form for OCR comparison. It intentionally ignores punctuation, spacing,
+     * Arabic diacritics, tatweel, common Alef variants, and Arabic/Latin digit shapes.
+     */
+    fun normalizeForComparison(text: String): String {
+        val unicodeNormalized = Normalizer.normalize(text, Normalizer.Form.NFKC)
+        val canonical = buildString(unicodeNormalized.length) {
+            unicodeNormalized.lowercase(Locale.ROOT).forEach { character ->
+                append(
+                    when (character) {
+                        'أ', 'إ', 'آ', 'ٱ' -> 'ا'
+                        'ى' -> 'ي'
+                        'ـ' -> ' '
+                        '٠' -> '0'
+                        '١' -> '1'
+                        '٢' -> '2'
+                        '٣' -> '3'
+                        '٤' -> '4'
+                        '٥' -> '5'
+                        '٦' -> '6'
+                        '٧' -> '7'
+                        '٨' -> '8'
+                        '٩' -> '9'
+                        '۰' -> '0'
+                        '۱' -> '1'
+                        '۲' -> '2'
+                        '۳' -> '3'
+                        '۴' -> '4'
+                        '۵' -> '5'
+                        '۶' -> '6'
+                        '۷' -> '7'
+                        '۸' -> '8'
+                        '۹' -> '9'
+                        else -> character
+                    }
+                )
+            }
+        }
+        return canonical
+            .replace(arabicMarks, "")
+            .replace(comparisonSeparators, " ")
+            .trim()
+    }
+
+    fun tokensForComparison(text: String): List<String> =
+        normalizeForComparison(text).split(' ').filter { it.isNotBlank() }
+
+    /**
+     * Local ML Kit OCR is Latin-only. When Gemini later returns a bilingual result for the same
+     * frame, speak Arabic segments and only genuinely new English segments instead of reading the
+     * already-spoken local OCR again.
+     */
+    fun cloudDeltaAgainstLocal(cloudText: String, localText: String): String {
+        if (localText.isBlank()) return cloudText.trim()
+        val localTokens = tokensForComparison(localText).toSet()
+        if (localTokens.isEmpty()) return cloudText.trim()
+
+        return segment(cloudText)
+            .filter { speechSegment ->
+                speechSegment.language == SpeechLanguage.ARABIC ||
+                    !isCoveredByLocalText(speechSegment.text, localTokens)
+            }
+            .joinToString(" ") { it.text.trim() }
+            .trim()
+    }
+
+    private fun isCoveredByLocalText(segment: String, localTokens: Set<String>): Boolean {
+        val segmentTokens = tokensForComparison(segment).toSet()
+        if (segmentTokens.isEmpty()) return true
+        val overlap = segmentTokens.count { it in localTokens }.toDouble() / segmentTokens.size
+        return overlap >= 0.75
+    }
 }
