@@ -16,6 +16,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.ByteArrayOutputStream
+import java.net.InetAddress
 import java.util.concurrent.TimeUnit
 
 class GeminiVisionRepository(
@@ -61,7 +62,10 @@ class GeminiVisionRepository(
             } else {
                 baseClient.newBuilder()
                     .socketFactory(network.socketFactory)
-                    .dns(Dns { hostname -> network.getAllByName(hostname).toList() })
+                    .dns(object : Dns {
+                        override fun lookup(hostname: String): List<InetAddress> =
+                            network.getAllByName(hostname).toList()
+                    })
                     .build()
             }
 
