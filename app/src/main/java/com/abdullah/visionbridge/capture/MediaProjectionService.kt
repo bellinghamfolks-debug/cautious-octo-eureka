@@ -125,6 +125,7 @@ class MediaProjectionService : Service() {
                 captureHandler,
             ) ?: error("تعذر إنشاء شاشة افتراضية للالتقاط")
 
+            lastFrameAt = 0L
             changeDetector.reset()
             container.coordinator.reset()
             container.runtime.started()
@@ -155,8 +156,9 @@ class MediaProjectionService : Service() {
         val tooSoon = now - lastFrameAt < MIN_FRAME_INTERVAL_MS
         val changed = !tooSoon && changeDetector.shouldProcess(
             bitmap = bitmap,
-            minimumDifference = MIN_FRAME_DIFFERENCE,
-            forceAfterMs = FORCE_FRAME_AFTER_MS,
+            minimumMeanDifference = MIN_MEAN_FRAME_DIFFERENCE,
+            minimumChangedRatio = MIN_CHANGED_PIXEL_RATIO,
+            stableForMs = STABLE_FRAME_DURATION_MS,
             now = now,
         )
         if (!changed || !processing.compareAndSet(false, true)) {
@@ -184,6 +186,7 @@ class MediaProjectionService : Service() {
         display.setSurface(newReader.surface)
         oldReader?.setOnImageAvailableListener(null, null)
         oldReader?.close()
+        lastFrameAt = 0L
         changeDetector.reset()
     }
 
@@ -201,6 +204,7 @@ class MediaProjectionService : Service() {
             if (stopProjection) runCatching { projection.stop() }
         }
         mediaProjection = null
+        lastFrameAt = 0L
         changeDetector.reset()
     }
 
@@ -276,9 +280,12 @@ class MediaProjectionService : Service() {
         private const val EXTRA_RESULT_DATA = "result_data"
         private const val ACTION_START = "com.abdullah.visionbridge.START_CAPTURE"
         private const val ACTION_STOP = "com.abdullah.visionbridge.STOP_CAPTURE"
-        private const val MIN_FRAME_INTERVAL_MS = 650L
-        private const val FORCE_FRAME_AFTER_MS = 3_500L
-        private const val MIN_FRAME_DIFFERENCE = 4.0
+
+        // Sample often enough to establish stability, but only analyze a scene after it settles.
+        private const val MIN_FRAME_INTERVAL_MS = 400L
+        private const val STABLE_FRAME_DURATION_MS = 900L
+        private const val MIN_MEAN_FRAME_DIFFERENCE = 7.5
+        private const val MIN_CHANGED_PIXEL_RATIO = 0.06
 
         fun startIntent(context: Context, resultCode: Int, resultData: Intent) =
             Intent(context, MediaProjectionService::class.java).apply {
