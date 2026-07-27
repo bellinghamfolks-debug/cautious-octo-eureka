@@ -40,7 +40,22 @@ jobs:
         run: python3 scripts/verify_project.py
 
       - name: Lint, unit tests, and assemble
-        run: ./gradlew --no-daemon lintDebug testDebugUnitTest assembleDebug
+        shell: bash
+        run: |
+          set +e
+          ./gradlew --no-daemon --console=plain lintDebug testDebugUnitTest assembleDebug > build.log 2>&1
+          status=$?
+          cat build.log
+          exit "$status"
+
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: error
+          retention-days: 3
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
@@ -57,3 +72,20 @@ jobs:
           name: lint-report
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
+
+  diagnostics:
+    name: Concise compiler diagnostics
+    needs: build
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build log
+        uses: actions/download-artifact@v4
+        with:
+          name: build-log
+
+      - name: Print actionable errors
+        shell: bash
+        run: |
+          echo "Actionable Gradle and Kotlin errors:"
+          grep -E '(^e: |^w: |FAILURE:|What went wrong:|error:|Exception|Unresolved reference|Compilation error)' build.log | tail -n 200 || tail -n 200 build.log
