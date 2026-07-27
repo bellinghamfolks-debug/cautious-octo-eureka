@@ -3,6 +3,7 @@ package com.abdullah.visionbridge.capture
 import android.graphics.Bitmap
 import com.abdullah.visionbridge.data.ocr.LocalTextRecognizer
 import com.abdullah.visionbridge.data.speech.BilingualTtsEngine
+import com.abdullah.visionbridge.data.speech.SpeechTextTools
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AnalysisResult
 import com.abdullah.visionbridge.domain.model.AnalysisSource
@@ -69,7 +70,12 @@ class FrameAnalysisCoordinator(
             apiKey = key,
             forceCellular = settings.forceCellular,
         )
-        if (result.text.isNotBlank()) publish(result, settings.speechEnabled)
+        if (result.text.isNotBlank()) {
+            // ML Kit may already have spoken the English portion. Gemini remains responsible for
+            // Arabic and any genuinely new English content, but must not echo the local result.
+            val speechText = SpeechTextTools.cloudDeltaAgainstLocal(result.text, localText)
+            publish(result, settings.speechEnabled, speechText)
+        }
     }
 
     private suspend fun processScene(bitmap: Bitmap, settings: com.abdullah.visionbridge.domain.model.AppSettings) {
@@ -88,14 +94,19 @@ class FrameAnalysisCoordinator(
         if (result.text.isNotBlank()) publish(result, settings.speechEnabled)
     }
 
-    private suspend fun publish(result: AnalysisResult, speechEnabled: Boolean) {
+    private suspend fun publish(
+        result: AnalysisResult,
+        speechEnabled: Boolean,
+        speechText: String = result.text,
+    ) {
         runtime.result(result)
-        if (speechEnabled) tts.speak(result.text, result.urgent)
+        if (speechEnabled && speechText.isNotBlank()) tts.speak(speechText, result.urgent)
     }
 
     fun reset() {
         lastCloudOcrAt = 0L
         lastSceneAt = 0L
+        tts.resetHistory()
     }
 
     private fun Throwable.userMessage(): String = when (this) {
