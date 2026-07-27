@@ -1,0 +1,91 @@
+name: Android CI
+
+on:
+  push:
+    branches: [main, master, "codex/**", "claude/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Lint, tests, and debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 35 SDK
+        run: yes | sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Verify repository structure and secrets
+        run: python3 scripts/verify_project.py
+
+      - name: Lint, unit tests, and assemble
+        shell: bash
+        run: |
+          set +e
+          ./gradlew --no-daemon --console=plain lintDebug testDebugUnitTest assembleDebug > build.log 2>&1
+          status=$?
+          cat build.log
+          exit "$status"
+
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VisionBridge-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload lint report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
+
+  diagnostics:
+    name: Concise compiler diagnostics
+    needs: build
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build log
+        uses: actions/download-artifact@v4
+        with:
+          name: build-log
+
+      - name: Print actionable errors
+        shell: bash
+        run: |
+          echo "Actionable Gradle and Kotlin errors:"
+          grep -E '(^e: |^w: |FAILURE:|What went wrong:|error:|Exception|Unresolved reference|Compilation error)' build.log | tail -n 200 || tail -n 200 build.log
