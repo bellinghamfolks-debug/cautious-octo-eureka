@@ -34,13 +34,13 @@ class BilingualTtsEngine(context: Context) {
     }
 
     suspend fun speak(text: String, urgent: Boolean = false) {
-        if (!deduplicator.shouldSpeak(text, urgent)) return
+        val novelText = deduplicator.filter(text, urgent) ?: return
         if (!ready.await()) throw IllegalStateException("تعذر تهيئة محرك النطق في الجهاز")
 
         mutex.withLock {
             withContext(Dispatchers.Main.immediate) {
                 val engine = tts ?: return@withContext
-                val segments = SpeechTextTools.segment(text)
+                val segments = SpeechTextTools.segment(novelText)
                 if (segments.isEmpty()) return@withContext
                 if (urgent) engine.stop()
 
@@ -61,6 +61,8 @@ class BilingualTtsEngine(context: Context) {
     }
 
     fun stop() = tts?.stop()
+
+    fun resetHistory() = deduplicator.reset()
 
     fun shutdown() {
         tts?.stop()

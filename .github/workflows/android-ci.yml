@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   build:
-    name: Lint, tests, and debug APK
+    name: Lint, tests, and ARM64 debug APK
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -57,10 +57,10 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-      - name: Upload debug APK
+      - name: Upload ARM64 debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: VisionBridge-debug-apk
+          name: VisionBridge-arm64-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
