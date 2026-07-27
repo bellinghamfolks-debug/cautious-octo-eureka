@@ -1,0 +1,26 @@
+package com.abdullah.visionbridge.capture
+
+import com.abdullah.visionbridge.domain.model.AnalysisResult
+import com.abdullah.visionbridge.domain.model.CaptureState
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+class CaptureRuntime {
+    private val mutableState = MutableStateFlow(CaptureState())
+    val state: StateFlow<CaptureState> = mutableState.asStateFlow()
+
+    fun started() = update { copy(isRunning = true, status = "الالتقاط يعمل", error = null) }
+    fun processing(active: Boolean) = update { copy(isProcessing = active) }
+    fun result(value: AnalysisResult) = update {
+        copy(lastResult = value, status = if (value.urgent) "تنبيه مهم" else "تم التحليل", error = null)
+    }
+    fun error(message: String) = update { copy(error = message, status = "حدث خطأ", isProcessing = false) }
+    fun stopped(reason: String = "متوقف") = update {
+        copy(isRunning = false, isProcessing = false, status = reason)
+    }
+
+    private inline fun update(block: CaptureState.() -> CaptureState) {
+        mutableState.value = mutableState.value.block()
+    }
+}

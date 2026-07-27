@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">رفيق الرؤية</string>
+    <string name="notification_channel_name">تحليل الشاشة المباشر</string>
+    <string name="notification_channel_description">إشعار دائم أثناء التقاط الشاشة وتحليلها</string>
+    <string name="notification_title">رفيق الرؤية يعمل</string>
+    <string name="notification_text">يجري التقاط الشاشة وتحليل المحتوى</string>
+    <string name="notification_stop">إيقاف الالتقاط</string>
+</resources>
