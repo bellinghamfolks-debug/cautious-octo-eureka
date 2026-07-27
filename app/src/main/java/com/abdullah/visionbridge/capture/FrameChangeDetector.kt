@@ -5,38 +5,87 @@ import android.graphics.Color
 import kotlin.math.abs
 
 /**
- * Tiny perceptual signature used to avoid paying for and speaking duplicate frames.
- * It intentionally samples only 16x16 pixels, keeping CPU and battery cost small.
+ * Detects a meaningful, stable visual change before OCR or scene analysis runs.
+ *
+ * A camera or mirrored glasses feed contains tiny changes on nearly every frame: sensor noise,
+ * anti-aliasing, a blinking caret, hand tremor, or a thin moving object. Processing the first
+ * changed frame therefore causes the same text to be recognized and spoken repeatedly.
+ *
+ * This detector uses two gates:
+ * 1. The new frame must differ meaningfully from the last accepted frame.
+ * 2. The changed scene must remain visually stable for [stableForMs] before it is accepted.
  */
 class FrameChangeDetector {
-    private var previous: IntArray? = null
-    private var lastAcceptedAt: Long = 0L
+    private var acceptedSignature: IntArray? = null
+    private var candidateSignature: IntArray? = null
+    private var candidateSince: Long = 0L
 
     @Synchronized
     fun shouldProcess(
         bitmap: Bitmap,
-        minimumDifference: Double,
-        forceAfterMs: Long,
+        minimumMeanDifference: Double,
+        minimumChangedRatio: Double,
+        stableForMs: Long,
         now: Long = System.currentTimeMillis(),
     ): Boolean {
         val signature = signature(bitmap)
-        val old = previous
-        val force = now - lastAcceptedAt >= forceAfterMs
-        val difference = if (old == null) Double.MAX_VALUE else {
-            signature.indices.sumOf { abs(signature[it] - old[it]).toDouble() } / signature.size
+        val accepted = acceptedSignature
+
+        // The first usable frame should be read immediately.
+        if (accepted == null) {
+            accept(signature)
+            return true
         }
-        val accepted = force || difference >= minimumDifference
-        if (accepted) {
-            previous = signature
-            lastAcceptedAt = now
+
+        val change = difference(accepted, signature)
+        val meaningfulChange =
+            change.meanAbsoluteDifference >= minimumMeanDifference &&
+                change.changedPixelRatio >= minimumChangedRatio
+
+        if (!meaningfulChange) {
+            // The screen is effectively the same as the last spoken frame. Any pending motion
+            // candidate was just transient noise, so discard it.
+            candidateSignature = null
+            candidateSince = 0L
+            return false
         }
-        return accepted
+
+        val candidate = candidateSignature
+        if (candidate == null) {
+            candidateSignature = signature
+            candidateSince = now
+            return false
+        }
+
+        val candidateDrift = difference(candidate, signature)
+        val sceneIsStable =
+            candidateDrift.meanAbsoluteDifference <= MAX_STABLE_MEAN_DIFFERENCE &&
+                candidateDrift.changedPixelRatio <= MAX_STABLE_CHANGED_RATIO
+
+        if (!sceneIsStable) {
+            // Movement is still happening. Restart the stability timer from the newest frame.
+            candidateSignature = signature
+            candidateSince = now
+            return false
+        }
+
+        if (now - candidateSince < stableForMs) return false
+
+        accept(signature)
+        return true
     }
 
     @Synchronized
     fun reset() {
-        previous = null
-        lastAcceptedAt = 0L
+        acceptedSignature = null
+        candidateSignature = null
+        candidateSince = 0L
+    }
+
+    private fun accept(signature: IntArray) {
+        acceptedSignature = signature
+        candidateSignature = null
+        candidateSince = 0L
     }
 
     private fun signature(bitmap: Bitmap): IntArray {
@@ -60,5 +109,29 @@ class FrameChangeDetector {
         }
     }
 
-    private companion object { const val GRID = 16 }
+    private fun difference(first: IntArray, second: IntArray): FrameDifference {
+        var absoluteTotal = 0L
+        var changedPixels = 0
+        for (index in first.indices) {
+            val delta = abs(first[index] - second[index])
+            absoluteTotal += delta
+            if (delta >= PIXEL_CHANGE_THRESHOLD) changedPixels++
+        }
+        return FrameDifference(
+            meanAbsoluteDifference = absoluteTotal.toDouble() / first.size,
+            changedPixelRatio = changedPixels.toDouble() / first.size,
+        )
+    }
+
+    private data class FrameDifference(
+        val meanAbsoluteDifference: Double,
+        val changedPixelRatio: Double,
+    )
+
+    private companion object {
+        const val GRID = 24
+        const val PIXEL_CHANGE_THRESHOLD = 18
+        const val MAX_STABLE_MEAN_DIFFERENCE = 3.5
+        const val MAX_STABLE_CHANGED_RATIO = 0.04
+    }
 }
