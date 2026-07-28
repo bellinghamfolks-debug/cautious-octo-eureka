@@ -56,7 +56,7 @@ class TextImageEnhancer {
             largest > MAX_TEXT_EDGE -> MAX_TEXT_EDGE
             else -> largest
         }
-        if (target == largest) return source.copy(Bitmap.Config.ARGB_8888, false)
+        if (target == largest) return source
         val ratio = target.toFloat() / largest
         return Bitmap.createScaledBitmap(
             source,
@@ -68,8 +68,8 @@ class TextImageEnhancer {
 
     /**
      * Fast O(n) enhancement using percentile contrast stretching plus a five-point unsharp mask.
-     * It improves medium and small glyph edges without the latency and binary artifacts of a full
-     * adaptive threshold pass.
+     * The same two integer arrays are reused for input/output to keep peak memory practical on a
+     * live 1220x2712 capture.
      */
     private fun enhanceTextContrast(source: Bitmap): Bitmap {
         val width = source.width
@@ -93,30 +93,28 @@ class TextImageEnhancer {
 
         val low = percentile(histogram, size, 0.01)
         val high = percentile(histogram, size, 0.99).coerceAtLeast(low + MIN_CONTRAST_RANGE)
-        val stretched = IntArray(size)
         val range = high - low
         for (index in luminance.indices) {
-            stretched[index] = ((luminance[index] - low) * 255 / range).coerceIn(0, 255)
+            luminance[index] = ((luminance[index] - low) * 255 / range).coerceIn(0, 255)
         }
 
-        val output = IntArray(size)
         for (y in 0 until height) {
             val row = y * width
             for (x in 0 until width) {
                 val index = row + x
-                val center = stretched[index]
-                val left = stretched[row + (x - 1).coerceAtLeast(0)]
-                val right = stretched[row + (x + 1).coerceAtMost(width - 1)]
-                val up = stretched[(y - 1).coerceAtLeast(0) * width + x]
-                val down = stretched[(y + 1).coerceAtMost(height - 1) * width + x]
+                val center = luminance[index]
+                val left = luminance[row + (x - 1).coerceAtLeast(0)]
+                val right = luminance[row + (x + 1).coerceAtMost(width - 1)]
+                val up = luminance[(y - 1).coerceAtLeast(0) * width + x]
+                val down = luminance[(y + 1).coerceAtMost(height - 1) * width + x]
                 val blur = (center * 4 + left + right + up + down) / 8
                 val sharpened = (center + (center - blur) * SHARPEN_AMOUNT).roundToInt()
                     .coerceIn(0, 255)
-                output[index] = Color.rgb(sharpened, sharpened, sharpened)
+                pixels[index] = Color.rgb(sharpened, sharpened, sharpened)
             }
         }
 
-        return Bitmap.createBitmap(output, width, height, Bitmap.Config.ARGB_8888)
+        return Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
     }
 
     private fun percentile(histogram: IntArray, total: Int, fraction: Double): Int {
