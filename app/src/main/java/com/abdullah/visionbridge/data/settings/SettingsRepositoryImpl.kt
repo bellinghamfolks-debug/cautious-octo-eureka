@@ -26,6 +26,7 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
             forceCellular = values[Keys.FORCE_CELLULAR] ?: false,
             speechEnabled = values[Keys.SPEECH] ?: true,
             localOcrEnabled = values[Keys.LOCAL_OCR] ?: true,
+            trustGateEnabled = values[Keys.TRUST_GATE] ?: true,
             captureProfile = CaptureProfile.fromStored(values[Keys.CAPTURE_PROFILE]),
             interruptSpeechOnVisualChange = values[Keys.INTERRUPT_SPEECH] ?: true,
             sceneDescriptionStyle = SceneDescriptionStyle.fromStored(values[Keys.SCENE_DESCRIPTION_STYLE]),
@@ -44,6 +45,7 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
     override suspend fun setForceCellular(enabled: Boolean) = update(Keys.FORCE_CELLULAR, enabled)
     override suspend fun setSpeechEnabled(enabled: Boolean) = update(Keys.SPEECH, enabled)
     override suspend fun setLocalOcrEnabled(enabled: Boolean) = update(Keys.LOCAL_OCR, enabled)
+    override suspend fun setTrustGateEnabled(enabled: Boolean) = update(Keys.TRUST_GATE, enabled)
     override suspend fun setCaptureProfile(profile: CaptureProfile) = update(Keys.CAPTURE_PROFILE, profile.name)
     override suspend fun setInterruptSpeechOnVisualChange(enabled: Boolean) = update(Keys.INTERRUPT_SPEECH, enabled)
     override suspend fun setSceneDescriptionStyle(style: SceneDescriptionStyle) =
@@ -62,6 +64,7 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
         val FORCE_CELLULAR = booleanPreferencesKey("force_cellular")
         val SPEECH = booleanPreferencesKey("speech")
         val LOCAL_OCR = booleanPreferencesKey("local_ocr")
+        val TRUST_GATE = booleanPreferencesKey("ocr_trust_gate")
         val CAPTURE_PROFILE = stringPreferencesKey("capture_profile")
         val INTERRUPT_SPEECH = booleanPreferencesKey("interrupt_speech_on_visual_change")
         val SCENE_DESCRIPTION_STYLE = stringPreferencesKey("scene_description_style")
