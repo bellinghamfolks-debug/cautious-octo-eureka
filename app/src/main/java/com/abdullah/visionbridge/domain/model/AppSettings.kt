@@ -6,6 +6,7 @@ data class AppSettings(
     val forceCellular: Boolean = false,
     val speechEnabled: Boolean = true,
     val localOcrEnabled: Boolean = true,
+    val trustGateEnabled: Boolean = true,
     val captureProfile: CaptureProfile = CaptureProfile.STABLE,
     val interruptSpeechOnVisualChange: Boolean = true,
     val sceneDescriptionStyle: SceneDescriptionStyle = SceneDescriptionStyle.COMPREHENSIVE,
