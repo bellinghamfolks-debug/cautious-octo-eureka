@@ -97,9 +97,7 @@ class StreamingSpeechBuffer {
         while (pending.isNotEmpty()) {
             val boundary = findNaturalBoundary(urgent)
             if (boundary <= 0) {
-                if (force) {
-                    emit(pending.length, output)
-                }
+                if (force) emit(pending.length, output)
                 break
             }
             emit(boundary, output)
@@ -126,7 +124,9 @@ class StreamingSpeechBuffer {
 
         if (pending.length >= MAX_BLOCK_CHARS) {
             val preferred = pending.lastIndexOf(' ', startIndex = MAX_BLOCK_CHARS)
-            return if (preferred >= MIN_SENTENCE_CHARS) preferred + 1 else MAX_BLOCK_CHARS
+            // A long URL, identifier, or OCR token without spaces must remain intact. It is safer
+            // to wait for stream completion than to pronounce half a word.
+            return if (preferred >= MIN_SENTENCE_CHARS) preferred + 1 else -1
         }
         return -1
     }
