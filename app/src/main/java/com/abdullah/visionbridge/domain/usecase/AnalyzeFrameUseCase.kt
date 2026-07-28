@@ -14,12 +14,14 @@ class AnalyzeFrameUseCase(private val repository: VisionAiRepository) {
         apiKey: String,
         forceCellular: Boolean,
         sceneDescriptionStyle: SceneDescriptionStyle,
-    ): AnalysisResult = repository.analyze(
-        bitmap,
-        mode,
-        model,
-        apiKey,
-        forceCellular,
-        sceneDescriptionStyle,
+        onSpeechChunk: suspend (text: String, urgent: Boolean) -> Unit,
+    ): AnalysisResult = repository.analyzeStreaming(
+        bitmap = bitmap,
+        mode = mode,
+        model = model,
+        apiKey = apiKey,
+        forceCellular = forceCellular,
+        sceneDescriptionStyle = sceneDescriptionStyle,
+        onSpeechChunk = onSpeechChunk,
     )
 }
