@@ -143,7 +143,7 @@ class StreamingSpeechBuffer {
         val CLAUSE_BOUNDARIES = setOf('،', ',', '؛', ';', ':')
         const val MIN_URGENT_SENTENCE_CHARS = 8
         const val MIN_SENTENCE_CHARS = 28
-        const val MIN_CLAUSE_CHARS = 80
+        const val MIN_CLAUSE_CHARS = 60
         const val MAX_SENTENCES_PER_BLOCK = 3
         const val MAX_BLOCK_CHARS = 220
     }
