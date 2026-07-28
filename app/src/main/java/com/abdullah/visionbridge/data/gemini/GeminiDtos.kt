@@ -28,6 +28,11 @@ data class InlineData(
 data class GenerationConfig(
     @SerialName("maxOutputTokens") val maxOutputTokens: Int = 700,
     @SerialName("responseMimeType") val responseMimeType: String = "text/plain",
+    /** Deterministic extraction is safer than creative sampling for OCR and navigation. */
+    val temperature: Double = 0.0,
+    @SerialName("candidateCount") val candidateCount: Int = 1,
+    /** Gemini 3 high media resolution improves small-text visibility from one frame. */
+    @SerialName("mediaResolution") val mediaResolution: String = "MEDIA_RESOLUTION_HIGH",
 )
 
 @Serializable
