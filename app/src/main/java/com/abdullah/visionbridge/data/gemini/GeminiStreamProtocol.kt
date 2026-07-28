@@ -1,8 +1,8 @@
 package com.abdullah.visionbridge.data.gemini
 
 /**
- * Parses Gemini's small streaming protocol. Scene descriptions require one META line. OCR also
- * requires a QUALITY line, allowing the app to reject uncertain or inferred transcription before
+ * Parses Gemini's small streaming protocol. Scene descriptions require one META line. OCR can also
+ * require a QUALITY line, allowing the app to reject uncertain or inferred transcription before
  * any body text is displayed or spoken. All evidence belongs to the same captured frame.
  */
 class GeminiStreamAccumulator(
@@ -195,10 +195,10 @@ class StreamingSpeechBuffer {
     private companion object {
         val STRONG_BOUNDARIES = setOf('.', '!', '?', '؟', '\n')
         val CLAUSE_BOUNDARIES = setOf('،', ',', '؛', ';', ':')
-        const val MIN_URGENT_SENTENCE_CHARS = 8
-        const val MIN_SENTENCE_CHARS = 28
-        const val MIN_CLAUSE_CHARS = 60
+        const val MIN_URGENT_SENTENCE_CHARS = 6
+        const val MIN_SENTENCE_CHARS = 10
+        const val MIN_CLAUSE_CHARS = 36
         const val MAX_SENTENCES_PER_BLOCK = 3
-        const val MAX_BLOCK_CHARS = 220
+        const val MAX_BLOCK_CHARS = 160
     }
 }
