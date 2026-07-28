@@ -27,7 +27,6 @@ import java.util.concurrent.atomic.AtomicLong
 class BilingualTtsEngine(context: Context) {
     private data class SpeechRequest(
         val text: String,
-        val urgent: Boolean,
         val rate: Float,
         val generation: Long,
         val flushFirst: Boolean,
@@ -96,15 +95,13 @@ class BilingualTtsEngine(context: Context) {
         if (!ready.await()) throw IllegalStateException("تعذر تهيئة محرك النطق في الجهاز")
 
         withContext(Dispatchers.Main.immediate) {
-            val shouldInterrupt = urgent || interruptPrevious
-            val requestGeneration = if (shouldInterrupt) interruptInternal() else generation.get()
+            val requestGeneration = if (interruptPrevious) interruptInternal() else generation.get()
             requests.trySend(
                 SpeechRequest(
                     text = novelText,
-                    urgent = urgent,
                     rate = rate.coerceIn(0.6f, 1.8f),
                     generation = requestGeneration,
-                    flushFirst = shouldInterrupt,
+                    flushFirst = interruptPrevious,
                 )
             )
         }
