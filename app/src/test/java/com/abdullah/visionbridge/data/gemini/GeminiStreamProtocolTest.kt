@@ -21,7 +21,7 @@ class GeminiStreamProtocolTest {
     fun `trusted OCR waits for both protocol lines before exposing text`() {
         val accumulator = GeminiStreamAccumulator(requireQualityHeader = true)
         assertEquals("", accumulator.append("META|language=mixed|urgent=false\nQUAL"))
-        val body = accumulator.append("ITY|legible=true|confidence=94|inferred=false\nمرحبا OpenAI."))
+        val body = accumulator.append("ITY|legible=true|confidence=94|inferred=false\nمرحبا OpenAI.")
         assertTrue(accumulator.ocrAccepted)
         assertEquals(94, accumulator.confidence)
         assertEquals("مرحبا OpenAI.", body)
