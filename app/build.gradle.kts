@@ -13,8 +13,8 @@ android {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
 
         // Xiaomi 14T uses a 64-bit ARM processor. Keeping only arm64-v8a removes native ML Kit
         // binaries for emulators and legacy 32-bit phones from the installable APK.
@@ -93,6 +93,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
     implementation("com.google.mlkit:text-recognition:16.0.1")
 
     testImplementation("junit:junit:4.13.2")

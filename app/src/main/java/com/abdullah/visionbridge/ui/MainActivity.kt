@@ -56,6 +56,10 @@ class MainActivity : ComponentActivity() {
                     onForceCellularChange = viewModel::setForceCellular,
                     onSpeechChange = viewModel::setSpeechEnabled,
                     onLocalOcrChange = viewModel::setLocalOcrEnabled,
+                    onCaptureProfileChange = viewModel::setCaptureProfile,
+                    onInterruptSpeechChange = viewModel::setInterruptSpeechOnVisualChange,
+                    onSceneDescriptionStyleChange = viewModel::setSceneDescriptionStyle,
+                    onSpeechRateChange = viewModel::setSpeechRate,
                     onStartCapture = ::requestCapture,
                     onStopCapture = {
                         startService(MediaProjectionService.stopIntent(this))

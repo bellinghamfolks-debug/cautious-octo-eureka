@@ -5,15 +5,9 @@ import android.graphics.Color
 import kotlin.math.abs
 
 /**
- * Detects a meaningful, stable visual change before OCR or scene analysis runs.
- *
- * A camera or mirrored glasses feed contains tiny changes on nearly every frame: sensor noise,
- * anti-aliasing, a blinking caret, hand tremor, or a thin moving object. Processing the first
- * changed frame therefore causes the same text to be recognized and spoken repeatedly.
- *
- * This detector uses two gates:
- * 1. The new frame must differ meaningfully from the last accepted frame.
- * 2. The changed scene must remain visually stable for [stableForMs] before it is accepted.
+ * Detects meaningful visual changes with two selectable behaviours:
+ * - stable mode waits until movement settles before analysis;
+ * - fast-text mode accepts a changed frame immediately for moving captions and scrolling text.
  */
 class FrameChangeDetector {
     private var acceptedSignature: IntArray? = null
@@ -21,7 +15,7 @@ class FrameChangeDetector {
     private var candidateSince: Long = 0L
 
     @Synchronized
-    fun shouldProcess(
+    fun shouldProcessStable(
         bitmap: Bitmap,
         minimumMeanDifference: Double,
         minimumChangedRatio: Double,
@@ -30,8 +24,6 @@ class FrameChangeDetector {
     ): Boolean {
         val signature = signature(bitmap)
         val accepted = acceptedSignature
-
-        // The first usable frame should be read immediately.
         if (accepted == null) {
             accept(signature)
             return true
@@ -43,8 +35,6 @@ class FrameChangeDetector {
                 change.changedPixelRatio >= minimumChangedRatio
 
         if (!meaningfulChange) {
-            // The screen is effectively the same as the last spoken frame. Any pending motion
-            // candidate was just transient noise, so discard it.
             candidateSignature = null
             candidateSince = 0L
             return false
@@ -63,16 +53,38 @@ class FrameChangeDetector {
                 candidateDrift.changedPixelRatio <= MAX_STABLE_CHANGED_RATIO
 
         if (!sceneIsStable) {
-            // Movement is still happening. Restart the stability timer from the newest frame.
             candidateSignature = signature
             candidateSince = now
             return false
         }
 
         if (now - candidateSince < stableForMs) return false
-
         accept(signature)
         return true
+    }
+
+    /**
+     * Accepts a visually changed frame without waiting for stability. The threshold remains high
+     * enough to reject sensor shimmer while allowing fast subtitles, tickers, and scrolling text.
+     */
+    @Synchronized
+    fun shouldProcessFast(
+        bitmap: Bitmap,
+        minimumMeanDifference: Double,
+        minimumChangedRatio: Double,
+    ): Boolean {
+        val signature = signature(bitmap)
+        val accepted = acceptedSignature
+        if (accepted == null) {
+            accept(signature)
+            return true
+        }
+        val change = difference(accepted, signature)
+        val acceptedFast =
+            change.meanAbsoluteDifference >= minimumMeanDifference ||
+                change.changedPixelRatio >= minimumChangedRatio
+        if (acceptedFast) accept(signature)
+        return acceptedFast
     }
 
     @Synchronized

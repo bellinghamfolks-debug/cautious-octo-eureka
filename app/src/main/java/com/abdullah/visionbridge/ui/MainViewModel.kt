@@ -6,7 +6,9 @@ import androidx.lifecycle.viewModelScope
 import com.abdullah.visionbridge.VisionBridgeApp
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
+import com.abdullah.visionbridge.domain.model.CaptureProfile
 import com.abdullah.visionbridge.domain.model.CaptureState
+import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -67,6 +69,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setLocalOcrEnabled(enabled: Boolean) = viewModelScope.launch {
         container.settingsRepository.setLocalOcrEnabled(enabled)
+    }
+
+    fun setCaptureProfile(profile: CaptureProfile) = viewModelScope.launch {
+        container.settingsRepository.setCaptureProfile(profile)
+    }
+
+    fun setInterruptSpeechOnVisualChange(enabled: Boolean) = viewModelScope.launch {
+        container.settingsRepository.setInterruptSpeechOnVisualChange(enabled)
+    }
+
+    fun setSceneDescriptionStyle(style: SceneDescriptionStyle) = viewModelScope.launch {
+        container.settingsRepository.setSceneDescriptionStyle(style)
+    }
+
+    fun setSpeechRate(rate: Float) = viewModelScope.launch {
+        container.settingsRepository.setSpeechRate(rate)
     }
 
     fun clearMessage() { message.value = null }

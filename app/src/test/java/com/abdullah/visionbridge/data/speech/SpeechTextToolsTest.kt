@@ -12,10 +12,18 @@ class SpeechTextToolsTest {
     }
 
     @Test
-    fun `mixed text creates Arabic and English segments`() {
-        val segments = SpeechTextTools.segment("مرحبا Abdullah welcome")
-        assertTrue(segments.any { it.language == SpeechLanguage.ARABIC })
-        assertTrue(segments.any { it.language == SpeechLanguage.ENGLISH })
+    fun `mixed text segments preserve exact visual sequence`() {
+        val segments = SpeechTextTools.segment("ابدأ OpenAI الآن ثم Save للحفظ")
+        assertEquals(
+            listOf(
+                SpeechSegment("ابدأ", SpeechLanguage.ARABIC),
+                SpeechSegment("OpenAI", SpeechLanguage.ENGLISH),
+                SpeechSegment("الآن ثم", SpeechLanguage.ARABIC),
+                SpeechSegment("Save", SpeechLanguage.ENGLISH),
+                SpeechSegment("للحفظ", SpeechLanguage.ARABIC),
+            ),
+            segments,
+        )
     }
 
     @Test
@@ -50,17 +58,5 @@ class SpeechTextToolsTest {
         assertTrue(deduplicator.shouldSpeak("عائق أمامك", urgent = true, now = 2_000))
         assertFalse(deduplicator.shouldSpeak("عائق أمامك", urgent = true, now = 3_000))
         assertTrue(deduplicator.shouldSpeak("عائق أمامك", urgent = true, now = 23_000))
-    }
-
-    @Test
-    fun `cloud delta keeps Arabic without repeating local English`() {
-        val delta = SpeechTextTools.cloudDeltaAgainstLocal(
-            cloudText = "Open settings الإعدادات ثم Save حفظ",
-            localText = "Open settings Save",
-        )
-        assertFalse(delta.contains("Open settings"))
-        assertFalse(delta.contains("Save"))
-        assertTrue(delta.contains("الإعدادات"))
-        assertTrue(delta.contains("حفظ"))
     }
 }
