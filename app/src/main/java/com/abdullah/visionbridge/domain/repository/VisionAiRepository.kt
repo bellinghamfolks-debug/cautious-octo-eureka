@@ -6,12 +6,13 @@ import com.abdullah.visionbridge.domain.model.AnalysisResult
 import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
 
 interface VisionAiRepository {
-    suspend fun analyze(
+    suspend fun analyzeStreaming(
         bitmap: Bitmap,
         mode: AnalysisMode,
         model: String,
         apiKey: String,
         forceCellular: Boolean,
         sceneDescriptionStyle: SceneDescriptionStyle,
+        onSpeechChunk: suspend (text: String, urgent: Boolean) -> Unit,
     ): AnalysisResult
 }
