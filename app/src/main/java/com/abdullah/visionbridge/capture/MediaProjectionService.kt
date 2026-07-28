@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -23,23 +24,31 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.abdullah.visionbridge.R
 import com.abdullah.visionbridge.VisionBridgeApp
+import com.abdullah.visionbridge.domain.model.AppSettings
+import com.abdullah.visionbridge.domain.model.CaptureProfile
 import com.abdullah.visionbridge.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 
 class MediaProjectionService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val processing = AtomicBoolean(false)
-    private val changeDetector = FrameChangeDetector()
+    private val frameChangeDetector = FrameChangeDetector()
+    private val targetChangeDetector = FrameChangeDetector()
+    private val frameQueueLock = Any()
 
     private val container by lazy { (application as VisionBridgeApp).container }
     private val projectionManager by lazy { getSystemService(MediaProjectionManager::class.java) }
     private val notificationManager by lazy { getSystemService(NotificationManager::class.java) }
+
+    @Volatile
+    private var activeSettings = AppSettings()
 
     private var captureThread: HandlerThread? = null
     private var captureHandler: Handler? = null
@@ -47,6 +56,8 @@ class MediaProjectionService : Service() {
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var frameJob: Job? = null
+    private var settingsJob: Job? = null
+    private var pendingFrame: Bitmap? = null
     private var lastFrameAt = 0L
 
     private val projectionCallback = object : MediaProjection.Callback() {
@@ -68,6 +79,9 @@ class MediaProjectionService : Service() {
         createNotificationChannel()
         captureThread = HandlerThread("vision-capture").also { it.start() }
         captureHandler = Handler(captureThread!!.looper)
+        settingsJob = serviceScope.launch {
+            container.settingsRepository.settings.collectLatest { activeSettings = it }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -96,6 +110,7 @@ class MediaProjectionService : Service() {
 
     override fun onDestroy() {
         releaseProjection(stopProjection = true)
+        settingsJob?.cancel()
         captureThread?.quitSafely()
         captureThread = null
         captureHandler = null
@@ -125,8 +140,7 @@ class MediaProjectionService : Service() {
                 captureHandler,
             ) ?: error("تعذر إنشاء شاشة افتراضية للالتقاط")
 
-            lastFrameAt = 0L
-            changeDetector.reset()
+            resetFrameState()
             container.coordinator.reset()
             container.runtime.started()
         }.onFailure {
@@ -137,7 +151,7 @@ class MediaProjectionService : Service() {
     }
 
     private fun createImageReader(width: Int, height: Int): ImageReader =
-        ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2).apply {
+        ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3).apply {
             setOnImageAvailableListener({ reader -> consumeLatestFrame(reader) }, captureHandler)
         }
 
@@ -152,27 +166,93 @@ class MediaProjectionService : Service() {
         }
         image.close()
 
+        val settings = activeSettings
         val now = System.currentTimeMillis()
-        val tooSoon = now - lastFrameAt < MIN_FRAME_INTERVAL_MS
-        val changed = !tooSoon && changeDetector.shouldProcess(
-            bitmap = bitmap,
-            minimumMeanDifference = MIN_MEAN_FRAME_DIFFERENCE,
-            minimumChangedRatio = MIN_CHANGED_PIXEL_RATIO,
-            stableForMs = STABLE_FRAME_DURATION_MS,
-            now = now,
-        )
-        if (!changed || !processing.compareAndSet(false, true)) {
+        val minimumInterval = if (settings.captureProfile == CaptureProfile.FAST_TEXT) {
+            FAST_FRAME_INTERVAL_MS
+        } else {
+            STABLE_FRAME_INTERVAL_MS
+        }
+        if (now - lastFrameAt < minimumInterval) {
+            bitmap.recycle()
+            return
+        }
+
+        val shouldAnalyze = when (settings.captureProfile) {
+            CaptureProfile.STABLE -> frameChangeDetector.shouldProcessStable(
+                bitmap = bitmap,
+                minimumMeanDifference = STABLE_MIN_MEAN_DIFFERENCE,
+                minimumChangedRatio = STABLE_MIN_CHANGED_RATIO,
+                stableForMs = STABLE_FRAME_DURATION_MS,
+                now = now,
+            )
+            CaptureProfile.FAST_TEXT -> frameChangeDetector.shouldProcessFast(
+                bitmap = bitmap,
+                minimumMeanDifference = FAST_MIN_MEAN_DIFFERENCE,
+                minimumChangedRatio = FAST_MIN_CHANGED_RATIO,
+            )
+        }
+
+        if (!shouldAnalyze) {
             bitmap.recycle()
             return
         }
         lastFrameAt = now
 
+        // A much stronger threshold distinguishes looking away from small text motion. This keeps
+        // the optional interruption useful in fast-caption mode instead of stopping on every word.
+        val visualTargetChanged = targetChangeDetector.shouldProcessFast(
+            bitmap = bitmap,
+            minimumMeanDifference = TARGET_CHANGE_MEAN_DIFFERENCE,
+            minimumChangedRatio = TARGET_CHANGE_RATIO,
+        )
+        if (visualTargetChanged) {
+            container.coordinator.onVisualTargetChanged(settings.interruptSpeechOnVisualChange)
+        }
+
+        submitLatestFrame(bitmap)
+    }
+
+    /**
+     * Keeps one newest pending bitmap while analysis is busy. Replacing stale pending frames makes
+     * the next analysis follow the user's current view instead of reading a backlog.
+     */
+    private fun submitLatestFrame(bitmap: Bitmap) {
+        val launchNow = synchronized(frameQueueLock) {
+            if (processing.compareAndSet(false, true)) {
+                true
+            } else {
+                pendingFrame?.recycle()
+                pendingFrame = bitmap
+                false
+            }
+        }
+        if (launchNow) launchFrame(bitmap)
+    }
+
+    private fun launchFrame(bitmap: Bitmap) {
         frameJob = serviceScope.launch {
             try {
                 container.coordinator.process(bitmap)
             } finally {
                 bitmap.recycle()
-                processing.set(false)
+                val next = synchronized(frameQueueLock) {
+                    pendingFrame.also { pendingFrame = null }
+                }
+                if (next != null) {
+                    launchFrame(next)
+                } else {
+                    processing.set(false)
+                    // Close a narrow race where a new frame was queued after the null read but
+                    // before processing became false.
+                    val raced = synchronized(frameQueueLock) {
+                        pendingFrame?.also {
+                            pendingFrame = null
+                            processing.set(true)
+                        }
+                    }
+                    if (raced != null) launchFrame(raced)
+                }
             }
         }
     }
@@ -186,14 +266,17 @@ class MediaProjectionService : Service() {
         display.setSurface(newReader.surface)
         oldReader?.setOnImageAvailableListener(null, null)
         oldReader?.close()
-        lastFrameAt = 0L
-        changeDetector.reset()
+        resetFrameState()
     }
 
     private fun releaseProjection(stopProjection: Boolean) {
         frameJob?.cancel()
         frameJob = null
-        processing.set(false)
+        synchronized(frameQueueLock) {
+            pendingFrame?.recycle()
+            pendingFrame = null
+            processing.set(false)
+        }
         imageReader?.setOnImageAvailableListener(null, null)
         imageReader?.close()
         imageReader = null
@@ -204,8 +287,14 @@ class MediaProjectionService : Service() {
             if (stopProjection) runCatching { projection.stop() }
         }
         mediaProjection = null
+        resetFrameState()
+        container.coordinator.stopSpeech()
+    }
+
+    private fun resetFrameState() {
         lastFrameAt = 0L
-        changeDetector.reset()
+        frameChangeDetector.reset()
+        targetChangeDetector.reset()
     }
 
     private fun initialCaptureSize(): Triple<Int, Int, Int> {
@@ -281,11 +370,17 @@ class MediaProjectionService : Service() {
         private const val ACTION_START = "com.abdullah.visionbridge.START_CAPTURE"
         private const val ACTION_STOP = "com.abdullah.visionbridge.STOP_CAPTURE"
 
-        // Sample often enough to establish stability, but only analyze a scene after it settles.
-        private const val MIN_FRAME_INTERVAL_MS = 400L
+        private const val STABLE_FRAME_INTERVAL_MS = 400L
         private const val STABLE_FRAME_DURATION_MS = 900L
-        private const val MIN_MEAN_FRAME_DIFFERENCE = 7.5
-        private const val MIN_CHANGED_PIXEL_RATIO = 0.06
+        private const val STABLE_MIN_MEAN_DIFFERENCE = 7.5
+        private const val STABLE_MIN_CHANGED_RATIO = 0.06
+
+        private const val FAST_FRAME_INTERVAL_MS = 160L
+        private const val FAST_MIN_MEAN_DIFFERENCE = 2.2
+        private const val FAST_MIN_CHANGED_RATIO = 0.018
+
+        private const val TARGET_CHANGE_MEAN_DIFFERENCE = 19.0
+        private const val TARGET_CHANGE_RATIO = 0.32
 
         fun startIntent(context: Context, resultCode: Int, resultData: Intent) =
             Intent(context, MediaProjectionService::class.java).apply {
