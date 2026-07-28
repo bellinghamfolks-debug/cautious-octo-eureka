@@ -7,7 +7,7 @@ import org.junit.Test
 
 class GeminiStreamProtocolTest {
     @Test
-    fun `metadata split across SSE events is hidden from speech`() {
+    fun `metadata split across SSE events is hidden from scene speech`() {
         val accumulator = GeminiStreamAccumulator()
 
         assertEquals("", accumulator.append("META|language=mi"))
@@ -20,7 +20,47 @@ class GeminiStreamProtocolTest {
     }
 
     @Test
-    fun `urgent metadata is parsed before first spoken block`() {
+    fun `trusted OCR waits for both protocol lines before exposing text`() {
+        val accumulator = GeminiStreamAccumulator(requireQualityHeader = true)
+
+        assertEquals("", accumulator.append("META|language=mixed|urgent=false\nQUAL"))
+        val body = accumulator.append("ITY|legible=true|confidence=94|inferred=false\nمرحبا OpenAI."))
+
+        assertTrue(accumulator.ocrAccepted)
+        assertEquals(94, accumulator.confidence)
+        assertEquals("مرحبا OpenAI.", body)
+        assertEquals("مرحبا OpenAI.", accumulator.fullText)
+    }
+
+    @Test
+    fun `low confidence OCR body is never exposed`() {
+        val accumulator = GeminiStreamAccumulator(requireQualityHeader = true)
+        val body = accumulator.append(
+            "META|language=ar|urgent=false\n" +
+                "QUALITY|legible=true|confidence=61|inferred=false\n" +
+                "نص متوقع من السياق."
+        )
+
+        assertFalse(accumulator.ocrAccepted)
+        assertEquals("", body)
+        assertEquals("", accumulator.fullText)
+    }
+
+    @Test
+    fun `self reported inference rejects otherwise confident OCR`() {
+        val accumulator = GeminiStreamAccumulator(requireQualityHeader = true)
+        val body = accumulator.append(
+            "META|language=en|urgent=false\n" +
+                "QUALITY|legible=true|confidence=98|inferred=true\n" +
+                "Guessed brand name"
+        )
+
+        assertFalse(accumulator.ocrAccepted)
+        assertEquals("", body)
+    }
+
+    @Test
+    fun `urgent metadata is parsed before first scene block`() {
         val accumulator = GeminiStreamAccumulator()
         val body = accumulator.append("META|language=ar|urgent=true\nدرج أمامك.")
 
@@ -44,19 +84,13 @@ class GeminiStreamProtocolTest {
     }
 
     @Test
-    fun `long clause and following complete sentence stream as two natural blocks`() {
+    fun `long clause streams first and short tail waits for close`() {
         val buffer = StreamingSpeechBuffer()
         val prefix = "أمامك ممر واضح يمتد إلى الأمام مع كرسي قريب على اليمين وطاولة صغيرة على اليسار"
         val output = buffer.append("$prefix، ثم يظهر الباب في نهاية الممر.", urgent = false)
 
-        assertEquals(
-            listOf(
-                "$prefix،",
-                "ثم يظهر الباب في نهاية الممر.",
-            ),
-            output,
-        )
-        assertTrue(buffer.finish().isEmpty())
+        assertEquals(listOf("$prefix،"), output)
+        assertEquals(listOf("ثم يظهر الباب في نهاية الممر."), buffer.finish())
     }
 
     @Test
