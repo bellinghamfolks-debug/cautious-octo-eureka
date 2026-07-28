@@ -2,12 +2,14 @@ package com.abdullah.visionbridge.capture
 
 import android.graphics.Bitmap
 import com.abdullah.visionbridge.data.ocr.LocalTextRecognizer
+import com.abdullah.visionbridge.data.ocr.SameFrameOcrEvidenceFilter
 import com.abdullah.visionbridge.data.speech.BilingualTtsEngine
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AnalysisResult
 import com.abdullah.visionbridge.domain.model.AnalysisSource
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
+import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
 import com.abdullah.visionbridge.domain.repository.ApiKeyStore
 import com.abdullah.visionbridge.domain.repository.SettingsRepository
 import com.abdullah.visionbridge.domain.usecase.AnalyzeFrameUseCase
@@ -35,18 +37,21 @@ class FrameAnalysisCoordinator(
         val settings: AppSettings,
         val visualGeneration: Long,
         val apiKey: String,
+        val mode: AnalysisMode,
+        val localEvidence: String = "",
     )
 
     private val mutex = Mutex()
     private val cloudScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val cloudQueueLock = Any()
     private val visualGeneration = AtomicLong(0L)
+    private val evidenceFilter = SameFrameOcrEvidenceFilter()
 
     private var lastCloudOcrAt = 0L
     private var lastSceneAt = 0L
-    private var lastFastCloudSnapshotAt = 0L
-    private var fastCloudJob: Job? = null
-    private var pendingFastCloudFrame: PendingCloudFrame? = null
+    private var lastCloudSnapshotAt = 0L
+    private var cloudJob: Job? = null
+    private var pendingCloudFrame: PendingCloudFrame? = null
 
     suspend fun process(bitmap: Bitmap) = mutex.withLock {
         val settings = settingsRepository.settings.first()
@@ -61,7 +66,7 @@ class FrameAnalysisCoordinator(
                         processStableText(bitmap, settings, generationAtCapture)
                     }
                 }
-                AnalysisMode.SCENE_DESCRIPTION -> processScene(bitmap, settings, generationAtCapture)
+                AnalysisMode.SCENE_DESCRIPTION -> queueDynamicScene(bitmap, settings, generationAtCapture)
             }
         } catch (error: Throwable) {
             if (error !is CancellationException) runtime.error(error.userMessage())
@@ -76,18 +81,11 @@ class FrameAnalysisCoordinator(
         generationAtCapture: Long,
     ) {
         val key = apiKeyStore.get()
-        // When Gemini is available, local OCR remains a quick visual preview only. Speaking its
-        // English result first would destroy the true mixed Arabic/English visual order.
-        val localText = recognizeLocal(
-            bitmap = bitmap,
-            settings = settings,
-            generationAtCapture = generationAtCapture,
-            speakLocally = key == null,
-        )
+        val localText = recognizeLocal(bitmap, settings, generationAtCapture, key == null)
         if (key == null) return
 
         val now = System.currentTimeMillis()
-        val interval = if (localText.isBlank()) 900L else settings.cloudOcrIntervalMs
+        val interval = if (localText.isBlank()) 700L else settings.cloudOcrIntervalMs
         if (now - lastCloudOcrAt < interval) return
         lastCloudOcrAt = now
 
@@ -97,88 +95,129 @@ class FrameAnalysisCoordinator(
             settings = settings,
             apiKey = key,
             generationAtCapture = generationAtCapture,
+            localEvidence = localText,
         )
-        if (generationAtCapture == visualGeneration.get()) runtime.result(result)
+        publishIfCurrent(result, settings, generationAtCapture)
     }
 
-    /**
-     * Local OCR completes immediately and releases the capture pipeline. Gemini streams from a
-     * copied snapshot in a separate latest-frame queue, so cloud latency cannot block detection of
-     * fast subtitles, tickers, or scrolling text.
-     */
     private suspend fun processFastText(
         bitmap: Bitmap,
         settings: AppSettings,
         generationAtCapture: Long,
     ) {
         val key = apiKeyStore.get()
-        val localText = recognizeLocal(
-            bitmap = bitmap,
-            settings = settings,
-            generationAtCapture = generationAtCapture,
-            speakLocally = key == null,
-        )
+        val localText = recognizeLocal(bitmap, settings, generationAtCapture, key == null)
         if (key == null) return
 
         val now = System.currentTimeMillis()
-        val desiredInterval = if (localText.isBlank()) 550L else 900L
+        queueCloudFrame(
+            frame = PendingCloudFrame(
+                bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false),
+                settings = settings,
+                visualGeneration = generationAtCapture,
+                apiKey = key,
+                mode = AnalysisMode.TEXT_READING,
+                localEvidence = localText,
+            ),
+            now = now,
+            minimumLaunchIntervalMs = if (localText.isBlank()) 450L else 750L,
+            pendingSnapshotIntervalMs = FAST_PENDING_SNAPSHOT_INTERVAL_MS,
+        )
+    }
+
+    private suspend fun queueDynamicScene(
+        bitmap: Bitmap,
+        settings: AppSettings,
+        generationAtCapture: Long,
+    ) {
+        val key = apiKeyStore.get()
+            ?: throw IllegalStateException("أدخل مفتاح Gemini أولاً لاستخدام وصف المشهد")
+        val minimumInterval = when (settings.sceneDescriptionStyle) {
+            SceneDescriptionStyle.BRIEF -> BRIEF_SCENE_INTERVAL_MS
+            SceneDescriptionStyle.COMPREHENSIVE -> COMPREHENSIVE_SCENE_INTERVAL_MS
+        }
+        queueCloudFrame(
+            frame = PendingCloudFrame(
+                bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false),
+                settings = settings,
+                visualGeneration = generationAtCapture,
+                apiKey = key,
+                mode = AnalysisMode.SCENE_DESCRIPTION,
+            ),
+            now = System.currentTimeMillis(),
+            minimumLaunchIntervalMs = minimumInterval,
+            pendingSnapshotIntervalMs = SCENE_PENDING_SNAPSHOT_INTERVAL_MS,
+        )
+    }
+
+    private fun queueCloudFrame(
+        frame: PendingCloudFrame,
+        now: Long,
+        minimumLaunchIntervalMs: Long,
+        pendingSnapshotIntervalMs: Long,
+    ) {
         synchronized(cloudQueueLock) {
-            val running = fastCloudJob?.isActive == true
-            if (running) {
-                if (now - lastFastCloudSnapshotAt < FAST_PENDING_SNAPSHOT_INTERVAL_MS) return
-                lastFastCloudSnapshotAt = now
-                pendingFastCloudFrame?.bitmap?.recycle()
-                pendingFastCloudFrame = PendingCloudFrame(
-                    bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false),
-                    settings = settings,
-                    visualGeneration = generationAtCapture,
-                    apiKey = key,
-                )
+            if (cloudJob?.isActive == true) {
+                if (now - lastCloudSnapshotAt < pendingSnapshotIntervalMs) {
+                    frame.bitmap.recycle()
+                    return
+                }
+                lastCloudSnapshotAt = now
+                pendingCloudFrame?.bitmap?.recycle()
+                pendingCloudFrame = frame
                 return
             }
-            if (now - lastCloudOcrAt < desiredInterval) return
-            lastCloudOcrAt = now
-            lastFastCloudSnapshotAt = now
-            launchFastCloud(
-                PendingCloudFrame(
-                    bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false),
-                    settings = settings,
-                    visualGeneration = generationAtCapture,
-                    apiKey = key,
-                )
-            )
+
+            val lastLaunch = if (frame.mode == AnalysisMode.TEXT_READING) lastCloudOcrAt else lastSceneAt
+            if (now - lastLaunch < minimumLaunchIntervalMs) {
+                frame.bitmap.recycle()
+                return
+            }
+            if (frame.mode == AnalysisMode.TEXT_READING) lastCloudOcrAt = now else lastSceneAt = now
+            lastCloudSnapshotAt = now
+            launchCloud(frame)
         }
     }
 
-    private fun launchFastCloud(frame: PendingCloudFrame) {
-        fastCloudJob = cloudScope.launch {
+    private fun launchCloud(frame: PendingCloudFrame) {
+        val launched = cloudScope.launch {
+            val thisJob = coroutineContext[Job]
             try {
                 val result = streamAnalysis(
                     bitmap = frame.bitmap,
-                    mode = AnalysisMode.TEXT_READING,
+                    mode = frame.mode,
                     settings = frame.settings,
                     apiKey = frame.apiKey,
                     generationAtCapture = frame.visualGeneration,
+                    localEvidence = frame.localEvidence,
                 )
-                if (frame.visualGeneration == visualGeneration.get()) runtime.result(result)
+                publishIfCurrent(result, frame.settings, frame.visualGeneration)
             } catch (error: Throwable) {
                 if (error !is CancellationException) runtime.error(error.userMessage())
             } finally {
                 frame.bitmap.recycle()
                 val next = synchronized(cloudQueueLock) {
-                    pendingFastCloudFrame.also { pendingFastCloudFrame = null }
+                    pendingCloudFrame.also { pendingCloudFrame = null }
                 }
-                if (next != null && next.visualGeneration == visualGeneration.get()) {
+                val mayContinue = next != null && (
+                    !next.settings.interruptSpeechOnVisualChange ||
+                        next.visualGeneration == visualGeneration.get()
+                    )
+                if (mayContinue) {
                     synchronized(cloudQueueLock) {
-                        lastCloudOcrAt = System.currentTimeMillis()
-                        launchFastCloud(next)
+                        val now = System.currentTimeMillis()
+                        if (next!!.mode == AnalysisMode.TEXT_READING) lastCloudOcrAt = now else lastSceneAt = now
+                        launchCloud(next)
                     }
                 } else {
                     next?.bitmap?.recycle()
-                    synchronized(cloudQueueLock) { fastCloudJob = null }
+                    synchronized(cloudQueueLock) {
+                        if (cloudJob === thisJob) cloudJob = null
+                    }
                 }
             }
         }
+        cloudJob = launched
     }
 
     private suspend fun recognizeLocal(
@@ -197,35 +236,10 @@ class FrameAnalysisCoordinator(
             )
             runtime.result(result)
             if (speakLocally && settings.speechEnabled) {
-                tts.speak(
-                    text = localText,
-                    urgent = false,
-                    rate = settings.speechRate,
-                    interruptPrevious = false,
-                )
+                tts.speak(localText, false, settings.speechRate, false)
             }
         }
         return localText
-    }
-
-    private suspend fun processScene(
-        bitmap: Bitmap,
-        settings: AppSettings,
-        generationAtCapture: Long,
-    ) {
-        val now = System.currentTimeMillis()
-        if (now - lastSceneAt < settings.sceneIntervalMs) return
-        lastSceneAt = now
-        val key = apiKeyStore.get()
-            ?: throw IllegalStateException("أدخل مفتاح Gemini أولاً لاستخدام وصف المشهد")
-        val result = streamAnalysis(
-            bitmap = bitmap,
-            mode = AnalysisMode.SCENE_DESCRIPTION,
-            settings = settings,
-            apiKey = key,
-            generationAtCapture = generationAtCapture,
-        )
-        if (generationAtCapture == visualGeneration.get()) runtime.result(result)
     }
 
     private suspend fun streamAnalysis(
@@ -234,22 +248,26 @@ class FrameAnalysisCoordinator(
         settings: AppSettings,
         apiKey: String,
         generationAtCapture: Long,
+        localEvidence: String,
     ): AnalysisResult {
         var firstSpeechBlock = true
-        return analyzeFrame(
+        val rawResult = analyzeFrame(
             bitmap = bitmap,
             mode = mode,
             model = settings.model,
             apiKey = apiKey,
             forceCellular = settings.forceCellular,
             sceneDescriptionStyle = settings.sceneDescriptionStyle,
-            onSpeechChunk = { text, urgent ->
-                if (generationAtCapture != visualGeneration.get()) {
-                    throw CancellationException("تغيّر الهدف البصري قبل اكتمال بث Gemini")
+            onSpeechChunk = { streamedText, urgent ->
+                ensureTargetIsAllowed(settings, generationAtCapture)
+                val safeText = if (mode == AnalysisMode.TEXT_READING) {
+                    evidenceFilter.filter(streamedText, localEvidence)
+                } else {
+                    streamedText
                 }
-                if (settings.speechEnabled && text.isNotBlank()) {
+                if (settings.speechEnabled && safeText.isNotBlank()) {
                     tts.speak(
-                        text = text,
+                        text = safeText,
                         urgent = urgent,
                         rate = settings.speechRate,
                         interruptPrevious = urgent && firstSpeechBlock,
@@ -258,20 +276,44 @@ class FrameAnalysisCoordinator(
                 }
             },
         )
+
+        if (mode != AnalysisMode.TEXT_READING) return rawResult
+        val safeFullText = evidenceFilter.filter(rawResult.text, localEvidence)
+        if (safeFullText.isBlank()) {
+            throw IllegalStateException("لم يبق نص موثوق بعد التحقق من الإطار نفسه")
+        }
+        return rawResult.copy(text = safeFullText)
+    }
+
+    private fun ensureTargetIsAllowed(settings: AppSettings, generationAtCapture: Long) {
+        if (settings.interruptSpeechOnVisualChange && generationAtCapture != visualGeneration.get()) {
+            throw CancellationException("تغيّر الهدف البصري قبل اكتمال بث Gemini")
+        }
+    }
+
+    private fun publishIfCurrent(
+        result: AnalysisResult,
+        settings: AppSettings,
+        generationAtCapture: Long,
+    ) {
+        if (!settings.interruptSpeechOnVisualChange || generationAtCapture == visualGeneration.get()) {
+            runtime.result(result)
+        }
     }
 
     fun onVisualTargetChanged(interruptSpeech: Boolean) {
         visualGeneration.incrementAndGet()
-        // A new target must bypass intervals that belonged to the previous image.
         lastCloudOcrAt = 0L
         lastSceneAt = 0L
-        lastFastCloudSnapshotAt = 0L
-        if (interruptSpeech) tts.onVisualTargetChanged(true)
+        lastCloudSnapshotAt = 0L
+        if (!interruptSpeech) return
+
+        tts.onVisualTargetChanged(true)
         synchronized(cloudQueueLock) {
-            pendingFastCloudFrame?.bitmap?.recycle()
-            pendingFastCloudFrame = null
-            fastCloudJob?.cancel()
-            fastCloudJob = null
+            pendingCloudFrame?.bitmap?.recycle()
+            pendingCloudFrame = null
+            cloudJob?.cancel()
+            cloudJob = null
         }
     }
 
@@ -281,12 +323,12 @@ class FrameAnalysisCoordinator(
         visualGeneration.incrementAndGet()
         lastCloudOcrAt = 0L
         lastSceneAt = 0L
-        lastFastCloudSnapshotAt = 0L
+        lastCloudSnapshotAt = 0L
         synchronized(cloudQueueLock) {
-            fastCloudJob?.cancel()
-            fastCloudJob = null
-            pendingFastCloudFrame?.bitmap?.recycle()
-            pendingFastCloudFrame = null
+            cloudJob?.cancel()
+            cloudJob = null
+            pendingCloudFrame?.bitmap?.recycle()
+            pendingCloudFrame = null
         }
         tts.stop()
         tts.resetHistory()
@@ -296,6 +338,9 @@ class FrameAnalysisCoordinator(
         message?.takeIf { it.isNotBlank() } ?: "تعذر تحليل إطار الشاشة"
 
     private companion object {
-        const val FAST_PENDING_SNAPSHOT_INTERVAL_MS = 350L
+        const val FAST_PENDING_SNAPSHOT_INTERVAL_MS = 280L
+        const val SCENE_PENDING_SNAPSHOT_INTERVAL_MS = 220L
+        const val BRIEF_SCENE_INTERVAL_MS = 500L
+        const val COMPREHENSIVE_SCENE_INTERVAL_MS = 750L
     }
 }
