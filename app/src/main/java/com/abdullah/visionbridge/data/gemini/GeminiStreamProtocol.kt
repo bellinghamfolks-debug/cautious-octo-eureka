@@ -1,10 +1,13 @@
 package com.abdullah.visionbridge.data.gemini
 
 /**
- * Gemini streams plain text through SSE. The prompt requires one metadata line followed by the
- * visual result. This parser hides the metadata line and exposes only ordered speakable text.
+ * Parses Gemini's small streaming protocol. Scene descriptions require one META line. OCR also
+ * requires a QUALITY line, allowing the app to reject uncertain or inferred transcription before
+ * any body text is displayed or spoken. All evidence belongs to the same captured frame.
  */
-class GeminiStreamAccumulator {
+class GeminiStreamAccumulator(
+    private val requireQualityHeader: Boolean = false,
+) {
     private val preamble = StringBuilder()
     private val fullTextBuilder = StringBuilder()
     private var headerResolved = false
@@ -13,68 +16,129 @@ class GeminiStreamAccumulator {
         private set
     var urgent: Boolean = false
         private set
+    var confidence: Int = if (requireQualityHeader) 0 else 100
+        private set
+    var legible: Boolean = !requireQualityHeader
+        private set
+    var inferred: Boolean = false
+        private set
+
+    val ocrAccepted: Boolean
+        get() = !requireQualityHeader || (legible && !inferred && confidence >= MIN_OCR_CONFIDENCE)
 
     val fullText: String
         get() = fullTextBuilder.toString().trim()
 
-    /** Returns newly available body text after removing the protocol header. */
+    /** Returns newly available body text after removing and validating protocol headers. */
     fun append(delta: String): String {
         if (delta.isEmpty()) return ""
-        if (headerResolved) {
-            fullTextBuilder.append(delta)
-            return delta
-        }
+        if (headerResolved) return appendBody(delta)
 
         preamble.append(delta)
-        val newlineIndex = preamble.indexOf("\n")
-        if (newlineIndex < 0 && preamble.length < MAX_HEADER_LENGTH) return ""
+        val headerEnd = if (requireQualityHeader) secondNewlineIndex(preamble) else preamble.indexOf("\n")
+        if (headerEnd < 0 && preamble.length < MAX_HEADER_LENGTH) return ""
 
-        if (newlineIndex >= 0) {
-            val firstLine = preamble.substring(0, newlineIndex).trimEnd('\r').trim()
-            val remainder = preamble.substring(newlineIndex + 1)
-            if (firstLine.startsWith(META_PREFIX)) {
-                parseMetadata(firstLine)
-                headerResolved = true
-                preamble.clear()
-                fullTextBuilder.append(remainder)
-                return remainder
+        if (headerEnd >= 0) {
+            val headerText = preamble.substring(0, headerEnd).trimEnd('\r', '\n')
+            val lines = headerText.lines().map { it.trimEnd('\r').trim() }
+            val remainder = preamble.substring(headerEnd + 1)
+            val metadataValid = lines.firstOrNull()?.startsWith(META_PREFIX) == true
+            val qualityValid = !requireQualityHeader || (
+                lines.size >= 2 && lines[1].startsWith(QUALITY_PREFIX) && parseQuality(lines[1])
+                )
+
+            if (metadataValid) parseMetadata(lines.first())
+            headerResolved = true
+            preamble.clear()
+
+            if (!metadataValid || !qualityValid) {
+                if (requireQualityHeader) {
+                    legible = false
+                    inferred = true
+                    return ""
+                }
+                return appendBody(headerText + if (remainder.isNotEmpty()) "\n$remainder" else "")
             }
+            return appendBody(remainder)
         }
 
-        // Robust fallback: if the model omits or damages the header, do not lose user-visible text.
+        // Scene description keeps a fallback. OCR is fail-closed because silence is safer than an
+        // unvalidated invented word for a blind user.
         headerResolved = true
         val fallback = preamble.toString()
         preamble.clear()
-        fullTextBuilder.append(fallback)
-        return fallback
+        return if (requireQualityHeader) {
+            legible = false
+            inferred = true
+            ""
+        } else {
+            appendBody(fallback)
+        }
     }
 
-    /** Returns any text that was still waiting for a header when the stream ended. */
+    /** Returns any text still waiting for headers when the stream ends. */
     fun finish(): String {
         if (headerResolved || preamble.isEmpty()) return ""
         headerResolved = true
         val remainder = preamble.toString()
         preamble.clear()
-        fullTextBuilder.append(remainder)
-        return remainder
+        return if (requireQualityHeader) {
+            legible = false
+            inferred = true
+            ""
+        } else {
+            appendBody(remainder)
+        }
+    }
+
+    private fun appendBody(text: String): String {
+        if (text.isEmpty() || !ocrAccepted) return ""
+        fullTextBuilder.append(text)
+        return text
     }
 
     private fun parseMetadata(line: String) {
-        line.split('|').drop(1).forEach { field ->
-            val separator = field.indexOf('=')
-            if (separator <= 0) return@forEach
-            val key = field.substring(0, separator).trim().lowercase()
-            val value = field.substring(separator + 1).trim()
+        fields(line).forEach { (key, value) ->
             when (key) {
                 "language" -> language = value.ifBlank { "und" }
-                "urgent" -> urgent = value.equals("true", ignoreCase = true) || value == "1"
+                "urgent" -> urgent = value.toBooleanValue()
             }
         }
     }
 
+    private fun parseQuality(line: String): Boolean {
+        val parsed = fields(line)
+        legible = parsed["legible"]?.toBooleanValue() == true
+        inferred = parsed["inferred"]?.toBooleanValue() == true
+        confidence = parsed["confidence"]?.toIntOrNull()?.coerceIn(0, 100) ?: 0
+        return parsed.keys.containsAll(setOf("legible", "inferred", "confidence"))
+    }
+
+    private fun fields(line: String): Map<String, String> = buildMap {
+        line.split('|').drop(1).forEach { field ->
+            val separator = field.indexOf('=')
+            if (separator > 0) {
+                put(
+                    field.substring(0, separator).trim().lowercase(),
+                    field.substring(separator + 1).trim(),
+                )
+            }
+        }
+    }
+
+    private fun String.toBooleanValue(): Boolean =
+        equals("true", ignoreCase = true) || this == "1" || equals("yes", ignoreCase = true)
+
+    private fun secondNewlineIndex(value: CharSequence): Int {
+        val first = value.indexOf('\n')
+        return if (first < 0) -1 else value.indexOf('\n', first + 1)
+    }
+
     private companion object {
         const val META_PREFIX = "META|"
-        const val MAX_HEADER_LENGTH = 220
+        const val QUALITY_PREFIX = "QUALITY|"
+        const val MIN_OCR_CONFIDENCE = 82
+        const val MAX_HEADER_LENGTH = 420
     }
 }
 
@@ -124,8 +188,6 @@ class StreamingSpeechBuffer {
 
         if (pending.length >= MAX_BLOCK_CHARS) {
             val preferred = pending.lastIndexOf(' ', startIndex = MAX_BLOCK_CHARS)
-            // A long URL, identifier, or OCR token without spaces must remain intact. It is safer
-            // to wait for stream completion than to pronounce half a word.
             return if (preferred >= MIN_SENTENCE_CHARS) preferred + 1 else -1
         }
         return -1
