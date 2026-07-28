@@ -18,6 +18,14 @@ class GeminiStreamProtocolTest {
     }
 
     @Test
+    fun `fast OCR protocol exposes text after one metadata line`() {
+        val accumulator = GeminiStreamAccumulator(requireQualityHeader = false)
+        val body = accumulator.append("META|language=mixed|urgent=false\nمرحبا OpenAI.")
+        assertEquals("مرحبا OpenAI.", body)
+        assertTrue(accumulator.ocrAccepted)
+    }
+
+    @Test
     fun `trusted OCR waits for both protocol lines before exposing text`() {
         val accumulator = GeminiStreamAccumulator(requireQualityHeader = true)
         assertEquals("", accumulator.append("META|language=mixed|urgent=false\nQUAL"))
@@ -90,11 +98,11 @@ class GeminiStreamProtocolTest {
     }
 
     @Test
-    fun `three short sentences are emitted together instead of word fragments`() {
+    fun `two completed short sentences can start immediately`() {
         val buffer = StreamingSpeechBuffer()
-        assertTrue(buffer.append("باب. كرسي.", urgent = false).isEmpty())
-        val output = buffer.append(" نافذة.", urgent = false)
-        assertEquals(listOf("باب. كرسي. نافذة."), output)
+        assertEquals(listOf("باب. كرسي."), buffer.append("باب. كرسي.", urgent = false))
+        assertTrue(buffer.append(" نافذة.", urgent = false).isEmpty())
+        assertEquals(listOf("نافذة."), buffer.finish())
     }
 
     @Test
