@@ -6,6 +6,7 @@ import com.abdullah.visionbridge.data.network.CellularNetworkManager
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AnalysisResult
 import com.abdullah.visionbridge.domain.model.AnalysisSource
+import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
 import com.abdullah.visionbridge.domain.repository.VisionAiRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -37,6 +38,7 @@ class GeminiVisionRepository(
         model: String,
         apiKey: String,
         forceCellular: Boolean,
+        sceneDescriptionStyle: SceneDescriptionStyle,
     ): AnalysisResult = networkManager.withNetwork(forceCellular) { network ->
         withContext(Dispatchers.IO) {
             val imageBytes = bitmapToJpeg(bitmap)
@@ -50,7 +52,7 @@ class GeminiVisionRepository(
                                     data = Base64.encodeToString(imageBytes, Base64.NO_WRAP),
                                 )
                             ),
-                            GeminiPart(text = promptFor(mode)),
+                            GeminiPart(text = promptFor(mode, sceneDescriptionStyle)),
                         )
                     )
                 ),
@@ -73,8 +75,10 @@ class GeminiVisionRepository(
                 .url("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent")
                 .header("x-goog-api-key", apiKey)
                 .header("Accept", "application/json")
-                .post(json.encodeToString(GenerateContentRequest.serializer(), payload)
-                    .toRequestBody(JSON_MEDIA_TYPE))
+                .post(
+                    json.encodeToString(GenerateContentRequest.serializer(), payload)
+                        .toRequestBody(JSON_MEDIA_TYPE)
+                )
                 .build()
 
             client.newCall(request).execute().use { response ->
@@ -143,9 +147,15 @@ class GeminiVisionRepository(
         )
     }
 
-    private fun promptFor(mode: AnalysisMode): String = when (mode) {
+    private fun promptFor(
+        mode: AnalysisMode,
+        sceneDescriptionStyle: SceneDescriptionStyle,
+    ): String = when (mode) {
         AnalysisMode.TEXT_READING -> OCR_PROMPT
-        AnalysisMode.SCENE_DESCRIPTION -> SCENE_PROMPT
+        AnalysisMode.SCENE_DESCRIPTION -> when (sceneDescriptionStyle) {
+            SceneDescriptionStyle.COMPREHENSIVE -> SCENE_COMPREHENSIVE_PROMPT
+            SceneDescriptionStyle.BRIEF -> SCENE_BRIEF_PROMPT
+        }
     }
 
     private companion object {
@@ -159,20 +169,34 @@ class GeminiVisionRepository(
             {"spokenText":"النص بالترتيب الطبيعي للقراءة","detectedLanguage":"ar أو en أو mixed أو none","urgent":false}
             القواعد:
             1) انسخ النص كما يظهر دون شرح أو تلخيص.
-            2) حافظ على ترتيب الأسطر والعناوين والأرقام المهمة.
-            3) لا تخترع كلمات غير واضحة. ضع [غير واضح] فقط عند الضرورة.
-            4) إن لم يوجد نص، اجعل spokenText فارغاً وdetectedLanguage يساوي none.
+            2) حافظ بدقة على ترتيب القراءة البصري نفسه من بداية النص إلى نهايته، ولا تجمع الإنجليزية أولاً أو العربية أولاً.
+            3) عند اختلاط العربية والإنجليزية في السطر نفسه، أبق الكلمات في مواقعها المتعاقبة كما تظهر في الصورة.
+            4) حافظ على ترتيب الأسطر والعناوين والأرقام المهمة.
+            5) لا تخترع كلمات غير واضحة. ضع [غير واضح] فقط عند الضرورة.
+            6) إن لم يوجد نص، اجعل spokenText فارغاً وdetectedLanguage يساوي none.
         """.trimIndent()
 
-        val SCENE_PROMPT = """
+        val SCENE_COMPREHENSIVE_PROMPT = """
             أنت مساعد بصري عملي لمستخدم كفيف. حلل الصورة باعتبارها بثاً من نظارة يظهر على شاشة هاتف.
             أعد كائن JSON فقط بهذه المفاتيح:
-            {"spokenText":"وصف عربي موجز وعملي","detectedLanguage":"ar","urgent":true أو false}
+            {"spokenText":"وصف عربي شامل وعملي","detectedLanguage":"ar","urgent":true أو false}
             رتب الوصف هكذا: خطر فوري، الاتجاه والموقع النسبي، المسار الأكثر وضوحاً، الأشخاص والأشياء، ثم أي نص مهم.
             استخدم اتجاهات واضحة مثل أمامك، يمينك، يسارك، أعلى، أسفل، قريب، بعيد تقريباً.
+            اذكر التفاصيل المفيدة للاستقلالية دون حشو، وحافظ على جودة الوصف الشامل الحالية.
             لا تدّع دقة مسافات أو سلامة طريق لا يمكن إثباتها من صورة واحدة.
             اجعل urgent=true فقط عند وجود عائق أو خطر واضح يحتاج انتباهاً فورياً.
             لا تزد على 90 كلمة، ولا تضف مقدمات أو عبارات مجاملة.
+        """.trimIndent()
+
+        val SCENE_BRIEF_PROMPT = """
+            أنت مساعد بصري سريع لمستخدم كفيف. حلل الصورة باعتبارها بثاً من نظارة يظهر على شاشة هاتف.
+            أعد كائن JSON فقط بهذه المفاتيح:
+            {"spokenText":"وصف عربي موجز جداً وعملي","detectedLanguage":"ar","urgent":true أو false}
+            اذكر فقط، بهذا الترتيب: الخطر الفوري إن وجد، اتجاه المسار أو أهم عائق، ثم أهم شخص أو شيء أو نص.
+            استخدم كلمات اتجاهية مباشرة: أمامك، يمينك، يسارك، قريب، بعيد تقريباً.
+            لا تكرر المعنى، ولا تذكر تفاصيل زخرفية، ولا تضف مقدمة.
+            اجعل urgent=true فقط عند خطر واضح يحتاج انتباهاً فورياً.
+            الحد الأقصى 28 كلمة.
         """.trimIndent()
     }
 }
