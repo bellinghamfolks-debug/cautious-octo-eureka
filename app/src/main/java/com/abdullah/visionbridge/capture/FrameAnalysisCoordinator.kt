@@ -81,12 +81,7 @@ class FrameAnalysisCoordinator(
         generationAtCapture: Long,
     ) {
         val key = apiKeyStore.get()
-        val localText = recognizeLocal(
-            bitmap = bitmap,
-            settings = settings,
-            generationAtCapture = generationAtCapture,
-            speakLocally = key == null,
-        )
+        val localText = recognizeLocal(bitmap, settings, generationAtCapture, key == null)
         if (key == null) return
 
         val now = System.currentTimeMillis()
@@ -111,16 +106,10 @@ class FrameAnalysisCoordinator(
         generationAtCapture: Long,
     ) {
         val key = apiKeyStore.get()
-        val localText = recognizeLocal(
-            bitmap = bitmap,
-            settings = settings,
-            generationAtCapture = generationAtCapture,
-            speakLocally = key == null,
-        )
+        val localText = recognizeLocal(bitmap, settings, generationAtCapture, key == null)
         if (key == null) return
 
         val now = System.currentTimeMillis()
-        val desiredInterval = if (localText.isBlank()) 450L else 750L
         queueCloudFrame(
             frame = PendingCloudFrame(
                 bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false),
@@ -131,7 +120,7 @@ class FrameAnalysisCoordinator(
                 localEvidence = localText,
             ),
             now = now,
-            minimumLaunchIntervalMs = desiredInterval,
+            minimumLaunchIntervalMs = if (localText.isBlank()) 450L else 750L,
             pendingSnapshotIntervalMs = FAST_PENDING_SNAPSHOT_INTERVAL_MS,
         )
     }
@@ -143,7 +132,6 @@ class FrameAnalysisCoordinator(
     ) {
         val key = apiKeyStore.get()
             ?: throw IllegalStateException("أدخل مفتاح Gemini أولاً لاستخدام وصف المشهد")
-        val now = System.currentTimeMillis()
         val minimumInterval = when (settings.sceneDescriptionStyle) {
             SceneDescriptionStyle.BRIEF -> BRIEF_SCENE_INTERVAL_MS
             SceneDescriptionStyle.COMPREHENSIVE -> COMPREHENSIVE_SCENE_INTERVAL_MS
@@ -156,7 +144,7 @@ class FrameAnalysisCoordinator(
                 apiKey = key,
                 mode = AnalysisMode.SCENE_DESCRIPTION,
             ),
-            now = now,
+            now = System.currentTimeMillis(),
             minimumLaunchIntervalMs = minimumInterval,
             pendingSnapshotIntervalMs = SCENE_PENDING_SNAPSHOT_INTERVAL_MS,
         )
@@ -169,8 +157,7 @@ class FrameAnalysisCoordinator(
         pendingSnapshotIntervalMs: Long,
     ) {
         synchronized(cloudQueueLock) {
-            val running = cloudJob?.isActive == true
-            if (running) {
+            if (cloudJob?.isActive == true) {
                 if (now - lastCloudSnapshotAt < pendingSnapshotIntervalMs) {
                     frame.bitmap.recycle()
                     return
@@ -193,7 +180,8 @@ class FrameAnalysisCoordinator(
     }
 
     private fun launchCloud(frame: PendingCloudFrame) {
-        cloudJob = cloudScope.launch {
+        val launched = cloudScope.launch {
+            val thisJob = coroutineContext[Job]
             try {
                 val result = streamAnalysis(
                     bitmap = frame.bitmap,
@@ -223,10 +211,13 @@ class FrameAnalysisCoordinator(
                     }
                 } else {
                     next?.bitmap?.recycle()
-                    synchronized(cloudQueueLock) { cloudJob = null }
+                    synchronized(cloudQueueLock) {
+                        if (cloudJob === thisJob) cloudJob = null
+                    }
                 }
             }
         }
+        cloudJob = launched
     }
 
     private suspend fun recognizeLocal(
@@ -245,12 +236,7 @@ class FrameAnalysisCoordinator(
             )
             runtime.result(result)
             if (speakLocally && settings.speechEnabled) {
-                tts.speak(
-                    text = localText,
-                    urgent = false,
-                    rate = settings.speechRate,
-                    interruptPrevious = false,
-                )
+                tts.speak(localText, false, settings.speechRate, false)
             }
         }
         return localText
@@ -300,10 +286,7 @@ class FrameAnalysisCoordinator(
     }
 
     private fun ensureTargetIsAllowed(settings: AppSettings, generationAtCapture: Long) {
-        if (
-            settings.interruptSpeechOnVisualChange &&
-            generationAtCapture != visualGeneration.get()
-        ) {
+        if (settings.interruptSpeechOnVisualChange && generationAtCapture != visualGeneration.get()) {
             throw CancellationException("تغيّر الهدف البصري قبل اكتمال بث Gemini")
         }
     }
@@ -313,10 +296,7 @@ class FrameAnalysisCoordinator(
         settings: AppSettings,
         generationAtCapture: Long,
     ) {
-        if (
-            !settings.interruptSpeechOnVisualChange ||
-            generationAtCapture == visualGeneration.get()
-        ) {
+        if (!settings.interruptSpeechOnVisualChange || generationAtCapture == visualGeneration.get()) {
             runtime.result(result)
         }
     }
