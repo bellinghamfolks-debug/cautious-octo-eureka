@@ -24,6 +24,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.abdullah.visionbridge.R
 import com.abdullah.visionbridge.VisionBridgeApp
+import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
 import com.abdullah.visionbridge.ui.MainActivity
@@ -168,25 +169,30 @@ class MediaProjectionService : Service() {
 
         val settings = activeSettings
         val now = System.currentTimeMillis()
-        val minimumInterval = if (settings.captureProfile == CaptureProfile.FAST_TEXT) {
-            FAST_FRAME_INTERVAL_MS
-        } else {
-            STABLE_FRAME_INTERVAL_MS
+        val minimumInterval = when {
+            settings.mode == AnalysisMode.SCENE_DESCRIPTION -> SCENE_FRAME_INTERVAL_MS
+            settings.captureProfile == CaptureProfile.FAST_TEXT -> FAST_FRAME_INTERVAL_MS
+            else -> STABLE_FRAME_INTERVAL_MS
         }
         if (now - lastFrameAt < minimumInterval) {
             bitmap.recycle()
             return
         }
 
-        val shouldAnalyze = when (settings.captureProfile) {
-            CaptureProfile.STABLE -> frameChangeDetector.shouldProcessStable(
+        val shouldAnalyze = when {
+            settings.mode == AnalysisMode.SCENE_DESCRIPTION -> frameChangeDetector.shouldProcessFast(
+                bitmap = bitmap,
+                minimumMeanDifference = SCENE_MIN_MEAN_DIFFERENCE,
+                minimumChangedRatio = SCENE_MIN_CHANGED_RATIO,
+            )
+            settings.captureProfile == CaptureProfile.STABLE -> frameChangeDetector.shouldProcessStable(
                 bitmap = bitmap,
                 minimumMeanDifference = STABLE_MIN_MEAN_DIFFERENCE,
                 minimumChangedRatio = STABLE_MIN_CHANGED_RATIO,
                 stableForMs = STABLE_FRAME_DURATION_MS,
                 now = now,
             )
-            CaptureProfile.FAST_TEXT -> frameChangeDetector.shouldProcessFast(
+            else -> frameChangeDetector.shouldProcessFast(
                 bitmap = bitmap,
                 minimumMeanDifference = FAST_MIN_MEAN_DIFFERENCE,
                 minimumChangedRatio = FAST_MIN_CHANGED_RATIO,
@@ -199,12 +205,20 @@ class MediaProjectionService : Service() {
         }
         lastFrameAt = now
 
-        // A much stronger threshold distinguishes looking away from small text motion. This keeps
-        // the optional interruption useful in fast-caption mode instead of stopping on every word.
+        val targetMean = if (settings.mode == AnalysisMode.SCENE_DESCRIPTION) {
+            SCENE_TARGET_CHANGE_MEAN_DIFFERENCE
+        } else {
+            TEXT_TARGET_CHANGE_MEAN_DIFFERENCE
+        }
+        val targetRatio = if (settings.mode == AnalysisMode.SCENE_DESCRIPTION) {
+            SCENE_TARGET_CHANGE_RATIO
+        } else {
+            TEXT_TARGET_CHANGE_RATIO
+        }
         val visualTargetChanged = targetChangeDetector.shouldProcessFast(
             bitmap = bitmap,
-            minimumMeanDifference = TARGET_CHANGE_MEAN_DIFFERENCE,
-            minimumChangedRatio = TARGET_CHANGE_RATIO,
+            minimumMeanDifference = targetMean,
+            minimumChangedRatio = targetRatio,
         )
         if (visualTargetChanged) {
             container.coordinator.onVisualTargetChanged(settings.interruptSpeechOnVisualChange)
@@ -213,10 +227,7 @@ class MediaProjectionService : Service() {
         submitLatestFrame(bitmap)
     }
 
-    /**
-     * Keeps one newest pending bitmap while analysis is busy. Replacing stale pending frames makes
-     * the next analysis follow the user's current view instead of reading a backlog.
-     */
+    /** Keeps one newest pending bitmap while local coordination is busy. */
     private fun submitLatestFrame(bitmap: Bitmap) {
         val launchNow = synchronized(frameQueueLock) {
             if (processing.compareAndSet(false, true)) {
@@ -243,8 +254,6 @@ class MediaProjectionService : Service() {
                     launchFrame(next)
                 } else {
                     processing.set(false)
-                    // Close a narrow race where a new frame was queued after the null read but
-                    // before processing became false.
                     val raced = synchronized(frameQueueLock) {
                         pendingFrame?.also {
                             pendingFrame = null
@@ -379,8 +388,14 @@ class MediaProjectionService : Service() {
         private const val FAST_MIN_MEAN_DIFFERENCE = 2.2
         private const val FAST_MIN_CHANGED_RATIO = 0.018
 
-        private const val TARGET_CHANGE_MEAN_DIFFERENCE = 19.0
-        private const val TARGET_CHANGE_RATIO = 0.32
+        private const val SCENE_FRAME_INTERVAL_MS = 180L
+        private const val SCENE_MIN_MEAN_DIFFERENCE = 2.4
+        private const val SCENE_MIN_CHANGED_RATIO = 0.018
+
+        private const val TEXT_TARGET_CHANGE_MEAN_DIFFERENCE = 19.0
+        private const val TEXT_TARGET_CHANGE_RATIO = 0.32
+        private const val SCENE_TARGET_CHANGE_MEAN_DIFFERENCE = 8.0
+        private const val SCENE_TARGET_CHANGE_RATIO = 0.12
 
         fun startIntent(context: Context, resultCode: Int, resultData: Intent) =
             Intent(context, MediaProjectionService::class.java).apply {
