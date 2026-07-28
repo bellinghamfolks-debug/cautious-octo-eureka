@@ -262,6 +262,10 @@ class FrameAnalysisCoordinator(
 
     fun onVisualTargetChanged(interruptSpeech: Boolean) {
         visualGeneration.incrementAndGet()
+        // A new target must bypass intervals that belonged to the previous image.
+        lastCloudOcrAt = 0L
+        lastSceneAt = 0L
+        lastFastCloudSnapshotAt = 0L
         if (interruptSpeech) tts.onVisualTargetChanged(true)
         synchronized(cloudQueueLock) {
             pendingFastCloudFrame?.bitmap?.recycle()
