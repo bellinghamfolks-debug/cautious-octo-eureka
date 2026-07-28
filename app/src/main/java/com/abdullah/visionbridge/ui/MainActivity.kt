@@ -56,6 +56,7 @@ class MainActivity : ComponentActivity() {
                     onForceCellularChange = viewModel::setForceCellular,
                     onSpeechChange = viewModel::setSpeechEnabled,
                     onLocalOcrChange = viewModel::setLocalOcrEnabled,
+                    onTrustGateChange = viewModel::setTrustGateEnabled,
                     onCaptureProfileChange = viewModel::setCaptureProfile,
                     onInterruptSpeechChange = viewModel::setInterruptSpeechOnVisualChange,
                     onSceneDescriptionStyleChange = viewModel::setSceneDescriptionStyle,
