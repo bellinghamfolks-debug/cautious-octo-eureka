@@ -12,6 +12,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -144,7 +145,17 @@ class BilingualTtsEngine(context: Context) {
                 completions.remove(utteranceId)
                 continue
             }
-            completion.await()
+
+            val completed = withTimeoutOrNull(MAX_UTTERANCE_WAIT_MS) {
+                completion.await()
+                true
+            } ?: false
+            completions.remove(utteranceId)
+            if (!completed) {
+                // A vendor TTS engine that omits progress callbacks must not freeze every later
+                // sentence forever. Stop that utterance and allow the queue to continue.
+                engine.stop()
+            }
         }
     }
 
@@ -167,5 +178,9 @@ class BilingualTtsEngine(context: Context) {
         tts?.shutdown()
         tts = null
         scope.cancel()
+    }
+
+    private companion object {
+        const val MAX_UTTERANCE_WAIT_MS = 60_000L
     }
 }
