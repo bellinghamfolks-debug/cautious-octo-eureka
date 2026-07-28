@@ -11,7 +11,7 @@ class GeminiStreamProtocolTest {
         val accumulator = GeminiStreamAccumulator()
 
         assertEquals("", accumulator.append("META|language=mi"))
-        val body = accumulator.append("xed|urgent=false\nابدأ OpenAI الآن."))
+        val body = accumulator.append("xed|urgent=false\nابدأ OpenAI الآن.")
 
         assertEquals("ابدأ OpenAI الآن.", body)
         assertEquals("mixed", accumulator.language)
