@@ -67,6 +67,7 @@ fun MainScreen(
     onForceCellularChange: (Boolean) -> Unit,
     onSpeechChange: (Boolean) -> Unit,
     onLocalOcrChange: (Boolean) -> Unit,
+    onTrustGateChange: (Boolean) -> Unit,
     onCaptureProfileChange: (CaptureProfile) -> Unit,
     onInterruptSpeechChange: (Boolean) -> Unit,
     onSceneDescriptionStyleChange: (SceneDescriptionStyle) -> Unit,
@@ -168,11 +169,21 @@ fun MainScreen(
                     }
                     Text(
                         if (state.settings.captureProfile == CaptureProfile.FAST_TEXT) {
-                            "الوضع السريع يلتقط التغير فوراً ويحتفظ بأحدث لقطة أثناء انشغال التحليل. قد يستهلك بطارية وطلبات أكثر."
+                            "الوضع السريع يلتقط التغير فوراً، ويرسل صورة أخف إلى Gemini ويحتفظ بأحدث لقطة فقط."
                         } else {
-                            "الوضع الثابت يقلل الاهتزاز والتكرار ويناسب المستندات واللافتات والصور الساكنة."
+                            "الوضع الثابت يحافظ على أعلى دقة للنصوص الصغيرة والمستندات واللافتات."
                         },
                         style = MaterialTheme.typography.bodyMedium,
+                    )
+                    AccessibleSwitchRow(
+                        title = "بوابة الثقة قبل العرض والنطق",
+                        description = if (state.settings.trustGateEnabled) {
+                            "ترفض النص غير الواضح أو المستنتج، وتنطق تنبيهاً بدلاً من الصمت."
+                        } else {
+                            "موقفة. تبدأ القراءة أسرع، لكن قد تزيد احتمالية الخطأ أو التأليف."
+                        },
+                        checked = state.settings.trustGateEnabled,
+                        onCheckedChange = onTrustGateChange,
                     )
                 }
 
@@ -198,9 +209,17 @@ fun MainScreen(
                             modifier = Modifier
                                 .weight(1f)
                                 .height(56.dp)
-                                .semantics { contentDescription = "وصف موجز بحد أقصى ثمان وعشرين كلمة" },
+                                .semantics { contentDescription = "وصف موجز سريع بحد أقصى ثمان وعشرين كلمة" },
                         )
                     }
+                    Text(
+                        if (state.settings.sceneDescriptionStyle == SceneDescriptionStyle.BRIEF) {
+                            "الوصف الموجز يستخدم صورة أخف ودقة وسائط أقل لبدء الاستجابة بأقصى سرعة."
+                        } else {
+                            "الوصف الشامل يستخدم دقة متوسطة وتفاصيل أكثر، مع استمرار النطق المتدفق."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
                 }
 
                 SectionTitle("مفتاح Gemini")

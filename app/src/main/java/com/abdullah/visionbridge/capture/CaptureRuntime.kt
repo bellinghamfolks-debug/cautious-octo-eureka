@@ -15,6 +15,9 @@ class CaptureRuntime {
     fun result(value: AnalysisResult) = update {
         copy(lastResult = value, status = if (value.urgent) "تنبيه مهم" else "تم التحليل", error = null)
     }
+    fun notice(message: String) = update {
+        copy(status = message, error = null, isProcessing = false)
+    }
     fun error(message: String) = update { copy(error = message, status = "حدث خطأ", isProcessing = false) }
     fun stopped(reason: String = "متوقف") = update {
         copy(isRunning = false, isProcessing = false, status = reason)

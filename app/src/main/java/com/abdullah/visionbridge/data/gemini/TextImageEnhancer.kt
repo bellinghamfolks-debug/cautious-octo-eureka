@@ -3,13 +3,15 @@ package com.abdullah.visionbridge.data.gemini
 import android.graphics.Bitmap
 import android.graphics.Color
 import com.abdullah.visionbridge.domain.model.AnalysisMode
+import com.abdullah.visionbridge.domain.model.CaptureProfile
+import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
 import java.io.ByteArrayOutputStream
 import kotlin.math.roundToInt
 
 /**
- * Prepares one captured frame for Gemini. Text reading receives a lossless, high-resolution,
- * contrast-stretched and lightly sharpened rendition. Scene description keeps a smaller JPEG for
- * lower latency. No second frame or temporal voting is used.
+ * Prepares one captured frame for Gemini. The encoder adapts to the user's requested latency:
+ * stable OCR keeps a lossless high-resolution rendition, fast OCR uses a smaller high-quality JPEG,
+ * and brief scene description uses the lightest useful image. No second frame is used.
  */
 class TextImageEnhancer {
     data class EncodedImage(
@@ -17,13 +19,22 @@ class TextImageEnhancer {
         val mimeType: String,
     )
 
-    fun prepare(source: Bitmap, mode: AnalysisMode): EncodedImage = when (mode) {
-        AnalysisMode.TEXT_READING -> prepareText(source)
-        AnalysisMode.SCENE_DESCRIPTION -> prepareScene(source)
+    fun prepare(
+        source: Bitmap,
+        mode: AnalysisMode,
+        captureProfile: CaptureProfile,
+        sceneDescriptionStyle: SceneDescriptionStyle,
+    ): EncodedImage = when (mode) {
+        AnalysisMode.TEXT_READING -> if (captureProfile == CaptureProfile.FAST_TEXT) {
+            prepareFastText(source)
+        } else {
+            prepareAccurateText(source)
+        }
+        AnalysisMode.SCENE_DESCRIPTION -> prepareScene(source, sceneDescriptionStyle)
     }
 
-    private fun prepareText(source: Bitmap): EncodedImage {
-        val scaled = scaleForText(source)
+    private fun prepareAccurateText(source: Bitmap): EncodedImage {
+        val scaled = scaleForAccurateText(source)
         val enhanced = enhanceTextContrast(scaled)
         if (scaled !== source) scaled.recycle()
         return try {
@@ -36,11 +47,38 @@ class TextImageEnhancer {
         }
     }
 
-    private fun prepareScene(source: Bitmap): EncodedImage {
-        val scaled = scaleToMaxEdge(source, MAX_SCENE_EDGE)
+    private fun prepareFastText(source: Bitmap): EncodedImage {
+        val scaled = scaleForFastText(source)
+        val enhanced = enhanceTextContrast(scaled)
+        if (scaled !== source) scaled.recycle()
         return try {
             EncodedImage(
-                bytes = compress(scaled, Bitmap.CompressFormat.JPEG, SCENE_JPEG_QUALITY),
+                bytes = compress(enhanced, Bitmap.CompressFormat.JPEG, FAST_TEXT_JPEG_QUALITY),
+                mimeType = "image/jpeg",
+            )
+        } finally {
+            enhanced.recycle()
+        }
+    }
+
+    private fun prepareScene(
+        source: Bitmap,
+        style: SceneDescriptionStyle,
+    ): EncodedImage {
+        val maxEdge = if (style == SceneDescriptionStyle.BRIEF) {
+            BRIEF_SCENE_EDGE
+        } else {
+            COMPREHENSIVE_SCENE_EDGE
+        }
+        val quality = if (style == SceneDescriptionStyle.BRIEF) {
+            BRIEF_SCENE_JPEG_QUALITY
+        } else {
+            COMPREHENSIVE_SCENE_JPEG_QUALITY
+        }
+        val scaled = scaleToMaxEdge(source, maxEdge)
+        return try {
+            EncodedImage(
+                bytes = compress(scaled, Bitmap.CompressFormat.JPEG, quality),
                 mimeType = "image/jpeg",
             )
         } finally {
@@ -48,28 +86,31 @@ class TextImageEnhancer {
         }
     }
 
-    private fun scaleForText(source: Bitmap): Bitmap {
+    private fun scaleForAccurateText(source: Bitmap): Bitmap {
         val largest = maxOf(source.width, source.height)
         val target = when {
-            largest < MIN_TEXT_EDGE -> (largest * TEXT_UPSCALE_FACTOR).roundToInt()
-                .coerceAtMost(MIN_TEXT_EDGE)
-            largest > MAX_TEXT_EDGE -> MAX_TEXT_EDGE
+            largest < MIN_ACCURATE_TEXT_EDGE -> (largest * ACCURATE_TEXT_UPSCALE_FACTOR).roundToInt()
+                .coerceAtMost(MIN_ACCURATE_TEXT_EDGE)
+            largest > MAX_ACCURATE_TEXT_EDGE -> MAX_ACCURATE_TEXT_EDGE
             else -> largest
         }
-        if (target == largest) return source
-        val ratio = target.toFloat() / largest
-        return Bitmap.createScaledBitmap(
-            source,
-            (source.width * ratio).roundToInt().coerceAtLeast(1),
-            (source.height * ratio).roundToInt().coerceAtLeast(1),
-            true,
-        )
+        return scaleToEdge(source, target)
+    }
+
+    private fun scaleForFastText(source: Bitmap): Bitmap {
+        val largest = maxOf(source.width, source.height)
+        val target = when {
+            largest < MIN_FAST_TEXT_EDGE -> (largest * FAST_TEXT_UPSCALE_FACTOR).roundToInt()
+                .coerceAtMost(MIN_FAST_TEXT_EDGE)
+            largest > MAX_FAST_TEXT_EDGE -> MAX_FAST_TEXT_EDGE
+            else -> largest
+        }
+        return scaleToEdge(source, target)
     }
 
     /**
      * Fast O(n) enhancement using percentile contrast stretching plus a five-point unsharp mask.
-     * The same two integer arrays are reused for input/output to keep peak memory practical on a
-     * live 1220x2712 capture.
+     * Two integer arrays are reused to keep peak memory practical on a live phone capture.
      */
     private fun enhanceTextContrast(source: Bitmap): Bitmap {
         val width = source.width
@@ -129,8 +170,13 @@ class TextImageEnhancer {
 
     private fun scaleToMaxEdge(source: Bitmap, maxEdge: Int): Bitmap {
         val largest = maxOf(source.width, source.height)
-        if (largest <= maxEdge) return source
-        val ratio = maxEdge.toFloat() / largest
+        return if (largest <= maxEdge) source else scaleToEdge(source, maxEdge)
+    }
+
+    private fun scaleToEdge(source: Bitmap, targetEdge: Int): Bitmap {
+        val largest = maxOf(source.width, source.height)
+        if (targetEdge == largest) return source
+        val ratio = targetEdge.toFloat() / largest
         return Bitmap.createScaledBitmap(
             source,
             (source.width * ratio).roundToInt().coerceAtLeast(1),
@@ -146,11 +192,20 @@ class TextImageEnhancer {
         }
 
     private companion object {
-        const val MIN_TEXT_EDGE = 2_000
-        const val MAX_TEXT_EDGE = 2_800
-        const val TEXT_UPSCALE_FACTOR = 1.6
-        const val MAX_SCENE_EDGE = 1_280
-        const val SCENE_JPEG_QUALITY = 72
+        const val MIN_ACCURATE_TEXT_EDGE = 2_000
+        const val MAX_ACCURATE_TEXT_EDGE = 2_800
+        const val ACCURATE_TEXT_UPSCALE_FACTOR = 1.6
+
+        const val MIN_FAST_TEXT_EDGE = 1_440
+        const val MAX_FAST_TEXT_EDGE = 1_920
+        const val FAST_TEXT_UPSCALE_FACTOR = 1.25
+        const val FAST_TEXT_JPEG_QUALITY = 90
+
+        const val BRIEF_SCENE_EDGE = 896
+        const val COMPREHENSIVE_SCENE_EDGE = 1_152
+        const val BRIEF_SCENE_JPEG_QUALITY = 64
+        const val COMPREHENSIVE_SCENE_JPEG_QUALITY = 70
+
         const val MIN_CONTRAST_RANGE = 42
         const val SHARPEN_AMOUNT = 0.72
     }

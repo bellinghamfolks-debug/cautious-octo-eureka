@@ -6,6 +6,7 @@ import com.abdullah.visionbridge.data.network.CellularNetworkManager
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AnalysisResult
 import com.abdullah.visionbridge.domain.model.AnalysisSource
+import com.abdullah.visionbridge.domain.model.CaptureProfile
 import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
 import com.abdullah.visionbridge.domain.repository.VisionAiRepository
 import kotlinx.coroutines.CancellationException
@@ -39,10 +40,10 @@ class GeminiVisionRepository(
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
     private val imageEnhancer = TextImageEnhancer()
     private val baseClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(45, TimeUnit.SECONDS)
-        .writeTimeout(20, TimeUnit.SECONDS)
-        .callTimeout(55, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(35, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(45, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 
@@ -53,14 +54,23 @@ class GeminiVisionRepository(
         apiKey: String,
         forceCellular: Boolean,
         sceneDescriptionStyle: SceneDescriptionStyle,
+        captureProfile: CaptureProfile,
+        trustGateEnabled: Boolean,
         onSpeechChunk: suspend (text: String, urgent: Boolean) -> Unit,
     ): AnalysisResult = networkManager.withNetwork(forceCellular) { network ->
-        val encodedImage = withContext(Dispatchers.Default) { imageEnhancer.prepare(bitmap, mode) }
+        val encodedImage = withContext(Dispatchers.Default) {
+            imageEnhancer.prepare(
+                source = bitmap,
+                mode = mode,
+                captureProfile = captureProfile,
+                sceneDescriptionStyle = sceneDescriptionStyle,
+            )
+        }
         val payload = GenerateContentRequest(
             contents = listOf(
                 GeminiContent(
                     parts = listOf(
-                        GeminiPart(text = promptFor(mode, sceneDescriptionStyle)),
+                        GeminiPart(text = promptFor(mode, sceneDescriptionStyle, trustGateEnabled)),
                         GeminiPart(
                             inlineData = InlineData(
                                 mimeType = encodedImage.mimeType,
@@ -73,11 +83,7 @@ class GeminiVisionRepository(
             generationConfig = GenerationConfig(
                 maxOutputTokens = maxOutputTokens(mode, sceneDescriptionStyle),
                 temperature = if (mode == AnalysisMode.TEXT_READING) 0.0 else SCENE_TEMPERATURE,
-                mediaResolution = if (mode == AnalysisMode.TEXT_READING) {
-                    "MEDIA_RESOLUTION_HIGH"
-                } else {
-                    "MEDIA_RESOLUTION_MEDIUM"
-                },
+                mediaResolution = mediaResolution(mode, captureProfile, sceneDescriptionStyle),
             ),
         )
 
@@ -107,6 +113,7 @@ class GeminiVisionRepository(
             client = client,
             request = request,
             mode = mode,
+            trustGateEnabled = trustGateEnabled,
             onSpeechChunk = onSpeechChunk,
         )
     }
@@ -115,12 +122,12 @@ class GeminiVisionRepository(
         client: OkHttpClient,
         request: Request,
         mode: AnalysisMode,
+        trustGateEnabled: Boolean,
         onSpeechChunk: suspend (text: String, urgent: Boolean) -> Unit,
     ): AnalysisResult {
         val signals = Channel<StreamSignal>(Channel.UNLIMITED)
-        val accumulator = GeminiStreamAccumulator(
-            requireQualityHeader = mode == AnalysisMode.TEXT_READING,
-        )
+        val requireQualityHeader = mode == AnalysisMode.TEXT_READING && trustGateEnabled
+        val accumulator = GeminiStreamAccumulator(requireQualityHeader = requireQualityHeader)
         val speechBuffer = StreamingSpeechBuffer()
         var completedNormally = false
 
@@ -205,15 +212,22 @@ class GeminiVisionRepository(
             }
         }
 
-        if (mode == AnalysisMode.TEXT_READING && !accumulator.ocrAccepted) {
-            throw IllegalStateException(
-                "النص غير واضح بصرياً بما يكفي للقراءة الموثوقة، لم يتم نطق تخمينات"
-            )
+        if (requireQualityHeader && !accumulator.ocrAccepted) {
+            val feedback = when {
+                accumulator.inferred -> "النص غير واضح بما يكفي، وتم رفض قراءة غير مؤكدة."
+                !accumulator.legible -> "النص غير واضح. قرّب الصورة أو ثبّت النظرة."
+                else -> "النص غير واضح بما يكفي للقراءة الموثوقة."
+            }
+            throw OcrTrustRejectedException(feedback)
         }
+
         val fullText = accumulator.fullText
         if (fullText.isBlank()) {
+            if (requireQualityHeader) {
+                throw OcrTrustRejectedException("لم يظهر نص واضح. قرّب الصورة أو غيّر زاوية النظر.")
+            }
             throw IllegalStateException(
-                if (mode == AnalysisMode.TEXT_READING) "لم يظهر نص واضح في الإطار" else "لم يرجع Gemini وصفاً"
+                if (mode == AnalysisMode.TEXT_READING) "لم يظهر نص في الإطار" else "لم يرجع Gemini وصفاً"
             )
         }
         return AnalysisResult(
@@ -230,16 +244,34 @@ class GeminiVisionRepository(
     ): Int = when (mode) {
         AnalysisMode.TEXT_READING -> 900
         AnalysisMode.SCENE_DESCRIPTION -> when (sceneDescriptionStyle) {
-            SceneDescriptionStyle.COMPREHENSIVE -> 500
-            SceneDescriptionStyle.BRIEF -> 180
+            SceneDescriptionStyle.COMPREHENSIVE -> 360
+            SceneDescriptionStyle.BRIEF -> 96
+        }
+    }
+
+    private fun mediaResolution(
+        mode: AnalysisMode,
+        captureProfile: CaptureProfile,
+        sceneDescriptionStyle: SceneDescriptionStyle,
+    ): String = when (mode) {
+        AnalysisMode.TEXT_READING -> if (captureProfile == CaptureProfile.FAST_TEXT) {
+            "MEDIA_RESOLUTION_MEDIUM"
+        } else {
+            "MEDIA_RESOLUTION_HIGH"
+        }
+        AnalysisMode.SCENE_DESCRIPTION -> if (sceneDescriptionStyle == SceneDescriptionStyle.BRIEF) {
+            "MEDIA_RESOLUTION_LOW"
+        } else {
+            "MEDIA_RESOLUTION_MEDIUM"
         }
     }
 
     private fun promptFor(
         mode: AnalysisMode,
         sceneDescriptionStyle: SceneDescriptionStyle,
+        trustGateEnabled: Boolean,
     ): String = when (mode) {
-        AnalysisMode.TEXT_READING -> OCR_PROMPT
+        AnalysisMode.TEXT_READING -> if (trustGateEnabled) OCR_TRUSTED_PROMPT else OCR_FAST_PROMPT
         AnalysisMode.SCENE_DESCRIPTION -> when (sceneDescriptionStyle) {
             SceneDescriptionStyle.COMPREHENSIVE -> SCENE_COMPREHENSIVE_PROMPT
             SceneDescriptionStyle.BRIEF -> SCENE_BRIEF_PROMPT
@@ -248,9 +280,9 @@ class GeminiVisionRepository(
 
     private companion object {
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
-        const val SCENE_TEMPERATURE = 0.15
+        const val SCENE_TEMPERATURE = 0.1
 
-        val OCR_PROMPT = """
+        val OCR_TRUSTED_PROMPT = """
             المهمة نسخ بصري حرفي فقط، وليست فهم النص أو إكماله. اقرأ النص العربي والإنجليزي الظاهر في الصورة المحسنة.
             أخرج نصاً عادياً فقط، دون JSON أو Markdown، بهذا البروتوكول الإلزامي ذي السطرين:
             السطر الأول بالضبط: META|language=ar أو en أو mixed أو none|urgent=false
@@ -261,37 +293,41 @@ class GeminiVisionRepository(
             1) انسخ الحروف التي تستطيع رؤيتها فعلياً فقط. لا تستخدم معنى الجملة أو المعرفة العامة أو اسم علامة تجارية لتوقع حرف مفقود.
             2) ممنوع التصحيح الإملائي، وإكمال الكلمات، وتوسيع الاختصارات، وإعادة الصياغة، والترجمة، والتلخيص.
             3) إذا لم تكن حروف كلمة كاملة قابلة للتمييز، اكتب [غير واضح] مكانها ولا تحاول تخمينها.
-            4) inferred=false فقط عندما لم تضف أو تصحح أو تكمل أي كلمة من السياق. إن خالفت ذلك اجعل inferred=true، وسيقوم التطبيق برفض النتيجة.
-            5) confidence هو ثقتك البصرية في أضعف جزء من النص الذي نسخته، وليس ثقتك في معنى الجملة. لا ترفعه بسبب شيوع العبارة.
-            6) اجعل legible=false إذا كان معظم النص صغيراً أو ضبابياً إلى درجة تتطلب التخمين، واترك ما بعد السطر الثاني فارغاً.
-            7) حافظ على ترتيب القراءة البصري نفسه. لا تجمع الإنجليزية أولاً ولا العربية أولاً، وأبق الكلمات المختلطة في مواضعها المتعاقبة.
-            8) حافظ على ترتيب الأسطر والعناوين والأرقام، واستخدم علامات الترقيم الموجودة أو الطبيعية عند نهاية جملة مكتملة.
+            4) inferred=false فقط عندما لم تضف أو تصحح أو تكمل أي كلمة من السياق. إن خالفت ذلك اجعل inferred=true.
+            5) confidence هو ثقتك البصرية في أضعف جزء من النص الذي نسخته، وليس ثقتك في معنى الجملة.
+            6) اجعل legible=false إذا كان معظم النص صغيراً أو ضبابياً إلى درجة تتطلب التخمين.
+            7) حافظ على ترتيب القراءة البصري نفسه، وأبق العربية والإنجليزية في مواضعها المتعاقبة.
+            8) حافظ على ترتيب الأسطر والعناوين والأرقام وعلامات نهاية الجمل.
             9) إن لم يوجد نص، استخدم language=none وlegible=false وconfidence=0 وinferred=false، واترك المتن فارغاً.
         """.trimIndent()
 
+        val OCR_FAST_PROMPT = """
+            انسخ فوراً النص العربي والإنجليزي الظاهر في الصورة، دون شرح أو ترجمة أو تلخيص.
+            السطر الأول بالضبط: META|language=ar أو en أو mixed أو none|urgent=false
+            يبدأ النص من السطر الثاني.
+            حافظ على ترتيب القراءة البصري ومواقع العربية والإنجليزية كما تظهر.
+            لا تصحح الإملاء ولا تكمل كلمة من السياق. استخدم [غير واضح] للحروف التي لا تستطيع رؤيتها.
+            استخدم علامات نهاية الجمل الموجودة، ولا تضف مقدمة.
+        """.trimIndent()
+
         val SCENE_COMPREHENSIVE_PROMPT = """
-            أنت مساعد بصري عملي لمستخدم كفيف. حلل الصورة باعتبارها أحدث إطار من بث النظارة.
-            أخرج نصاً عادياً فقط، دون JSON أو Markdown، بهذا البروتوكول الإلزامي:
+            أنت مساعد بصري عملي لمستخدم كفيف. حلل أحدث إطار من بث النظارة.
             السطر الأول: META|language=ar|urgent=true أو false
             من السطر الثاني: الوصف العربي المنطوق فقط.
-            صف ما يظهر في هذا الإطار الآن، ولا تتحدث عن إطار سابق ولا تفترض أشياء خارج الصورة.
-            رتب الوصف هكذا: خطر فوري، الاتجاه والموقع النسبي، المسار الأكثر وضوحاً، الأشخاص والأشياء، ثم أي نص مهم.
-            استخدم اتجاهات واضحة مثل أمامك، يمينك، يسارك، أعلى، أسفل، قريب، بعيد تقريباً.
-            اذكر التفاصيل المفيدة للاستقلالية دون حشو، واكتب جملاً مكتملة للنطق المتدفق.
-            لا تدّع دقة مسافات أو سلامة طريق لا يمكن إثباتها من صورة واحدة.
-            اجعل urgent=true فقط عند وجود عائق أو خطر واضح يحتاج انتباهاً فورياً.
-            لا تزد على 90 كلمة، ولا تضف مقدمة أو مجاملة.
+            ابدأ فوراً بأهم خطر أو تغير في جملة مكتملة قصيرة، ثم أكمل التفاصيل المفيدة.
+            صف ما يظهر الآن فقط، ورتب الباقي: الاتجاه، المسار، الأشخاص والأشياء، ثم النص المهم.
+            استخدم أمامك ويمينك ويسارك وقريب وبعيد تقريباً. لا تفترض شيئاً خارج الصورة.
+            لا تدّع مسافة دقيقة أو سلامة طريق. اجعل urgent=true فقط لخطر واضح.
+            لا تزد على 75 كلمة، ولا تضف مقدمة أو مجاملة.
         """.trimIndent()
 
         val SCENE_BRIEF_PROMPT = """
-            أنت مساعد بصري سريع لمستخدم كفيف. حلل أحدث إطار من بث النظارة.
-            أخرج نصاً عادياً فقط، دون JSON أو Markdown، بهذا البروتوكول الإلزامي:
+            أنت مساعد بصري فوري لمستخدم كفيف. حلل أحدث إطار فقط.
             السطر الأول: META|language=ar|urgent=true أو false
             من السطر الثاني: الوصف العربي المنطوق فقط.
-            اذكر فقط: الخطر الفوري إن وجد، اتجاه المسار أو أهم عائق، ثم أهم شخص أو شيء أو نص.
-            صف ما يظهر الآن فقط ولا تعتمد على إطار سابق. استخدم كلمات اتجاهية مباشرة.
-            اكتب جملة أو جملتين مكتملتين، بلا تكرار أو تفاصيل زخرفية أو مقدمة.
-            اجعل urgent=true فقط عند خطر واضح. الحد الأقصى 28 كلمة.
+            ابدأ مباشرة بجملة مكتملة عن الخطر أو أهم تغير، ثم اذكر الاتجاه أو أهم عائق أو شخص.
+            استخدم كلمات اتجاهية مباشرة. لا تعتمد على إطار سابق ولا تضف مقدمة.
+            الحد الأقصى 22 كلمة، ويفضل جملة واحدة. اجعل urgent=true فقط لخطر واضح.
         """.trimIndent()
     }
 }

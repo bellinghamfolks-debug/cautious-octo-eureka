@@ -13,6 +13,7 @@ interface SettingsRepository {
     suspend fun setForceCellular(enabled: Boolean)
     suspend fun setSpeechEnabled(enabled: Boolean)
     suspend fun setLocalOcrEnabled(enabled: Boolean)
+    suspend fun setTrustGateEnabled(enabled: Boolean)
     suspend fun setCaptureProfile(profile: CaptureProfile)
     suspend fun setInterruptSpeechOnVisualChange(enabled: Boolean)
     suspend fun setSceneDescriptionStyle(style: SceneDescriptionStyle)
