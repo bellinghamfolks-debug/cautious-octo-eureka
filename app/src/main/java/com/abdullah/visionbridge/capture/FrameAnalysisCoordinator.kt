@@ -1,6 +1,7 @@
 package com.abdullah.visionbridge.capture
 
 import android.graphics.Bitmap
+import com.abdullah.visionbridge.data.gemini.OcrTrustRejectedException
 import com.abdullah.visionbridge.data.ocr.LocalTextRecognizer
 import com.abdullah.visionbridge.data.ocr.SameFrameOcrEvidenceFilter
 import com.abdullah.visionbridge.data.speech.BilingualTtsEngine
@@ -45,6 +46,7 @@ class FrameAnalysisCoordinator(
     private val cloudScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val cloudQueueLock = Any()
     private val visualGeneration = AtomicLong(0L)
+    private val lastTrustFeedbackGeneration = AtomicLong(Long.MIN_VALUE)
     private val evidenceFilter = SameFrameOcrEvidenceFilter()
 
     private var lastCloudOcrAt = 0L
@@ -68,6 +70,8 @@ class FrameAnalysisCoordinator(
                 }
                 AnalysisMode.SCENE_DESCRIPTION -> queueDynamicScene(bitmap, settings, generationAtCapture)
             }
+        } catch (error: OcrTrustRejectedException) {
+            notifyTrustRejection(error, settings, generationAtCapture)
         } catch (error: Throwable) {
             if (error !is CancellationException) runtime.error(error.userMessage())
         } finally {
@@ -84,32 +88,6 @@ class FrameAnalysisCoordinator(
         val localText = recognizeLocal(bitmap, settings, generationAtCapture, key == null)
         if (key == null) return
 
-        val now = System.currentTimeMillis()
-        val interval = if (localText.isBlank()) 700L else settings.cloudOcrIntervalMs
-        if (now - lastCloudOcrAt < interval) return
-        lastCloudOcrAt = now
-
-        val result = streamAnalysis(
-            bitmap = bitmap,
-            mode = AnalysisMode.TEXT_READING,
-            settings = settings,
-            apiKey = key,
-            generationAtCapture = generationAtCapture,
-            localEvidence = localText,
-        )
-        publishIfCurrent(result, settings, generationAtCapture)
-    }
-
-    private suspend fun processFastText(
-        bitmap: Bitmap,
-        settings: AppSettings,
-        generationAtCapture: Long,
-    ) {
-        val key = apiKeyStore.get()
-        val localText = recognizeLocal(bitmap, settings, generationAtCapture, key == null)
-        if (key == null) return
-
-        val now = System.currentTimeMillis()
         queueCloudFrame(
             frame = PendingCloudFrame(
                 bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false),
@@ -119,8 +97,51 @@ class FrameAnalysisCoordinator(
                 mode = AnalysisMode.TEXT_READING,
                 localEvidence = localText,
             ),
-            now = now,
-            minimumLaunchIntervalMs = if (localText.isBlank()) 450L else 750L,
+            now = System.currentTimeMillis(),
+            minimumLaunchIntervalMs = if (localText.isBlank()) 350L else 500L,
+            pendingSnapshotIntervalMs = STABLE_PENDING_SNAPSHOT_INTERVAL_MS,
+        )
+    }
+
+    private suspend fun processFastText(
+        bitmap: Bitmap,
+        settings: AppSettings,
+        generationAtCapture: Long,
+    ) {
+        val key = apiKeyStore.get()
+        if (key == null) {
+            recognizeLocal(bitmap, settings, generationAtCapture, true)
+            return
+        }
+
+        if (settings.trustGateEnabled) {
+            val localText = recognizeLocal(bitmap, settings, generationAtCapture, false)
+            queueFastText(bitmap, settings, generationAtCapture, key, localText)
+        } else {
+            // Start Gemini first, then overlap local preview OCR with image encoding and upload.
+            queueFastText(bitmap, settings, generationAtCapture, key, "")
+            recognizeLocal(bitmap, settings, generationAtCapture, false)
+        }
+    }
+
+    private fun queueFastText(
+        bitmap: Bitmap,
+        settings: AppSettings,
+        generationAtCapture: Long,
+        key: String,
+        localEvidence: String,
+    ) {
+        queueCloudFrame(
+            frame = PendingCloudFrame(
+                bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false),
+                settings = settings,
+                visualGeneration = generationAtCapture,
+                apiKey = key,
+                mode = AnalysisMode.TEXT_READING,
+                localEvidence = localEvidence,
+            ),
+            now = System.currentTimeMillis(),
+            minimumLaunchIntervalMs = if (localEvidence.isBlank()) 250L else 420L,
             pendingSnapshotIntervalMs = FAST_PENDING_SNAPSHOT_INTERVAL_MS,
         )
     }
@@ -192,6 +213,8 @@ class FrameAnalysisCoordinator(
                     localEvidence = frame.localEvidence,
                 )
                 publishIfCurrent(result, frame.settings, frame.visualGeneration)
+            } catch (error: OcrTrustRejectedException) {
+                notifyTrustRejection(error, frame.settings, frame.visualGeneration)
             } catch (error: Throwable) {
                 if (error !is CancellationException) runtime.error(error.userMessage())
             } finally {
@@ -258,9 +281,11 @@ class FrameAnalysisCoordinator(
             apiKey = apiKey,
             forceCellular = settings.forceCellular,
             sceneDescriptionStyle = settings.sceneDescriptionStyle,
+            captureProfile = settings.captureProfile,
+            trustGateEnabled = settings.trustGateEnabled,
             onSpeechChunk = { streamedText, urgent ->
                 ensureTargetIsAllowed(settings, generationAtCapture)
-                val safeText = if (mode == AnalysisMode.TEXT_READING) {
+                val safeText = if (mode == AnalysisMode.TEXT_READING && settings.trustGateEnabled) {
                     evidenceFilter.filter(streamedText, localEvidence)
                 } else {
                     streamedText
@@ -277,12 +302,31 @@ class FrameAnalysisCoordinator(
             },
         )
 
-        if (mode != AnalysisMode.TEXT_READING) return rawResult
+        if (mode != AnalysisMode.TEXT_READING || !settings.trustGateEnabled) return rawResult
         val safeFullText = evidenceFilter.filter(rawResult.text, localEvidence)
         if (safeFullText.isBlank()) {
-            throw IllegalStateException("لم يبق نص موثوق بعد التحقق من الإطار نفسه")
+            throw OcrTrustRejectedException("النص غير واضح بعد التحقق. قرّب الصورة أو ثبّت النظرة.")
         }
         return rawResult.copy(text = safeFullText)
+    }
+
+    private suspend fun notifyTrustRejection(
+        error: OcrTrustRejectedException,
+        settings: AppSettings,
+        generationAtCapture: Long,
+    ) {
+        if (!settings.trustGateEnabled) return
+        if (settings.interruptSpeechOnVisualChange && generationAtCapture != visualGeneration.get()) return
+        if (lastTrustFeedbackGeneration.getAndSet(generationAtCapture) == generationAtCapture) return
+
+        runtime.notice(error.spokenMessage)
+        if (settings.speechEnabled) {
+            tts.speakFeedback(
+                text = error.spokenMessage,
+                rate = settings.speechRate,
+                interruptPrevious = settings.interruptSpeechOnVisualChange,
+            )
+        }
     }
 
     private fun ensureTargetIsAllowed(settings: AppSettings, generationAtCapture: Long) {
@@ -321,6 +365,7 @@ class FrameAnalysisCoordinator(
 
     fun reset() {
         visualGeneration.incrementAndGet()
+        lastTrustFeedbackGeneration.set(Long.MIN_VALUE)
         lastCloudOcrAt = 0L
         lastSceneAt = 0L
         lastCloudSnapshotAt = 0L
@@ -338,9 +383,10 @@ class FrameAnalysisCoordinator(
         message?.takeIf { it.isNotBlank() } ?: "تعذر تحليل إطار الشاشة"
 
     private companion object {
-        const val FAST_PENDING_SNAPSHOT_INTERVAL_MS = 280L
-        const val SCENE_PENDING_SNAPSHOT_INTERVAL_MS = 220L
-        const val BRIEF_SCENE_INTERVAL_MS = 500L
-        const val COMPREHENSIVE_SCENE_INTERVAL_MS = 750L
+        const val STABLE_PENDING_SNAPSHOT_INTERVAL_MS = 240L
+        const val FAST_PENDING_SNAPSHOT_INTERVAL_MS = 160L
+        const val SCENE_PENDING_SNAPSHOT_INTERVAL_MS = 140L
+        const val BRIEF_SCENE_INTERVAL_MS = 300L
+        const val COMPREHENSIVE_SCENE_INTERVAL_MS = 500L
     }
 }
