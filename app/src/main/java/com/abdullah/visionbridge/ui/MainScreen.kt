@@ -27,6 +27,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
@@ -34,6 +35,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -50,6 +52,9 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
+import com.abdullah.visionbridge.domain.model.CaptureProfile
+import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,12 +67,19 @@ fun MainScreen(
     onForceCellularChange: (Boolean) -> Unit,
     onSpeechChange: (Boolean) -> Unit,
     onLocalOcrChange: (Boolean) -> Unit,
+    onCaptureProfileChange: (CaptureProfile) -> Unit,
+    onInterruptSpeechChange: (Boolean) -> Unit,
+    onSceneDescriptionStyleChange: (SceneDescriptionStyle) -> Unit,
+    onSpeechRateChange: (Float) -> Unit,
     onStartCapture: () -> Unit,
     onStopCapture: () -> Unit,
     onMessageConsumed: () -> Unit,
 ) {
     var apiKey by remember { mutableStateOf("") }
     var modelMenuExpanded by remember { mutableStateOf(false) }
+    var speechRateDraft by remember(state.settings.speechRate) {
+        mutableFloatStateOf(state.settings.speechRate)
+    }
     val snackbarHost = remember { SnackbarHostState() }
 
     LaunchedEffect(state.message) {
@@ -122,6 +134,73 @@ fun MainScreen(
                             .height(56.dp)
                             .semantics { contentDescription = "تفعيل وضع وصف المشهد والعوائق" },
                     )
+                }
+
+                if (state.settings.mode == AnalysisMode.TEXT_READING) {
+                    SectionTitle("طريقة التقاط النص")
+                    Text("اختر الوضع حسب حركة النص. التغيير يعمل مباشرة أثناء جلسة الالتقاط.")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        FilterChip(
+                            selected = state.settings.captureProfile == CaptureProfile.STABLE,
+                            onClick = { onCaptureProfileChange(CaptureProfile.STABLE) },
+                            label = { Text("ثابت ودقيق") },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(56.dp)
+                                .semantics {
+                                    contentDescription = "التقاط ثابت ودقيق، ينتظر استقرار الصورة قبل القراءة"
+                                },
+                        )
+                        FilterChip(
+                            selected = state.settings.captureProfile == CaptureProfile.FAST_TEXT,
+                            onClick = { onCaptureProfileChange(CaptureProfile.FAST_TEXT) },
+                            label = { Text("نص متحرك سريع") },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(56.dp)
+                                .semantics {
+                                    contentDescription = "التقاط سريع للنصوص المتحركة والترجمات والشريط الإخباري"
+                                },
+                        )
+                    }
+                    Text(
+                        if (state.settings.captureProfile == CaptureProfile.FAST_TEXT) {
+                            "الوضع السريع يلتقط التغير فوراً ويحتفظ بأحدث لقطة أثناء انشغال التحليل. قد يستهلك بطارية وطلبات أكثر."
+                        } else {
+                            "الوضع الثابت يقلل الاهتزاز والتكرار ويناسب المستندات واللافتات والصور الساكنة."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+
+                if (state.settings.mode == AnalysisMode.SCENE_DESCRIPTION) {
+                    SectionTitle("طول وصف المشهد")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        FilterChip(
+                            selected = state.settings.sceneDescriptionStyle == SceneDescriptionStyle.COMPREHENSIVE,
+                            onClick = { onSceneDescriptionStyleChange(SceneDescriptionStyle.COMPREHENSIVE) },
+                            label = { Text("وصف شامل") },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(56.dp)
+                                .semantics { contentDescription = "وصف شامل يحافظ على التفاصيل الحالية" },
+                        )
+                        FilterChip(
+                            selected = state.settings.sceneDescriptionStyle == SceneDescriptionStyle.BRIEF,
+                            onClick = { onSceneDescriptionStyleChange(SceneDescriptionStyle.BRIEF) },
+                            label = { Text("وصف موجز") },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(56.dp)
+                                .semantics { contentDescription = "وصف موجز بحد أقصى ثمان وعشرين كلمة" },
+                        )
+                    }
                 }
 
                 SectionTitle("مفتاح Gemini")
@@ -203,10 +282,36 @@ fun MainScreen(
                 )
                 AccessibleSwitchRow(
                     title = "النطق التلقائي",
-                    description = "ينطق النتائج ويبدّل بين العربية والإنجليزية حسب مقاطع النص.",
+                    description = "ينطق النتائج بنفس تسلسل المقاطع العربية والإنجليزية الظاهر في النص.",
                     checked = state.settings.speechEnabled,
                     onCheckedChange = onSpeechChange,
                 )
+                AccessibleSwitchRow(
+                    title = "إيقاف النطق القديم عند تغيير النظرة",
+                    description = "عند الانتقال الواضح إلى صورة أو نص آخر، يوقف الكلام السابق فوراً ويتجه إلى النتيجة الجديدة.",
+                    checked = state.settings.interruptSpeechOnVisualChange,
+                    onCheckedChange = onInterruptSpeechChange,
+                )
+
+                Text(
+                    "سرعة النطق: ${(speechRateDraft * 100).roundToInt()} بالمئة",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Slider(
+                    value = speechRateDraft,
+                    onValueChange = { speechRateDraft = it },
+                    onValueChangeFinished = { onSpeechRateChange(speechRateDraft) },
+                    valueRange = AppSettings.MIN_SPEECH_RATE..AppSettings.MAX_SPEECH_RATE,
+                    steps = 11,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics {
+                            contentDescription =
+                                "التحكم بسرعة النطق، الحالية ${(speechRateDraft * 100).roundToInt()} بالمئة"
+                        },
+                )
+                Text("النطاق من 60 إلى 180 بالمئة. تُطبق السرعة على المقطع التالي مباشرة.")
+
                 AccessibleSwitchRow(
                     title = "OCR محلي سريع للإنجليزية",
                     description = "يقرأ النص اللاتيني على الجهاز فوراً، ويستعين بـGemini للعربية والنص المختلط.",
