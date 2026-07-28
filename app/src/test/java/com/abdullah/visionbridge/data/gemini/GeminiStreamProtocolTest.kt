@@ -75,12 +75,18 @@ class GeminiStreamProtocolTest {
     }
 
     @Test
-    fun `long clause streams first and short tail waits for close`() {
+    fun `long clause and completed sentence stream without waiting for close`() {
         val buffer = StreamingSpeechBuffer()
         val prefix = "أمامك ممر واضح يمتد إلى الأمام مع كرسي قريب على اليمين وطاولة صغيرة على اليسار"
         val output = buffer.append("$prefix، ثم يظهر الباب في نهاية الممر.", urgent = false)
-        assertEquals(listOf("$prefix،"), output)
-        assertEquals(listOf("ثم يظهر الباب في نهاية الممر."), buffer.finish())
+        assertEquals(
+            listOf(
+                "$prefix،",
+                "ثم يظهر الباب في نهاية الممر.",
+            ),
+            output,
+        )
+        assertTrue(buffer.finish().isEmpty())
     }
 
     @Test
