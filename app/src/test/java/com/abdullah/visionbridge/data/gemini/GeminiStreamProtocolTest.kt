@@ -44,14 +44,19 @@ class GeminiStreamProtocolTest {
     }
 
     @Test
-    fun `long clause may stream at a natural comma`() {
+    fun `long clause and following complete sentence stream as two natural blocks`() {
         val buffer = StreamingSpeechBuffer()
         val prefix = "أمامك ممر واضح يمتد إلى الأمام مع كرسي قريب على اليمين وطاولة صغيرة على اليسار"
         val output = buffer.append("$prefix، ثم يظهر الباب في نهاية الممر.", urgent = false)
 
-        assertEquals(1, output.size)
-        assertTrue(output.first().endsWith("،"))
-        assertEquals(listOf("ثم يظهر الباب في نهاية الممر."), buffer.finish())
+        assertEquals(
+            listOf(
+                "$prefix،",
+                "ثم يظهر الباب في نهاية الممر.",
+            ),
+            output,
+        )
+        assertTrue(buffer.finish().isEmpty())
     }
 
     @Test
