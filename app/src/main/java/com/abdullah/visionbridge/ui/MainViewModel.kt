@@ -71,6 +71,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         container.settingsRepository.setLocalOcrEnabled(enabled)
     }
 
+    fun setTrustGateEnabled(enabled: Boolean) = viewModelScope.launch {
+        container.settingsRepository.setTrustGateEnabled(enabled)
+    }
+
     fun setCaptureProfile(profile: CaptureProfile) = viewModelScope.launch {
         container.settingsRepository.setCaptureProfile(profile)
     }
