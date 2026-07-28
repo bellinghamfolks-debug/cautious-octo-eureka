@@ -33,7 +33,6 @@ class FrameAnalysisCoordinator(
     private data class PendingCloudFrame(
         val bitmap: Bitmap,
         val settings: AppSettings,
-        val localText: String,
         val visualGeneration: Long,
         val apiKey: String,
     )
@@ -132,7 +131,6 @@ class FrameAnalysisCoordinator(
                 pendingFastCloudFrame = PendingCloudFrame(
                     bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false),
                     settings = settings,
-                    localText = localText,
                     visualGeneration = generationAtCapture,
                     apiKey = key,
                 )
@@ -145,7 +143,6 @@ class FrameAnalysisCoordinator(
                 PendingCloudFrame(
                     bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false),
                     settings = settings,
-                    localText = localText,
                     visualGeneration = generationAtCapture,
                     apiKey = key,
                 )
@@ -237,27 +234,31 @@ class FrameAnalysisCoordinator(
         settings: AppSettings,
         apiKey: String,
         generationAtCapture: Long,
-    ): AnalysisResult = analyzeFrame(
-        bitmap = bitmap,
-        mode = mode,
-        model = settings.model,
-        apiKey = apiKey,
-        forceCellular = settings.forceCellular,
-        sceneDescriptionStyle = settings.sceneDescriptionStyle,
-        onSpeechChunk = { text, urgent ->
-            if (generationAtCapture != visualGeneration.get()) {
-                throw CancellationException("تغيّر الهدف البصري قبل اكتمال بث Gemini")
-            }
-            if (settings.speechEnabled && text.isNotBlank()) {
-                tts.speak(
-                    text = text,
-                    urgent = urgent,
-                    rate = settings.speechRate,
-                    interruptPrevious = false,
-                )
-            }
-        },
-    )
+    ): AnalysisResult {
+        var firstSpeechBlock = true
+        return analyzeFrame(
+            bitmap = bitmap,
+            mode = mode,
+            model = settings.model,
+            apiKey = apiKey,
+            forceCellular = settings.forceCellular,
+            sceneDescriptionStyle = settings.sceneDescriptionStyle,
+            onSpeechChunk = { text, urgent ->
+                if (generationAtCapture != visualGeneration.get()) {
+                    throw CancellationException("تغيّر الهدف البصري قبل اكتمال بث Gemini")
+                }
+                if (settings.speechEnabled && text.isNotBlank()) {
+                    tts.speak(
+                        text = text,
+                        urgent = urgent,
+                        rate = settings.speechRate,
+                        interruptPrevious = urgent && firstSpeechBlock,
+                    )
+                    firstSpeechBlock = false
+                }
+            },
+        )
+    }
 
     fun onVisualTargetChanged(interruptSpeech: Boolean) {
         visualGeneration.incrementAndGet()
