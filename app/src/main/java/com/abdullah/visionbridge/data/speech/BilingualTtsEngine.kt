@@ -93,13 +93,30 @@ class BilingualTtsEngine(context: Context) {
         interruptPrevious: Boolean = false,
     ) {
         val novelText = deduplicator.filter(text, urgent) ?: return
+        enqueue(novelText, rate, interruptPrevious)
+    }
+
+    /**
+     * Speaks an application status such as an OCR trust rejection. It intentionally bypasses the
+     * content deduplicator; the coordinator already limits it to once per visual target.
+     */
+    suspend fun speakFeedback(
+        text: String,
+        rate: Float = 1.0f,
+        interruptPrevious: Boolean = true,
+    ) {
+        if (text.isBlank()) return
+        enqueue(text.trim(), rate, interruptPrevious)
+    }
+
+    private suspend fun enqueue(text: String, rate: Float, interruptPrevious: Boolean) {
         if (!ready.await()) throw IllegalStateException("تعذر تهيئة محرك النطق في الجهاز")
 
         withContext(Dispatchers.Main.immediate) {
             val requestGeneration = if (interruptPrevious) interruptInternal() else generation.get()
             requests.trySend(
                 SpeechRequest(
-                    text = novelText,
+                    text = text,
                     rate = rate.coerceIn(0.6f, 1.8f),
                     generation = requestGeneration,
                     flushFirst = interruptPrevious,
