@@ -27,7 +27,7 @@ data class InlineData(
 @Serializable
 data class GenerationConfig(
     @SerialName("maxOutputTokens") val maxOutputTokens: Int = 700,
-    @SerialName("responseMimeType") val responseMimeType: String = "application/json",
+    @SerialName("responseMimeType") val responseMimeType: String = "text/plain",
 )
 
 @Serializable
@@ -47,10 +47,3 @@ data class ResponsePart(val text: String? = null)
 
 @Serializable
 data class GeminiError(val code: Int? = null, val message: String? = null)
-
-@Serializable
-data class ParsedVisionResponse(
-    val spokenText: String = "",
-    val detectedLanguage: String = "und",
-    val urgent: Boolean = false,
-)
