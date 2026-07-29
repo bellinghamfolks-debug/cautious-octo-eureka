@@ -191,10 +191,13 @@ class FrameChangeDetector {
     }
 
     /**
-     * Cheap central-content quality guard. It rejects only frames that are essentially blank,
-     * completely dark, or blown out. It intentionally avoids a rigid blur threshold because screen
-     * text and camera text have very different edge statistics; the settling logic then chooses a
-     * later usable frame instead of locking onto the first black transition frame.
+     * Cheap central-content quality guard for stable OCR.
+     *
+     * The diagnostic capture from Xiaomi 14T showed that smooth finger/hand occlusions had a broad
+     * luminance range, so the former blank-frame checks accepted them. Their decisive signature was
+     * extremely sparse horizontal detail: good settings frames measured roughly 5–7% text edges,
+     * while the obscured frames measured about 0.3–1.4%. Rejecting only very low edge density avoids
+     * locking the cloud queue onto a finger while retaining ordinary documents, remotes and labels.
      */
     private fun evaluateUsability(bitmap: Bitmap): FrameUsability {
         val largest = maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)
@@ -239,6 +242,9 @@ class FrameChangeDetector {
                 darkRatio >= 0.965 && edgeRatio < 0.010 -> FrameUsability(false, "almost_black")
                 brightRatio >= 0.70 && edgeRatio < 0.012 -> FrameUsability(false, "overexposed")
                 range <= 14 && edgeRatio < 0.008 -> FrameUsability(false, "blank_low_contrast")
+                edgeRatio < MIN_TEXT_EDGE_RATIO -> FrameUsability(false, "blurred_or_occluded")
+                brightRatio >= BRIGHT_OCCLUSION_RATIO && edgeRatio < BRIGHT_OCCLUSION_MAX_EDGE_RATIO ->
+                    FrameUsability(false, "bright_occlusion")
                 else -> FrameUsability(true, "usable")
             }
         } finally {
@@ -313,5 +319,8 @@ class FrameChangeDetector {
         const val DARK_LUMA = 12
         const val BRIGHT_LUMA = 248
         const val EDGE_DELTA = 24
+        const val MIN_TEXT_EDGE_RATIO = 0.020
+        const val BRIGHT_OCCLUSION_RATIO = 0.050
+        const val BRIGHT_OCCLUSION_MAX_EDGE_RATIO = 0.040
     }
 }
