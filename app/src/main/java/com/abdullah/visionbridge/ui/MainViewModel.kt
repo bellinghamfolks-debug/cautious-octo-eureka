@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.File
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val container = (application as VisionBridgeApp).container
@@ -89,6 +90,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setSpeechRate(rate: Float) = viewModelScope.launch {
         container.settingsRepository.setSpeechRate(rate)
+    }
+
+    fun markDiagnosticProblem(note: String) = viewModelScope.launch {
+        runCatching { container.diagnostics.markProblem(note) }
+            .onSuccess {
+                val status = container.diagnostics.storageStatus()
+                message.value = "تم تعليم لحظة المشكلة. محفوظ ${status.imageCount} صورة تشخيصية في ${status.sessionCount} جلسة"
+            }
+            .onFailure { message.value = it.message ?: "تعذر تعليم لحظة المشكلة" }
+    }
+
+    fun exportDiagnostics(onReady: (File) -> Unit) = viewModelScope.launch {
+        message.value = "يجري تجهيز ملف التشخيص الكامل مع الصور"
+        runCatching { container.diagnostics.export() }
+            .onSuccess { file ->
+                message.value = "تم تجهيز ملف التشخيص الكامل"
+                onReady(file)
+            }
+            .onFailure { message.value = it.message ?: "تعذر إنشاء ملف التشخيص" }
     }
 
     fun clearMessage() { message.value = null }
