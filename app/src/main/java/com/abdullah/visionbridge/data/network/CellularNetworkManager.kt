@@ -8,6 +8,7 @@ import android.net.NetworkRequest
 import android.os.SystemClock
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
@@ -20,14 +21,22 @@ class CellularNetworkManager(context: Context) {
     suspend fun <T> withNetwork(forceCellular: Boolean, block: suspend (Network?) -> T): T {
         val trace = currentCoroutineContext()[DiagnosticTrace]
         if (!forceCellular) {
-            DiagnosticHub.record("CELLULAR_NETWORK_ACQUISITION_SKIPPED", trace.fieldsOrEmpty())
-            return block(null)
+            DiagnosticHub.record(
+                "CELLULAR_NETWORK_ACQUISITION_SKIPPED",
+                trace.fieldsOrEmpty(mapOf("analysisBudgetMs" to ANALYSIS_BUDGET_MS)),
+            )
+            return runWithinAnalysisBudget(trace) { block(null) }
         }
 
         val acquisitionStarted = SystemClock.elapsedRealtimeNanos()
         DiagnosticHub.record(
             "CELLULAR_NETWORK_ACQUISITION_STARTED",
-            trace.fieldsOrEmpty(mapOf("timeoutMs" to REQUEST_TIMEOUT_MS)),
+            trace.fieldsOrEmpty(
+                mapOf(
+                    "timeoutMs" to REQUEST_TIMEOUT_MS,
+                    "analysisBudgetMs" to ANALYSIS_BUDGET_MS,
+                ),
+            ),
         )
         val lease = try {
             acquireCellularNetwork()
@@ -55,7 +64,7 @@ class CellularNetworkManager(context: Context) {
             ),
         )
         return try {
-            block(lease.network)
+            runWithinAnalysisBudget(trace) { block(lease.network) }
         } finally {
             val releaseStarted = SystemClock.elapsedRealtimeNanos()
             val released = runCatching {
@@ -70,6 +79,37 @@ class CellularNetworkManager(context: Context) {
                             (SystemClock.elapsedRealtimeNanos() - releaseStarted) / 1_000_000.0,
                     ),
                 ),
+            )
+        }
+    }
+
+    /**
+     * A single stalled Gemini request must never hold the one-frame cloud lane for 40–60 seconds.
+     * The diagnostic trace showed 35.8 seconds to response headers and 43.5 seconds for one request.
+     * Cancelling at a bounded budget lets the coordinator immediately promote the newest pending
+     * frame instead of making the user wait behind an obsolete target.
+     */
+    private suspend fun <T> runWithinAnalysisBudget(
+        trace: DiagnosticTrace?,
+        block: suspend () -> T,
+    ): T {
+        val started = SystemClock.elapsedRealtimeNanos()
+        return try {
+            withTimeout(ANALYSIS_BUDGET_MS) { block() }
+        } catch (error: TimeoutCancellationException) {
+            val elapsed = (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0
+            DiagnosticHub.record(
+                "CLOUD_ANALYSIS_BUDGET_EXCEEDED",
+                trace.fieldsOrEmpty(
+                    mapOf(
+                        "budgetMs" to ANALYSIS_BUDGET_MS,
+                        "elapsedMs" to elapsed,
+                    ),
+                ),
+            )
+            throw IllegalStateException(
+                "تأخر رد التحليل أكثر من ${ANALYSIS_BUDGET_MS / 1_000} ثانية، فتم تجاوزه وتحضير أحدث لقطة.",
+                error,
             )
         }
     }
@@ -113,5 +153,6 @@ class CellularNetworkManager(context: Context) {
 
     private companion object {
         const val REQUEST_TIMEOUT_MS = 15_000L
+        const val ANALYSIS_BUDGET_MS = 24_000L
     }
 }
