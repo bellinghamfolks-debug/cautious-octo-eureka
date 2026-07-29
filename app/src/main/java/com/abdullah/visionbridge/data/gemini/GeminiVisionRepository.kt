@@ -6,6 +6,7 @@ import android.util.Base64
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
 import com.abdullah.visionbridge.data.network.CellularNetworkManager
+import com.abdullah.visionbridge.data.network.DiagnosticNetworkEventListener
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AnalysisResult
 import com.abdullah.visionbridge.domain.model.AnalysisSource
@@ -51,6 +52,7 @@ class GeminiVisionRepository(
         .writeTimeout(15, TimeUnit.SECONDS)
         .callTimeout(45, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
+        .eventListenerFactory(DiagnosticNetworkEventListener.Factory())
         .build()
 
     override suspend fun analyzeStreaming(
@@ -105,11 +107,21 @@ class GeminiVisionRepository(
                     "IMAGE_ENHANCEMENT_AND_ENCODING_COMPLETED",
                     trace.fieldsOrEmpty(
                         mapOf(
-                            "durationMs" to (SystemClock.elapsedRealtimeNanos() - encodeStarted) / 1_000_000.0,
+                            "durationMs" to
+                                (SystemClock.elapsedRealtimeNanos() - encodeStarted) / 1_000_000.0,
                             "sourceWidth" to bitmap.width,
                             "sourceHeight" to bitmap.height,
+                            "outputWidth" to encodedImage.outputWidth,
+                            "outputHeight" to encodedImage.outputHeight,
                             "encodedBytes" to encodedImage.bytes.size,
                             "mimeType" to encodedImage.mimeType,
+                            "format" to encodedImage.format,
+                            "quality" to encodedImage.quality,
+                            "scaleMs" to encodedImage.scaleMs,
+                            "enhancementMs" to encodedImage.enhancementMs,
+                            "compressionMs" to encodedImage.compressionMs,
+                            "contrastLowPercentile" to encodedImage.contrastLowPercentile,
+                            "contrastHighPercentile" to encodedImage.contrastHighPercentile,
                             "mode" to mode.name,
                             "captureProfile" to captureProfile.name,
                             "sceneDescriptionStyle" to sceneDescriptionStyle.name,
@@ -123,8 +135,10 @@ class GeminiVisionRepository(
                     "IMAGE_BASE64_COMPLETED",
                     trace.fieldsOrEmpty(
                         mapOf(
-                            "durationMs" to (SystemClock.elapsedRealtimeNanos() - base64Started) / 1_000_000.0,
+                            "durationMs" to
+                                (SystemClock.elapsedRealtimeNanos() - base64Started) / 1_000_000.0,
                             "base64Characters" to base64Image.length,
+                            "base64Utf8Bytes" to base64Image.toByteArray(Charsets.UTF_8).size,
                         ),
                     ),
                 )
@@ -152,12 +166,14 @@ class GeminiVisionRepository(
 
                 val serializationStarted = SystemClock.elapsedRealtimeNanos()
                 val payloadJson = json.encodeToString(GenerateContentRequest.serializer(), payload)
+                val payloadBytes = payloadJson.toByteArray(Charsets.UTF_8).size
                 DiagnosticHub.record(
                     "GEMINI_PAYLOAD_SERIALIZED",
                     trace.fieldsOrEmpty(
                         mapOf(
-                            "durationMs" to (SystemClock.elapsedRealtimeNanos() - serializationStarted) / 1_000_000.0,
-                            "requestUtf8Bytes" to payloadJson.toByteArray(Charsets.UTF_8).size,
+                            "durationMs" to
+                                (SystemClock.elapsedRealtimeNanos() - serializationStarted) / 1_000_000.0,
+                            "requestUtf8Bytes" to payloadBytes,
                             "maxOutputTokens" to maxOutputTokens(mode, sceneDescriptionStyle),
                             "temperature" to if (mode == AnalysisMode.TEXT_READING) 0.0 else SCENE_TEMPERATURE,
                             "mediaResolution" to mediaResolution(mode, captureProfile, sceneDescriptionStyle),
@@ -177,12 +193,13 @@ class GeminiVisionRepository(
                         .build()
                 }
 
-                val request = Request.Builder()
+                val requestBuilder = Request.Builder()
                     .url("https://generativelanguage.googleapis.com/v1beta/models/$model:streamGenerateContent?alt=sse")
                     .header("x-goog-api-key", apiKey)
                     .header("Accept", "text/event-stream")
                     .post(payloadJson.toRequestBody(JSON_MEDIA_TYPE))
-                    .build()
+                if (trace != null) requestBuilder.tag(DiagnosticTrace::class.java, trace)
+                val request = requestBuilder.build()
 
                 val requestStarted = SystemClock.elapsedRealtimeNanos()
                 DiagnosticHub.record(
@@ -193,6 +210,7 @@ class GeminiVisionRepository(
                             "model" to model,
                             "method" to request.method,
                             "forcedCellular" to forceCellular,
+                            "requestUtf8Bytes" to payloadBytes,
                         ),
                     ),
                 )
@@ -220,7 +238,10 @@ class GeminiVisionRepository(
             DiagnosticHub.record(
                 "GEMINI_REPOSITORY_RETURNED",
                 trace.fieldsOrEmpty(
-                    mapOf("durationMs" to (SystemClock.elapsedRealtimeNanos() - repositoryStarted) / 1_000_000.0),
+                    mapOf(
+                        "durationMs" to
+                            (SystemClock.elapsedRealtimeNanos() - repositoryStarted) / 1_000_000.0,
+                    ),
                 ),
             )
         }
@@ -251,7 +272,8 @@ class GeminiVisionRepository(
                         mapOf(
                             "httpCode" to response.code,
                             "protocol" to response.protocol.toString(),
-                            "requestToHeadersMs" to (SystemClock.elapsedRealtimeNanos() - requestStartedElapsedNanos) / 1_000_000.0,
+                            "requestToHeadersMs" to
+                                (SystemClock.elapsedRealtimeNanos() - requestStartedElapsedNanos) / 1_000_000.0,
                             "contentType" to response.header("content-type"),
                         ),
                     ),
@@ -270,7 +292,8 @@ class GeminiVisionRepository(
                             "eventType" to type,
                             "data" to data,
                             "dataCharacters" to data.length,
-                            "requestToEventMs" to (SystemClock.elapsedRealtimeNanos() - requestStartedElapsedNanos) / 1_000_000.0,
+                            "requestToEventMs" to
+                                (SystemClock.elapsedRealtimeNanos() - requestStartedElapsedNanos) / 1_000_000.0,
                         ),
                     ),
                 )
@@ -286,7 +309,11 @@ class GeminiVisionRepository(
                         error,
                         trace.fieldsOrEmpty(mapOf("sseSequence" to sequence, "data" to data)),
                     )
-                    signals.trySend(StreamSignal.Failure(IllegalStateException("تعذر قراءة جزء Gemini المتدفق", error)))
+                    signals.trySend(
+                        StreamSignal.Failure(
+                            IllegalStateException("تعذر قراءة جزء Gemini المتدفق", error)
+                        )
+                    )
                     eventSource.cancel()
                     return
                 }
@@ -328,7 +355,8 @@ class GeminiVisionRepository(
                     trace.fieldsOrEmpty(
                         mapOf(
                             "eventCount" to eventSequence.get(),
-                            "requestToCloseMs" to (SystemClock.elapsedRealtimeNanos() - requestStartedElapsedNanos) / 1_000_000.0,
+                            "requestToCloseMs" to
+                                (SystemClock.elapsedRealtimeNanos() - requestStartedElapsedNanos) / 1_000_000.0,
                         ),
                     ),
                 )
@@ -346,7 +374,8 @@ class GeminiVisionRepository(
                         mapOf(
                             "httpCode" to response?.code,
                             "eventCount" to eventSequence.get(),
-                            "requestToFailureMs" to (SystemClock.elapsedRealtimeNanos() - requestStartedElapsedNanos) / 1_000_000.0,
+                            "requestToFailureMs" to
+                                (SystemClock.elapsedRealtimeNanos() - requestStartedElapsedNanos) / 1_000_000.0,
                         ),
                     ),
                 )
@@ -403,7 +432,12 @@ class GeminiVisionRepository(
         } catch (cancellation: CancellationException) {
             DiagnosticHub.record(
                 "SSE_CONSUMER_CANCELLED",
-                trace.fieldsOrEmpty(mapOf("reason" to cancellation.message, "eventCount" to eventSequence.get())),
+                trace.fieldsOrEmpty(
+                    mapOf(
+                        "reason" to cancellation.message,
+                        "eventCount" to eventSequence.get(),
+                    ),
+                ),
             )
             throw cancellation
         } finally {
@@ -424,11 +458,17 @@ class GeminiVisionRepository(
                 ),
             )
             speechBuffer.append(unresolved, accumulator.urgent).forEach { block ->
-                DiagnosticHub.record("SPEECH_BUFFER_BLOCK_READY", trace.fieldsOrEmpty(mapOf("text" to block, "urgent" to accumulator.urgent)))
+                DiagnosticHub.record(
+                    "SPEECH_BUFFER_BLOCK_READY",
+                    trace.fieldsOrEmpty(mapOf("text" to block, "urgent" to accumulator.urgent)),
+                )
                 onSpeechChunk(block, accumulator.urgent)
             }
             speechBuffer.finish().forEach { block ->
-                DiagnosticHub.record("SPEECH_BUFFER_TAIL_READY", trace.fieldsOrEmpty(mapOf("text" to block, "urgent" to accumulator.urgent)))
+                DiagnosticHub.record(
+                    "SPEECH_BUFFER_TAIL_READY",
+                    trace.fieldsOrEmpty(mapOf("text" to block, "urgent" to accumulator.urgent)),
+                )
                 onSpeechChunk(block, accumulator.urgent)
             }
         }
