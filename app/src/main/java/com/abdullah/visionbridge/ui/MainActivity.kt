@@ -122,7 +122,7 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier
                                 .height(56.dp)
                                 .semantics {
-                                    contentDescription = "مشاركة ملف التشخيص الكامل، ويتضمن الصور والنصوص والأزمنة"
+                                    contentDescription = "مشاركة حزمة تشخيص ذكية صغيرة تركز على آخر مشكلة وصورها القريبة"
                                 },
                         ) {
                             Text("مشاركة التشخيص")
@@ -163,19 +163,24 @@ class MainActivity : ComponentActivity() {
             val share = Intent(Intent.ACTION_SEND).apply {
                 type = "application/zip"
                 putExtra(Intent.EXTRA_STREAM, uri)
-                putExtra(Intent.EXTRA_SUBJECT, "VisionBridge complete diagnostic black box")
+                putExtra(Intent.EXTRA_SUBJECT, "VisionBridge smart diagnostic bundle")
                 putExtra(
                     Intent.EXTRA_TEXT,
-                    "ملف تشخيص رفيق الرؤية الكامل. يتضمن صور الإطارات، النصوص المستخرجة، نتائج Gemini، قرارات الثقة، وأزمنة الالتقاط والشبكة والنطق.",
+                    "حزمة تشخيص رفيق الرؤية الذكية. تركز على آخر مشكلة، وتضم الأحداث والصور الأقرب إليها ضمن ملف واحد محدود الحجم.",
                 )
                 clipData = ClipData.newRawUri("VisionBridge diagnostics", uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             DiagnosticHub.record(
                 "DIAGNOSTIC_SHARE_SHEET_OPENED",
-                mapOf("fileName" to file.name, "fileBytes" to file.length(), "includesImages" to true),
+                mapOf(
+                    "fileName" to file.name,
+                    "fileBytes" to file.length(),
+                    "includesImages" to true,
+                    "smartFocusedExport" to true,
+                ),
             )
-            this@MainActivity.startActivity(Intent.createChooser(share, "مشاركة ملف التشخيص الكامل"))
+            this@MainActivity.startActivity(Intent.createChooser(share, "مشاركة حزمة التشخيص الذكية"))
         }.onFailure { error ->
             DiagnosticHub.failure("DIAGNOSTIC_SHARE", error)
             Toast.makeText(
