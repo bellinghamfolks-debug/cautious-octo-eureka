@@ -2,21 +2,33 @@ package com.abdullah.visionbridge.data.gemini
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.os.SystemClock
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.CaptureProfile
 import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
 import java.io.ByteArrayOutputStream
 import kotlin.math.roundToInt
 
-/**
- * Prepares one captured frame for Gemini. The encoder adapts to the user's requested latency:
- * stable OCR keeps a lossless high-resolution rendition, fast OCR uses a smaller high-quality JPEG,
- * and brief scene description uses the lightest useful image. No second frame is used.
- */
+/** Prepares one frame and reports the latency and parameters of every image-processing phase. */
 class TextImageEnhancer {
     data class EncodedImage(
         val bytes: ByteArray,
         val mimeType: String,
+        val outputWidth: Int,
+        val outputHeight: Int,
+        val format: String,
+        val quality: Int,
+        val scaleMs: Double,
+        val enhancementMs: Double,
+        val compressionMs: Double,
+        val contrastLowPercentile: Int? = null,
+        val contrastHighPercentile: Int? = null,
+    )
+
+    private data class EnhancementResult(
+        val bitmap: Bitmap,
+        val lowPercentile: Int,
+        val highPercentile: Int,
     )
 
     fun prepare(
@@ -26,38 +38,45 @@ class TextImageEnhancer {
         sceneDescriptionStyle: SceneDescriptionStyle,
     ): EncodedImage = when (mode) {
         AnalysisMode.TEXT_READING -> if (captureProfile == CaptureProfile.FAST_TEXT) {
-            prepareFastText(source)
+            prepareText(source, accurate = false)
         } else {
-            prepareAccurateText(source)
+            prepareText(source, accurate = true)
         }
         AnalysisMode.SCENE_DESCRIPTION -> prepareScene(source, sceneDescriptionStyle)
     }
 
-    private fun prepareAccurateText(source: Bitmap): EncodedImage {
-        val scaled = scaleForAccurateText(source)
-        val enhanced = enhanceTextContrast(scaled)
-        if (scaled !== source) scaled.recycle()
-        return try {
-            EncodedImage(
-                bytes = compress(enhanced, Bitmap.CompressFormat.PNG, 100),
-                mimeType = "image/png",
-            )
-        } finally {
-            enhanced.recycle()
-        }
-    }
+    private fun prepareText(source: Bitmap, accurate: Boolean): EncodedImage {
+        val scaleStarted = SystemClock.elapsedRealtimeNanos()
+        val scaled = if (accurate) scaleForAccurateText(source) else scaleForFastText(source)
+        val scaleMs = elapsedMs(scaleStarted)
 
-    private fun prepareFastText(source: Bitmap): EncodedImage {
-        val scaled = scaleForFastText(source)
-        val enhanced = enhanceTextContrast(scaled)
+        val enhancementStarted = SystemClock.elapsedRealtimeNanos()
+        val enhancement = enhanceTextContrast(scaled)
+        val enhancementMs = elapsedMs(enhancementStarted)
         if (scaled !== source) scaled.recycle()
+
+        val format = if (accurate) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
+        val formatName = if (accurate) "PNG" else "JPEG"
+        val quality = if (accurate) 100 else FAST_TEXT_JPEG_QUALITY
         return try {
+            val compressionStarted = SystemClock.elapsedRealtimeNanos()
+            val bytes = compress(enhancement.bitmap, format, quality)
+            val compressionMs = elapsedMs(compressionStarted)
             EncodedImage(
-                bytes = compress(enhanced, Bitmap.CompressFormat.JPEG, FAST_TEXT_JPEG_QUALITY),
-                mimeType = "image/jpeg",
+                bytes = bytes,
+                mimeType = if (accurate) "image/png" else "image/jpeg",
+                outputWidth = enhancement.bitmap.width,
+                outputHeight = enhancement.bitmap.height,
+                format = formatName,
+                quality = quality,
+                scaleMs = scaleMs,
+                enhancementMs = enhancementMs,
+                compressionMs = compressionMs,
+                contrastLowPercentile = enhancement.lowPercentile,
+                contrastHighPercentile = enhancement.highPercentile,
             )
         } finally {
-            enhanced.recycle()
+            enhancement.bitmap.recycle()
         }
     }
 
@@ -75,11 +94,23 @@ class TextImageEnhancer {
         } else {
             COMPREHENSIVE_SCENE_JPEG_QUALITY
         }
+        val scaleStarted = SystemClock.elapsedRealtimeNanos()
         val scaled = scaleToMaxEdge(source, maxEdge)
+        val scaleMs = elapsedMs(scaleStarted)
         return try {
+            val compressionStarted = SystemClock.elapsedRealtimeNanos()
+            val bytes = compress(scaled, Bitmap.CompressFormat.JPEG, quality)
+            val compressionMs = elapsedMs(compressionStarted)
             EncodedImage(
-                bytes = compress(scaled, Bitmap.CompressFormat.JPEG, quality),
+                bytes = bytes,
                 mimeType = "image/jpeg",
+                outputWidth = scaled.width,
+                outputHeight = scaled.height,
+                format = "JPEG",
+                quality = quality,
+                scaleMs = scaleMs,
+                enhancementMs = 0.0,
+                compressionMs = compressionMs,
             )
         } finally {
             if (scaled !== source) scaled.recycle()
@@ -108,11 +139,8 @@ class TextImageEnhancer {
         return scaleToEdge(source, target)
     }
 
-    /**
-     * Fast O(n) enhancement using percentile contrast stretching plus a five-point unsharp mask.
-     * Two integer arrays are reused to keep peak memory practical on a live phone capture.
-     */
-    private fun enhanceTextContrast(source: Bitmap): Bitmap {
+    /** Percentile contrast stretching plus a five-point unsharp mask. */
+    private fun enhanceTextContrast(source: Bitmap): EnhancementResult {
         val width = source.width
         val height = source.height
         val size = width * height
@@ -155,7 +183,11 @@ class TextImageEnhancer {
             }
         }
 
-        return Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
+        return EnhancementResult(
+            bitmap = Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888),
+            lowPercentile = low,
+            highPercentile = high,
+        )
     }
 
     private fun percentile(histogram: IntArray, total: Int, fraction: Double): Int {
@@ -190,6 +222,9 @@ class TextImageEnhancer {
             check(source.compress(format, quality, output)) { "تعذر تجهيز إطار الصورة" }
             output.toByteArray()
         }
+
+    private fun elapsedMs(startedAtNanos: Long): Double =
+        (SystemClock.elapsedRealtimeNanos() - startedAtNanos) / 1_000_000.0
 
     private companion object {
         const val MIN_ACCURATE_TEXT_EDGE = 2_000

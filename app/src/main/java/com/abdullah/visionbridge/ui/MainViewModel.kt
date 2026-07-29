@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.abdullah.visionbridge.VisionBridgeApp
+import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
@@ -93,17 +94,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun markDiagnosticProblem(note: String) = viewModelScope.launch {
-        runCatching { container.diagnostics.markProblem(note) }
-            .onSuccess {
-                val status = container.diagnostics.storageStatus()
-                message.value = "تم تعليم لحظة المشكلة. محفوظ ${status.imageCount} صورة تشخيصية في ${status.sessionCount} جلسة"
-            }
-            .onFailure { message.value = it.message ?: "تعذر تعليم لحظة المشكلة" }
+        runCatching {
+            DiagnosticHub.markProblem(note)
+            DiagnosticHub.storageStatus()
+        }.onSuccess { status ->
+            message.value =
+                "تم تعليم لحظة المشكلة وربطها بأقرب إطار. محفوظ ${status.imageCount} صورة تشخيصية في ${status.sessionCount} جلسة"
+        }.onFailure { message.value = it.message ?: "تعذر تعليم لحظة المشكلة" }
     }
 
     fun exportDiagnostics(onReady: (File) -> Unit) = viewModelScope.launch {
-        message.value = "يجري تجهيز ملف التشخيص الكامل مع الصور"
-        runCatching { container.diagnostics.export() }
+        message.value = "يجري إكمال الكتابات وتجهيز ملف التشخيص الكامل مع الصور"
+        runCatching { DiagnosticHub.export() }
             .onSuccess { file ->
                 message.value = "تم تجهيز ملف التشخيص الكامل"
                 onReady(file)
