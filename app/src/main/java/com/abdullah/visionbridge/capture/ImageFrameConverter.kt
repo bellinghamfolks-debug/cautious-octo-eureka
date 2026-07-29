@@ -2,6 +2,7 @@ package com.abdullah.visionbridge.capture
 
 import android.graphics.Bitmap
 import android.media.Image
+import com.abdullah.visionbridge.data.diagnostics.DiagnosticsHub
 import java.nio.ByteBuffer
 
 object ImageFrameConverter {
@@ -17,10 +18,12 @@ object ImageFrameConverter {
         buffer.rewind()
         val padded = Bitmap.createBitmap(paddedWidth, image.height, Bitmap.Config.ARGB_8888)
         padded.copyPixelsFromBuffer(buffer)
-        if (paddedWidth == image.width) return padded
-
-        val cropped = Bitmap.createBitmap(padded, 0, 0, image.width, image.height)
-        padded.recycle()
-        return cropped
+        val result = if (paddedWidth == image.width) {
+            padded
+        } else {
+            Bitmap.createBitmap(padded, 0, 0, image.width, image.height).also { padded.recycle() }
+        }
+        DiagnosticsHub.frameConverted(result)
+        return result
     }
 }
