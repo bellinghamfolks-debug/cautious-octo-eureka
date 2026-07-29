@@ -19,8 +19,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -102,24 +103,30 @@ class MainActivity : ComponentActivity() {
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                         horizontalAlignment = Alignment.End,
                     ) {
-                        ExtendedFloatingActionButton(
+                        Button(
                             onClick = { this@MainActivity.showProblemMarkerDialog() },
-                            modifier = Modifier.semantics {
-                                contentDescription = "تعليم لحظة حدوث مشكلة في القراءة أو وصف المشهد داخل ملف التشخيص"
-                            },
-                            text = { Text("حدثت مشكلة الآن") },
-                        )
-                        ExtendedFloatingActionButton(
+                            modifier = Modifier
+                                .height(56.dp)
+                                .semantics {
+                                    contentDescription = "تعليم لحظة حدوث مشكلة في القراءة أو وصف المشهد داخل ملف التشخيص"
+                                },
+                        ) {
+                            Text("حدثت مشكلة الآن")
+                        }
+                        Button(
                             onClick = {
                                 viewModel.exportDiagnostics { file ->
                                     this@MainActivity.shareDiagnosticFile(file)
                                 }
                             },
-                            modifier = Modifier.semantics {
-                                contentDescription = "مشاركة ملف التشخيص الكامل، ويتضمن الصور والنصوص والأزمنة"
-                            },
-                            text = { Text("مشاركة التشخيص") },
-                        )
+                            modifier = Modifier
+                                .height(56.dp)
+                                .semantics {
+                                    contentDescription = "مشاركة ملف التشخيص الكامل، ويتضمن الصور والنصوص والأزمنة"
+                                },
+                        ) {
+                            Text("مشاركة التشخيص")
+                        }
                     }
                 }
             }
