@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.abdullah.visionbridge.VisionBridgeApp
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
+import com.abdullah.visionbridge.data.diagnostics.SmartDiagnosticExport
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
@@ -17,6 +18,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.Locale
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val container = (application as VisionBridgeApp).container
@@ -104,13 +106,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun exportDiagnostics(onReady: (File) -> Unit) = viewModelScope.launch {
-        message.value = "يجري إكمال الكتابات وتجهيز ملف التشخيص الكامل مع الصور"
-        runCatching { DiagnosticHub.export() }
-            .onSuccess { file ->
-                message.value = "تم تجهيز ملف التشخيص الكامل"
-                onReady(file)
-            }
-            .onFailure { message.value = it.message ?: "تعذر إنشاء ملف التشخيص" }
+        message.value = "يجري تجهيز حزمة تشخيص ذكية صغيرة حول آخر مشكلة"
+        runCatching {
+            DiagnosticHub.record("SMART_DIAGNOSTIC_EXPORT_REQUESTED")
+            DiagnosticHub.flush()
+            SmartDiagnosticExport.create(getApplication())
+        }.onSuccess { file ->
+            val megabytes = file.length().toDouble() / (1024.0 * 1024.0)
+            message.value = "تم تجهيز حزمة التشخيص: ${String.format(Locale.US, "%.1f", megabytes)} ميجابايت"
+            onReady(file)
+        }.onFailure { message.value = it.message ?: "تعذر إنشاء حزمة التشخيص الذكية" }
     }
 
     fun clearMessage() { message.value = null }
