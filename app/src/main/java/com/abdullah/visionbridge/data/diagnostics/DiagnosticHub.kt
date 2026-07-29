@@ -22,6 +22,8 @@ import kotlin.coroutines.CoroutineContext
  * order. Export is a queue command, so everything submitted before it is guaranteed to be included.
  */
 object DiagnosticHub {
+    private const val FATAL_FLUSH_TIMEOUT_MS = 2_000L
+
     private sealed interface Command {
         data class Record(val type: String, val fields: Map<String, Any?>) : Command
         data class Failure(
@@ -97,7 +99,11 @@ object DiagnosticHub {
     ) {
         val copyStarted = SystemClock.elapsedRealtimeNanos()
         val safeCopy = runCatching { bitmap.copy(Bitmap.Config.ARGB_8888, false) }.getOrElse { error ->
-            failure("DIAGNOSTIC_FRAME_COPY", error, metadata + mapOf("frameId" to frameId, "stage" to stage))
+            failure(
+                "DIAGNOSTIC_FRAME_COPY",
+                error,
+                metadata + mapOf("frameId" to frameId, "stage" to stage),
+            )
             return
         }
         val copyEnded = SystemClock.elapsedRealtimeNanos()
@@ -119,7 +125,11 @@ object DiagnosticHub {
     ) {
         val copyStarted = SystemClock.elapsedRealtimeNanos()
         val safeCopy = runCatching { bitmap.copy(Bitmap.Config.ARGB_8888, false) }.getOrElse { error ->
-            failure("DIAGNOSTIC_PREVIEW_COPY", error, metadata + mapOf("frameId" to frameId, "reason" to reason))
+            failure(
+                "DIAGNOSTIC_PREVIEW_COPY",
+                error,
+                metadata + mapOf("frameId" to frameId, "reason" to reason),
+            )
             return
         }
         val copyEnded = SystemClock.elapsedRealtimeNanos()
@@ -191,7 +201,8 @@ object DiagnosticHub {
     }
 
     fun sinceCaptureMs(capturedAtElapsedNanos: Long): Double =
-        (SystemClock.elapsedRealtimeNanos() - capturedAtElapsedNanos).coerceAtLeast(0L) / 1_000_000.0
+        (SystemClock.elapsedRealtimeNanos() - capturedAtElapsedNanos)
+            .coerceAtLeast(0L) / 1_000_000.0
 
     private suspend fun handle(command: Command) {
         val target = recorder
@@ -213,20 +224,31 @@ object DiagnosticHub {
                     target.recordFailure(
                         "SAVE_DIAGNOSTIC_FRAME",
                         error,
-                        command.metadata + mapOf("frameId" to command.frameId, "stage" to command.stage),
+                        command.metadata + mapOf(
+                            "frameId" to command.frameId,
+                            "stage" to command.stage,
+                        ),
                     )
                 }
             } finally {
                 command.bitmap.recycle()
             }
             is Command.Preview -> try {
-                target.recordPreviewFrame(command.bitmap, command.frameId, command.reason, command.metadata)
+                target.recordPreviewFrame(
+                    command.bitmap,
+                    command.frameId,
+                    command.reason,
+                    command.metadata,
+                )
             } catch (error: Throwable) {
                 runCatching {
                     target.recordFailure(
                         "SAVE_DIAGNOSTIC_PREVIEW",
                         error,
-                        command.metadata + mapOf("frameId" to command.frameId, "reason" to command.reason),
+                        command.metadata + mapOf(
+                            "frameId" to command.frameId,
+                            "reason" to command.reason,
+                        ),
                     )
                 }
             } finally {
@@ -248,7 +270,10 @@ object DiagnosticHub {
                             command.nearestTrace.capturedAtElapsedNanos
                         ),
                     ),
-                ) ?: mapOf("note" to command.note, "nearestTraceAvailable" to false)
+                ) ?: mapOf(
+                    "note" to command.note,
+                    "nearestTraceAvailable" to false,
+                )
                 val result = runCatching { target.record("USER_MARKED_PROBLEM", fields) }
                 command.completion?.let { completion ->
                     val failure = result.exceptionOrNull()
@@ -298,13 +323,12 @@ object DiagnosticHub {
         }
     }
 
-    private fun sinceCaptureFromMetadata(metadata: Map<String, Any?>, nowNanos: Long): Double? {
+    private fun sinceCaptureFromMetadata(
+        metadata: Map<String, Any?>,
+        nowNanos: Long,
+    ): Double? {
         val captured = (metadata["capturedAtElapsedNanos"] as? Number)?.toLong() ?: return null
         return (nowNanos - captured).coerceAtLeast(0L) / 1_000_000.0
-    }
-
-    private companion object {
-        const val FATAL_FLUSH_TIMEOUT_MS = 2_000L
     }
 }
 
