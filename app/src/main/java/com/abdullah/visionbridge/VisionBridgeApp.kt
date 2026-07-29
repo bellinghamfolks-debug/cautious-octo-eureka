@@ -13,7 +13,7 @@ class VisionBridgeApp : Application() {
 
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
-            container.diagnostics.recordFatalBlocking(error)
+            DiagnosticHub.recordFatalBlocking(error)
             previous?.uncaughtException(thread, error)
         }
     }
