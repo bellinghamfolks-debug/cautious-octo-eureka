@@ -3,6 +3,7 @@ package com.abdullah.visionbridge.di
 import android.content.Context
 import com.abdullah.visionbridge.capture.CaptureRuntime
 import com.abdullah.visionbridge.capture.FrameAnalysisCoordinator
+import com.abdullah.visionbridge.data.diagnostics.DiagnosticRecorder
 import com.abdullah.visionbridge.data.gemini.GeminiVisionRepository
 import com.abdullah.visionbridge.data.network.CellularNetworkManager
 import com.abdullah.visionbridge.data.ocr.LocalTextRecognizer
@@ -17,6 +18,7 @@ class AppContainer(context: Context) {
     private val appContext = context.applicationContext
 
     val runtime = CaptureRuntime()
+    val diagnostics = DiagnosticRecorder(appContext)
     val settingsRepository: SettingsRepository = SettingsRepositoryImpl(appContext)
     val apiKeyStore: ApiKeyStore = AndroidKeystoreApiKeyStore(appContext)
     private val networkManager = CellularNetworkManager(appContext)
@@ -31,5 +33,6 @@ class AppContainer(context: Context) {
         analyzeFrame = AnalyzeFrameUseCase(visionRepository),
         tts = tts,
         runtime = runtime,
+        diagnostics = diagnostics,
     )
 }
