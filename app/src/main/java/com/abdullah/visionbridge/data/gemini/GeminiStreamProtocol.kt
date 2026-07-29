@@ -56,6 +56,8 @@ class GeminiStreamAccumulator(
                     inferred = true
                     return ""
                 }
+                // A malformed or truncated protocol line is internal control data, never user text.
+                if (headerText.trimStart().startsWith(META_PREFIX)) return ""
                 return appendBody(headerText + if (remainder.isNotEmpty()) "\n$remainder" else "")
             }
             return appendBody(remainder)
@@ -64,6 +66,13 @@ class GeminiStreamAccumulator(
         headerResolved = true
         val fallback = preamble.toString()
         preamble.clear()
+        if (fallback.trimStart().startsWith(META_PREFIX) || fallback.trimStart().startsWith(QUALITY_PREFIX)) {
+            if (requireQualityHeader) {
+                legible = false
+                inferred = true
+            }
+            return ""
+        }
         return if (requireQualityHeader) {
             legible = false
             inferred = true
@@ -78,6 +87,19 @@ class GeminiStreamAccumulator(
         headerResolved = true
         val remainder = preamble.toString()
         preamble.clear()
+
+        // A cancelled SSE stream frequently ends halfway through "META|language=...". The previous
+        // fallback exposed that protocol fragment on screen and through TTS. Control lines are now
+        // discarded even when the request closes before its first newline.
+        val trimmed = remainder.trimStart()
+        if (trimmed.startsWith(META_PREFIX) || trimmed.startsWith(QUALITY_PREFIX)) {
+            if (requireQualityHeader) {
+                legible = false
+                inferred = true
+            }
+            return ""
+        }
+
         return if (requireQualityHeader) {
             legible = false
             inferred = true
