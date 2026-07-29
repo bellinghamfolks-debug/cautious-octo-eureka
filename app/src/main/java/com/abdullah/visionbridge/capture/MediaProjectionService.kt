@@ -129,6 +129,11 @@ class MediaProjectionService : Service() {
                     stopSelf()
                 }
             }
+            ACTION_MARK_PROBLEM -> {
+                DiagnosticHub.markProblemAsync("تم تعليم المشكلة مباشرة من إشعار الالتقاط")
+                DiagnosticHub.record("PROBLEM_MARKED_FROM_NOTIFICATION")
+                container.runtime.notice("تم تعليم لحظة المشكلة وربطها بأقرب إطار")
+            }
             ACTION_STOP -> {
                 releaseProjection(stopProjection = true, reason = "user_stopped_capture")
                 container.runtime.stopped()
@@ -158,7 +163,7 @@ class MediaProjectionService : Service() {
         }
         runCatching {
             runBlocking(Dispatchers.IO) {
-                container.diagnostics.startSession(settingsMap(activeSettings))
+                DiagnosticHub.startSession(settingsMap(activeSettings))
             }
             diagnosticSessionOpen = true
 
@@ -216,6 +221,7 @@ class MediaProjectionService : Service() {
             capturedAtEpochMs = acquiredAtEpochMs,
             capturedAtElapsedNanos = acquiredAtElapsedNanos,
         )
+        DiagnosticHub.observeTrace(trace)
 
         val image = runCatching { reader.acquireLatestImage() }.getOrElse { error ->
             DiagnosticHub.failure("ACQUIRE_LATEST_IMAGE", error, trace.fields())
@@ -257,51 +263,72 @@ class MediaProjectionService : Service() {
         }
         val intervalSincePrevious = if (lastFrameAt == 0L) Long.MAX_VALUE else now - lastFrameAt
         if (intervalSincePrevious < minimumInterval) {
-            recordDroppedFrame(bitmap, trace, "capture_interval_throttle", mapOf(
-                "minimumIntervalMs" to minimumInterval,
-                "actualIntervalMs" to intervalSincePrevious,
-            ))
+            recordDroppedFrame(
+                bitmap,
+                trace,
+                "capture_interval_throttle",
+                mapOf(
+                    "minimumIntervalMs" to minimumInterval,
+                    "actualIntervalMs" to intervalSincePrevious,
+                ),
+            )
             bitmap.recycle()
             return
         }
 
         val detectorStarted = SystemClock.elapsedRealtimeNanos()
-        val shouldAnalyze = when {
-            settings.mode == AnalysisMode.SCENE_DESCRIPTION -> frameChangeDetector.shouldProcessFast(
+        val changeDecision = when {
+            settings.mode == AnalysisMode.SCENE_DESCRIPTION -> frameChangeDetector.evaluateFast(
                 bitmap = bitmap,
                 minimumMeanDifference = SCENE_MIN_MEAN_DIFFERENCE,
                 minimumChangedRatio = SCENE_MIN_CHANGED_RATIO,
             )
-            settings.captureProfile == CaptureProfile.STABLE -> frameChangeDetector.shouldProcessStable(
+            settings.captureProfile == CaptureProfile.STABLE -> frameChangeDetector.evaluateStable(
                 bitmap = bitmap,
                 minimumMeanDifference = STABLE_MIN_MEAN_DIFFERENCE,
                 minimumChangedRatio = STABLE_MIN_CHANGED_RATIO,
                 stableForMs = STABLE_FRAME_DURATION_MS,
                 now = now,
             )
-            else -> frameChangeDetector.shouldProcessFast(
+            else -> frameChangeDetector.evaluateFast(
                 bitmap = bitmap,
                 minimumMeanDifference = FAST_MIN_MEAN_DIFFERENCE,
                 minimumChangedRatio = FAST_MIN_CHANGED_RATIO,
             )
         }
         val detectorMs = (SystemClock.elapsedRealtimeNanos() - detectorStarted) / 1_000_000.0
-
-        DiagnosticHub.record(
-            "FRAME_CHANGE_DECISION",
-            trace.fields(
-                mapOf(
-                    "shouldAnalyze" to shouldAnalyze,
-                    "detectorMs" to detectorMs,
-                    "mode" to settings.mode.name,
-                    "captureProfile" to settings.captureProfile.name,
-                    "stableForMs" to if (settings.captureProfile == CaptureProfile.STABLE) STABLE_FRAME_DURATION_MS else 0L,
-                ),
-            ),
+        val changeThresholds = when {
+            settings.mode == AnalysisMode.SCENE_DESCRIPTION -> Pair(
+                SCENE_MIN_MEAN_DIFFERENCE,
+                SCENE_MIN_CHANGED_RATIO,
+            )
+            settings.captureProfile == CaptureProfile.STABLE -> Pair(
+                STABLE_MIN_MEAN_DIFFERENCE,
+                STABLE_MIN_CHANGED_RATIO,
+            )
+            else -> Pair(FAST_MIN_MEAN_DIFFERENCE, FAST_MIN_CHANGED_RATIO)
+        }
+        val changeFields = mapOf(
+            "shouldAnalyze" to changeDecision.accepted,
+            "decisionReason" to changeDecision.reason,
+            "meanAbsoluteDifference" to changeDecision.meanAbsoluteDifference,
+            "changedPixelRatio" to changeDecision.changedPixelRatio,
+            "minimumMeanDifference" to changeThresholds.first,
+            "minimumChangedRatio" to changeThresholds.second,
+            "candidateMeanAbsoluteDifference" to changeDecision.candidateMeanAbsoluteDifference,
+            "candidateChangedPixelRatio" to changeDecision.candidateChangedPixelRatio,
+            "candidateStableElapsedMs" to changeDecision.candidateStableElapsedMs,
+            "requiredStableMs" to if (settings.captureProfile == CaptureProfile.STABLE) STABLE_FRAME_DURATION_MS else 0L,
+            "thresholdLogic" to if (settings.captureProfile == CaptureProfile.STABLE) "AND" else "OR",
+            "detectorMs" to detectorMs,
+            "mode" to settings.mode.name,
+            "captureProfile" to settings.captureProfile.name,
         )
 
-        if (!shouldAnalyze) {
-            recordDroppedFrame(bitmap, trace, "change_detector_rejected", mapOf("detectorMs" to detectorMs))
+        DiagnosticHub.record("FRAME_CHANGE_DECISION", trace.fields(changeFields))
+
+        if (!changeDecision.accepted) {
+            recordDroppedFrame(bitmap, trace, "change_detector_rejected", changeFields)
             bitmap.recycle()
             return
         }
@@ -317,18 +344,23 @@ class MediaProjectionService : Service() {
         } else {
             TEXT_TARGET_CHANGE_RATIO
         }
-        val visualTargetChanged = targetChangeDetector.shouldProcessFast(
+        val targetDecision = targetChangeDetector.evaluateFast(
             bitmap = bitmap,
             minimumMeanDifference = targetMean,
             minimumChangedRatio = targetRatio,
         )
+        val visualTargetChanged = targetDecision.accepted
         DiagnosticHub.record(
             "VISUAL_TARGET_DECISION",
             trace.fields(
                 mapOf(
                     "targetChanged" to visualTargetChanged,
+                    "decisionReason" to targetDecision.reason,
+                    "meanAbsoluteDifference" to targetDecision.meanAbsoluteDifference,
+                    "changedPixelRatio" to targetDecision.changedPixelRatio,
                     "minimumMeanDifference" to targetMean,
-                    "minimumChangedRatio" to targetRatio,
+                    "minimumChangedPixelRatio" to targetRatio,
+                    "thresholdLogic" to "OR",
                 ),
             ),
         )
@@ -345,6 +377,8 @@ class MediaProjectionService : Service() {
                     "mode" to settings.mode.name,
                     "captureProfile" to settings.captureProfile.name,
                     "targetChanged" to visualTargetChanged,
+                    "frameMeanAbsoluteDifference" to changeDecision.meanAbsoluteDifference,
+                    "frameChangedPixelRatio" to changeDecision.changedPixelRatio,
                 ),
             ),
         )
@@ -403,7 +437,10 @@ class MediaProjectionService : Service() {
                 DiagnosticHub.record(
                     "ANALYSIS_DISPATCH_COMPLETED",
                     frame.trace.fields(
-                        mapOf("dispatchDurationMs" to (SystemClock.elapsedRealtimeNanos() - dispatchStarted) / 1_000_000.0),
+                        mapOf(
+                            "dispatchDurationMs" to
+                                (SystemClock.elapsedRealtimeNanos() - dispatchStarted) / 1_000_000.0,
+                        ),
                     ),
                 )
             } catch (error: Throwable) {
@@ -449,7 +486,10 @@ class MediaProjectionService : Service() {
         frameJob = null
         synchronized(frameQueueLock) {
             pendingFrame?.let { pending ->
-                DiagnosticHub.record("FRAME_DROPPED", pending.trace.fields(mapOf("reason" to "projection_released")))
+                DiagnosticHub.record(
+                    "FRAME_DROPPED",
+                    pending.trace.fields(mapOf("reason" to "projection_released")),
+                )
                 pending.bitmap.recycle()
             }
             pendingFrame = null
@@ -472,7 +512,7 @@ class MediaProjectionService : Service() {
         if (diagnosticSessionOpen) {
             diagnosticSessionOpen = false
             runCatching {
-                runBlocking(Dispatchers.IO) { container.diagnostics.endSession(reason) }
+                runBlocking(Dispatchers.IO) { DiagnosticHub.endSession(reason) }
             }
         }
     }
@@ -517,9 +557,15 @@ class MediaProjectionService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val stopIntent = PendingIntent.getService(
+        val problemIntent = PendingIntent.getService(
             this,
             2,
+            markProblemIntent(this),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val stopIntent = PendingIntent.getService(
+            this,
+            3,
             stopIntent(this),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -531,6 +577,7 @@ class MediaProjectionService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .addAction(0, getString(R.string.notification_mark_problem), problemIntent)
             .addAction(0, getString(R.string.notification_stop), stopIntent)
             .build()
 
@@ -568,6 +615,7 @@ class MediaProjectionService : Service() {
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_RESULT_DATA = "result_data"
         private const val ACTION_START = "com.abdullah.visionbridge.START_CAPTURE"
+        private const val ACTION_MARK_PROBLEM = "com.abdullah.visionbridge.MARK_DIAGNOSTIC_PROBLEM"
         private const val ACTION_STOP = "com.abdullah.visionbridge.STOP_CAPTURE"
 
         private const val STABLE_FRAME_INTERVAL_MS = 400L
@@ -595,6 +643,10 @@ class MediaProjectionService : Service() {
                 putExtra(EXTRA_RESULT_CODE, resultCode)
                 putExtra(EXTRA_RESULT_DATA, resultData)
             }
+
+        fun markProblemIntent(context: Context) = Intent(context, MediaProjectionService::class.java).apply {
+            action = ACTION_MARK_PROBLEM
+        }
 
         fun stopIntent(context: Context) = Intent(context, MediaProjectionService::class.java).apply {
             action = ACTION_STOP
