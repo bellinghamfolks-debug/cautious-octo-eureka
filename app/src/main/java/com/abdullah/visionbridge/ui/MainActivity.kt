@@ -3,18 +3,21 @@ package com.abdullah.visionbridge.ui
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
-import android.content.Context
+import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
+import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -27,17 +30,14 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.lifecycleScope
-import com.abdullah.visionbridge.VisionBridgeApp
 import com.abdullah.visionbridge.capture.MediaProjectionService
-import com.abdullah.visionbridge.data.diagnostics.DiagnosticsHub
+import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.ui.theme.VisionBridgeTheme
-import kotlinx.coroutines.launch
+import java.io.File
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
     private val projectionManager by lazy { getSystemService(MediaProjectionManager::class.java) }
-    private val container by lazy { (application as VisionBridgeApp).container }
     private var startCaptureAfterNotificationPermission = false
 
     private val projectionLauncher = registerForActivityResult(
@@ -45,20 +45,20 @@ class MainActivity : ComponentActivity() {
     ) { result ->
         val data = result.data
         if (result.resultCode == Activity.RESULT_OK && data != null) {
-            DiagnosticsHub.stage("SCREEN_CAPTURE_PERMISSION_GRANTED")
+            DiagnosticHub.record("SCREEN_CAPTURE_PERMISSION_GRANTED")
             ContextCompat.startForegroundService(
                 this,
                 MediaProjectionService.startIntent(this, result.resultCode, data),
             )
         } else {
-            DiagnosticsHub.stage("SCREEN_CAPTURE_PERMISSION_DENIED")
+            DiagnosticHub.record("SCREEN_CAPTURE_PERMISSION_DENIED", mapOf("resultCode" to result.resultCode))
         }
     }
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) {
-        DiagnosticsHub.stage("NOTIFICATION_PERMISSION_RESULT", mapOf("granted" to it))
+    ) { granted ->
+        DiagnosticHub.record("NOTIFICATION_PERMISSION_RESULT", mapOf("granted" to granted))
         if (startCaptureAfterNotificationPermission) {
             startCaptureAfterNotificationPermission = false
             launchProjectionConsent()
@@ -67,7 +67,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        DiagnosticsHub.stage("MAIN_ACTIVITY_CREATED")
+        DiagnosticHub.record("MAIN_ACTIVITY_CREATED")
         setContent {
             val state = viewModel.uiState.collectAsStateWithLifecycle().value
             VisionBridgeTheme {
@@ -88,74 +88,93 @@ class MainActivity : ComponentActivity() {
                         onSpeechRateChange = viewModel::setSpeechRate,
                         onStartCapture = ::requestCapture,
                         onStopCapture = {
-                            DiagnosticsHub.stage("USER_STOP_CAPTURE")
+                            DiagnosticHub.record("USER_STOP_CAPTURE")
                             startService(MediaProjectionService.stopIntent(this))
                         },
                         onMessageConsumed = viewModel::clearMessage,
                     )
-                    ExtendedFloatingActionButton(
-                        onClick = ::showDiagnosticPrivacyPrompt,
+                    Column(
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
-                            .padding(16.dp)
-                            .semantics {
-                                contentDescription = "مشاركة ملف التشخيص، مع اختيار تضمين الصور أو استبعادها"
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        horizontalAlignment = Alignment.End,
+                    ) {
+                        ExtendedFloatingActionButton(
+                            onClick = ::showProblemMarkerDialog,
+                            modifier = Modifier.semantics {
+                                contentDescription = "تعليم لحظة حدوث مشكلة في القراءة أو وصف المشهد داخل ملف التشخيص"
                             },
-                        text = { Text("مشاركة التشخيص") },
-                    )
+                            text = { Text("حدثت مشكلة الآن") },
+                        )
+                        ExtendedFloatingActionButton(
+                            onClick = { viewModel.exportDiagnostics(::shareDiagnosticFile) },
+                            modifier = Modifier.semantics {
+                                contentDescription = "مشاركة ملف التشخيص الكامل، ويتضمن الصور والنصوص والأزمنة"
+                            },
+                            text = { Text("مشاركة التشخيص") },
+                        )
+                    }
                 }
             }
         }
     }
 
-    private fun showDiagnosticPrivacyPrompt() {
-        DiagnosticsHub.stage("DIAGNOSTIC_EXPORT_PROMPT_OPENED")
+    private fun showProblemMarkerDialog() {
+        DiagnosticHub.record("PROBLEM_MARKER_DIALOG_OPENED")
+        val note = EditText(this).apply {
+            hint = "مثال: صورت عطراً ولم يقرأه، أو لم يصف المشهد"
+            minLines = 2
+            contentDescription = "ملاحظة اختيارية تصف المشكلة التي حدثت الآن"
+        }
         AlertDialog.Builder(this)
-            .setTitle("مشاركة ملف التشخيص")
-            .setMessage(
-                "هل تريد تضمين صور بث النظارة؟ الصور تساعد على تشخيص عدم قراءة العطر أو عدم وصف المشهد، لكنها قد تحتوي معلومات خاصة. مفتاح Gemini لا يُضمّن أبداً."
-            )
-            .setPositiveButton("تضمين الصور") { _, _ -> exportDiagnostics(includeImages = true) }
-            .setNegativeButton("بدون صور") { _, _ -> exportDiagnostics(includeImages = false) }
-            .setNeutralButton("إلغاء", null)
+            .setTitle("تعليم لحظة المشكلة")
+            .setMessage("اكتب ملاحظة اختيارية، ثم اضغط حفظ. سيُربط التوقيت بأقرب الصور والنصوص والأحداث.")
+            .setView(note)
+            .setPositiveButton("حفظ العلامة") { _, _ ->
+                val value = note.text?.toString().orEmpty()
+                DiagnosticHub.record("USER_CONFIRMED_PROBLEM_MARKER", mapOf("note" to value))
+                viewModel.markDiagnosticProblem(value)
+            }
+            .setNegativeButton("إلغاء", null)
             .show()
     }
 
-    private fun exportDiagnostics(includeImages: Boolean) {
-        lifecycleScope.launch {
-            runCatching {
-                DiagnosticsHub.stage("DIAGNOSTIC_EXPORT_REQUESTED", mapOf("includeImages" to includeImages))
-                container.diagnostics.export(includeImages)
-            }.onSuccess { file ->
-                val uri = FileProvider.getUriForFile(
-                    this@MainActivity,
-                    "$packageName.diagnostics",
-                    file,
+    private fun shareDiagnosticFile(file: File) {
+        runCatching {
+            val uri = FileProvider.getUriForFile(
+                this,
+                "$packageName.diagnostics",
+                file,
+            )
+            val share = Intent(Intent.ACTION_SEND).apply {
+                type = "application/zip"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_SUBJECT, "VisionBridge complete diagnostic black box")
+                putExtra(
+                    Intent.EXTRA_TEXT,
+                    "ملف تشخيص رفيق الرؤية الكامل. يتضمن صور الإطارات، النصوص المستخرجة، نتائج Gemini، قرارات الثقة، وأزمنة الالتقاط والشبكة والنطق.",
                 )
-                val share = Intent(Intent.ACTION_SEND).apply {
-                    type = "application/zip"
-                    putExtra(Intent.EXTRA_STREAM, uri)
-                    putExtra(Intent.EXTRA_SUBJECT, "VisionBridge diagnostic black box")
-                    putExtra(
-                        Intent.EXTRA_TEXT,
-                        "ملف تشخيص VisionBridge. يتضمن الصور: ${if (includeImages) "نعم" else "لا"}."
-                    )
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-                startActivity(Intent.createChooser(share, "مشاركة ملف التشخيص"))
-            }.onFailure { error ->
-                DiagnosticsHub.failure("DIAGNOSTIC_EXPORT", error)
-                Toast.makeText(
-                    this@MainActivity,
-                    error.message ?: "تعذر إنشاء ملف التشخيص",
-                    Toast.LENGTH_LONG,
-                ).show()
+                clipData = ClipData.newRawUri("VisionBridge diagnostics", uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
+            DiagnosticHub.record(
+                "DIAGNOSTIC_SHARE_SHEET_OPENED",
+                mapOf("fileName" to file.name, "fileBytes" to file.length(), "includesImages" to true),
+            )
+            startActivity(Intent.createChooser(share, "مشاركة ملف التشخيص الكامل"))
+        }.onFailure { error ->
+            DiagnosticHub.failure("DIAGNOSTIC_SHARE", error)
+            Toast.makeText(
+                this,
+                error.message ?: "تعذر مشاركة ملف التشخيص",
+                Toast.LENGTH_LONG,
+            ).show()
         }
     }
 
     private fun requestCapture() {
-        DiagnosticsHub.stage("USER_REQUEST_CAPTURE")
+        DiagnosticHub.record("USER_REQUEST_CAPTURE")
         if (
             Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -168,6 +187,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun launchProjectionConsent() {
+        DiagnosticHub.record("SCREEN_CAPTURE_PERMISSION_PROMPT_OPENED")
         projectionLauncher.launch(projectionManager.createScreenCaptureIntent())
     }
 }
