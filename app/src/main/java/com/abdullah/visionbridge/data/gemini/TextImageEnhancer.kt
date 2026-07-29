@@ -38,16 +38,46 @@ class TextImageEnhancer {
         sceneDescriptionStyle: SceneDescriptionStyle,
     ): EncodedImage = when (mode) {
         AnalysisMode.TEXT_READING -> if (captureProfile == CaptureProfile.FAST_TEXT) {
-            prepareText(source, accurate = false)
+            prepareFastText(source)
         } else {
-            prepareText(source, accurate = true)
+            prepareAccurateText(source)
         }
         AnalysisMode.SCENE_DESCRIPTION -> prepareScene(source, sceneDescriptionStyle)
     }
 
-    private fun prepareText(source: Bitmap, accurate: Boolean): EncodedImage {
+    /**
+     * Accurate OCR keeps the original colour information. The former full-frame grayscale,
+     * percentile stretch, and Kotlin pixel loop could take several seconds on a 2K frame and could
+     * erase coloured settings labels. Gemini receives a lossless, scaled PNG instead.
+     */
+    private fun prepareAccurateText(source: Bitmap): EncodedImage {
         val scaleStarted = SystemClock.elapsedRealtimeNanos()
-        val scaled = if (accurate) scaleForAccurateText(source) else scaleForFastText(source)
+        val scaled = scaleForAccurateText(source)
+        val scaleMs = elapsedMs(scaleStarted)
+        return try {
+            val compressionStarted = SystemClock.elapsedRealtimeNanos()
+            val bytes = compress(scaled, Bitmap.CompressFormat.PNG, 100)
+            val compressionMs = elapsedMs(compressionStarted)
+            EncodedImage(
+                bytes = bytes,
+                mimeType = "image/png",
+                outputWidth = scaled.width,
+                outputHeight = scaled.height,
+                format = "PNG_COLOR",
+                quality = 100,
+                scaleMs = scaleMs,
+                enhancementMs = 0.0,
+                compressionMs = compressionMs,
+            )
+        } finally {
+            if (scaled !== source) scaled.recycle()
+        }
+    }
+
+    /** Fast text keeps the lightweight contrast enhancement for captions and rapidly changing UI. */
+    private fun prepareFastText(source: Bitmap): EncodedImage {
+        val scaleStarted = SystemClock.elapsedRealtimeNanos()
+        val scaled = scaleForFastText(source)
         val scaleMs = elapsedMs(scaleStarted)
 
         val enhancementStarted = SystemClock.elapsedRealtimeNanos()
@@ -55,20 +85,17 @@ class TextImageEnhancer {
         val enhancementMs = elapsedMs(enhancementStarted)
         if (scaled !== source) scaled.recycle()
 
-        val format = if (accurate) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
-        val formatName = if (accurate) "PNG" else "JPEG"
-        val quality = if (accurate) 100 else FAST_TEXT_JPEG_QUALITY
         return try {
             val compressionStarted = SystemClock.elapsedRealtimeNanos()
-            val bytes = compress(enhancement.bitmap, format, quality)
+            val bytes = compress(enhancement.bitmap, Bitmap.CompressFormat.JPEG, FAST_TEXT_JPEG_QUALITY)
             val compressionMs = elapsedMs(compressionStarted)
             EncodedImage(
                 bytes = bytes,
-                mimeType = if (accurate) "image/png" else "image/jpeg",
+                mimeType = "image/jpeg",
                 outputWidth = enhancement.bitmap.width,
                 outputHeight = enhancement.bitmap.height,
-                format = formatName,
-                quality = quality,
+                format = "JPEG_ENHANCED",
+                quality = FAST_TEXT_JPEG_QUALITY,
                 scaleMs = scaleMs,
                 enhancementMs = enhancementMs,
                 compressionMs = compressionMs,
