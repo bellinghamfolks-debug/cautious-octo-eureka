@@ -18,6 +18,14 @@ class GeminiStreamProtocolTest {
     }
 
     @Test
+    fun `cancelled stream never exposes an unfinished metadata line`() {
+        val accumulator = GeminiStreamAccumulator(requireQualityHeader = false)
+        assertEquals("", accumulator.append("META|language="))
+        assertEquals("", accumulator.finish())
+        assertEquals("", accumulator.fullText)
+    }
+
+    @Test
     fun `fast OCR protocol exposes text after one metadata line`() {
         val accumulator = GeminiStreamAccumulator(requireQualityHeader = false)
         val body = accumulator.append("META|language=mixed|urgent=false\nمرحبا OpenAI.")
