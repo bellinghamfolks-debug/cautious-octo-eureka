@@ -33,6 +33,5 @@ class AppContainer(context: Context) {
         analyzeFrame = AnalyzeFrameUseCase(visionRepository),
         tts = tts,
         runtime = runtime,
-        diagnostics = diagnostics,
     )
 }
