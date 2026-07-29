@@ -5,28 +5,42 @@ import android.graphics.Color
 import kotlin.math.abs
 
 /**
- * Detects meaningful visual changes with two selectable behaviours:
- * - stable mode waits until movement settles before analysis;
- * - fast-text mode accepts a changed frame immediately for moving captions and scrolling text.
+ * Detects meaningful visual changes and returns the measurements behind every accept/reject choice.
+ * Boolean wrappers remain for compatibility; diagnostics use the detailed decision methods.
  */
 class FrameChangeDetector {
+    data class Decision(
+        val accepted: Boolean,
+        val reason: String,
+        val meanAbsoluteDifference: Double?,
+        val changedPixelRatio: Double?,
+        val candidateMeanAbsoluteDifference: Double? = null,
+        val candidateChangedPixelRatio: Double? = null,
+        val candidateStableElapsedMs: Long? = null,
+    )
+
     private var acceptedSignature: IntArray? = null
     private var candidateSignature: IntArray? = null
     private var candidateSince: Long = 0L
 
     @Synchronized
-    fun shouldProcessStable(
+    fun evaluateStable(
         bitmap: Bitmap,
         minimumMeanDifference: Double,
         minimumChangedRatio: Double,
         stableForMs: Long,
         now: Long = System.currentTimeMillis(),
-    ): Boolean {
+    ): Decision {
         val signature = signature(bitmap)
         val accepted = acceptedSignature
         if (accepted == null) {
             accept(signature)
-            return true
+            return Decision(
+                accepted = true,
+                reason = "initial_frame",
+                meanAbsoluteDifference = null,
+                changedPixelRatio = null,
+            )
         }
 
         val change = difference(accepted, signature)
@@ -37,14 +51,25 @@ class FrameChangeDetector {
         if (!meaningfulChange) {
             candidateSignature = null
             candidateSince = 0L
-            return false
+            return Decision(
+                accepted = false,
+                reason = "below_stable_change_thresholds",
+                meanAbsoluteDifference = change.meanAbsoluteDifference,
+                changedPixelRatio = change.changedPixelRatio,
+            )
         }
 
         val candidate = candidateSignature
         if (candidate == null) {
             candidateSignature = signature
             candidateSince = now
-            return false
+            return Decision(
+                accepted = false,
+                reason = "stability_candidate_started",
+                meanAbsoluteDifference = change.meanAbsoluteDifference,
+                changedPixelRatio = change.changedPixelRatio,
+                candidateStableElapsedMs = 0L,
+            )
         }
 
         val candidateDrift = difference(candidate, signature)
@@ -55,37 +80,95 @@ class FrameChangeDetector {
         if (!sceneIsStable) {
             candidateSignature = signature
             candidateSince = now
-            return false
+            return Decision(
+                accepted = false,
+                reason = "stability_candidate_moved",
+                meanAbsoluteDifference = change.meanAbsoluteDifference,
+                changedPixelRatio = change.changedPixelRatio,
+                candidateMeanAbsoluteDifference = candidateDrift.meanAbsoluteDifference,
+                candidateChangedPixelRatio = candidateDrift.changedPixelRatio,
+                candidateStableElapsedMs = 0L,
+            )
         }
 
-        if (now - candidateSince < stableForMs) return false
+        val stableElapsed = now - candidateSince
+        if (stableElapsed < stableForMs) {
+            return Decision(
+                accepted = false,
+                reason = "waiting_for_stability_duration",
+                meanAbsoluteDifference = change.meanAbsoluteDifference,
+                changedPixelRatio = change.changedPixelRatio,
+                candidateMeanAbsoluteDifference = candidateDrift.meanAbsoluteDifference,
+                candidateChangedPixelRatio = candidateDrift.changedPixelRatio,
+                candidateStableElapsedMs = stableElapsed,
+            )
+        }
+
         accept(signature)
-        return true
+        return Decision(
+            accepted = true,
+            reason = "stable_changed_frame_accepted",
+            meanAbsoluteDifference = change.meanAbsoluteDifference,
+            changedPixelRatio = change.changedPixelRatio,
+            candidateMeanAbsoluteDifference = candidateDrift.meanAbsoluteDifference,
+            candidateChangedPixelRatio = candidateDrift.changedPixelRatio,
+            candidateStableElapsedMs = stableElapsed,
+        )
     }
 
-    /**
-     * Accepts a visually changed frame without waiting for stability. The threshold remains high
-     * enough to reject sensor shimmer while allowing fast subtitles, tickers, and scrolling text.
-     */
     @Synchronized
-    fun shouldProcessFast(
+    fun evaluateFast(
         bitmap: Bitmap,
         minimumMeanDifference: Double,
         minimumChangedRatio: Double,
-    ): Boolean {
+    ): Decision {
         val signature = signature(bitmap)
         val accepted = acceptedSignature
         if (accepted == null) {
             accept(signature)
-            return true
+            return Decision(
+                accepted = true,
+                reason = "initial_frame",
+                meanAbsoluteDifference = null,
+                changedPixelRatio = null,
+            )
         }
         val change = difference(accepted, signature)
         val acceptedFast =
             change.meanAbsoluteDifference >= minimumMeanDifference ||
                 change.changedPixelRatio >= minimumChangedRatio
         if (acceptedFast) accept(signature)
-        return acceptedFast
+        return Decision(
+            accepted = acceptedFast,
+            reason = if (acceptedFast) "fast_change_threshold_met" else "below_fast_change_thresholds",
+            meanAbsoluteDifference = change.meanAbsoluteDifference,
+            changedPixelRatio = change.changedPixelRatio,
+        )
     }
+
+    fun shouldProcessStable(
+        bitmap: Bitmap,
+        minimumMeanDifference: Double,
+        minimumChangedRatio: Double,
+        stableForMs: Long,
+        now: Long = System.currentTimeMillis(),
+    ): Boolean = evaluateStable(
+        bitmap = bitmap,
+        minimumMeanDifference = minimumMeanDifference,
+        minimumChangedRatio = minimumChangedRatio,
+        stableForMs = stableForMs,
+        now = now,
+    ).accepted
+
+    fun shouldProcessFast(
+        bitmap: Bitmap,
+        minimumMeanDifference: Double,
+        minimumChangedRatio: Double,
+    ): Boolean = evaluateFast(
+        bitmap = bitmap,
+        minimumMeanDifference = minimumMeanDifference,
+        minimumChangedRatio = minimumChangedRatio,
+    ).accepted
 
     @Synchronized
     fun reset() {
