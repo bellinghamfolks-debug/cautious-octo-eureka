@@ -99,7 +99,7 @@ class DiagnosticNetworkEventListener(
             "OKHTTP_CONNECTION_ACQUIRED",
             mapOf(
                 "protocol" to connection.protocol().toString(),
-                "route" to connection.route().socketAddress().toString(),
+                "route" to connection.route().socketAddress.toString(),
                 "handshake" to handshakeFields(connection.handshake()),
             ),
         )
@@ -110,7 +110,7 @@ class DiagnosticNetworkEventListener(
             "OKHTTP_CONNECTION_RELEASED",
             mapOf(
                 "protocol" to connection.protocol().toString(),
-                "route" to connection.route().socketAddress().toString(),
+                "route" to connection.route().socketAddress.toString(),
             ),
         )
     }
