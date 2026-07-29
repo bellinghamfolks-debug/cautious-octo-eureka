@@ -47,8 +47,8 @@ class MainActivity : ComponentActivity() {
         if (result.resultCode == Activity.RESULT_OK && data != null) {
             DiagnosticHub.record("SCREEN_CAPTURE_PERMISSION_GRANTED")
             ContextCompat.startForegroundService(
-                this,
-                MediaProjectionService.startIntent(this, result.resultCode, data),
+                this@MainActivity,
+                MediaProjectionService.startIntent(this@MainActivity, result.resultCode, data),
             )
         } else {
             DiagnosticHub.record("SCREEN_CAPTURE_PERMISSION_DENIED", mapOf("resultCode" to result.resultCode))
@@ -86,10 +86,12 @@ class MainActivity : ComponentActivity() {
                         onInterruptSpeechChange = viewModel::setInterruptSpeechOnVisualChange,
                         onSceneDescriptionStyleChange = viewModel::setSceneDescriptionStyle,
                         onSpeechRateChange = viewModel::setSpeechRate,
-                        onStartCapture = ::requestCapture,
+                        onStartCapture = { this@MainActivity.requestCapture() },
                         onStopCapture = {
                             DiagnosticHub.record("USER_STOP_CAPTURE")
-                            startService(MediaProjectionService.stopIntent(this))
+                            this@MainActivity.startService(
+                                MediaProjectionService.stopIntent(this@MainActivity)
+                            )
                         },
                         onMessageConsumed = viewModel::clearMessage,
                     )
@@ -101,14 +103,18 @@ class MainActivity : ComponentActivity() {
                         horizontalAlignment = Alignment.End,
                     ) {
                         ExtendedFloatingActionButton(
-                            onClick = ::showProblemMarkerDialog,
+                            onClick = { this@MainActivity.showProblemMarkerDialog() },
                             modifier = Modifier.semantics {
                                 contentDescription = "تعليم لحظة حدوث مشكلة في القراءة أو وصف المشهد داخل ملف التشخيص"
                             },
                             text = { Text("حدثت مشكلة الآن") },
                         )
                         ExtendedFloatingActionButton(
-                            onClick = { viewModel.exportDiagnostics(::shareDiagnosticFile) },
+                            onClick = {
+                                viewModel.exportDiagnostics { file ->
+                                    this@MainActivity.shareDiagnosticFile(file)
+                                }
+                            },
                             modifier = Modifier.semantics {
                                 contentDescription = "مشاركة ملف التشخيص الكامل، ويتضمن الصور والنصوص والأزمنة"
                             },
@@ -122,12 +128,12 @@ class MainActivity : ComponentActivity() {
 
     private fun showProblemMarkerDialog() {
         DiagnosticHub.record("PROBLEM_MARKER_DIALOG_OPENED")
-        val note = EditText(this).apply {
+        val note = EditText(this@MainActivity).apply {
             hint = "مثال: صورت عطراً ولم يقرأه، أو لم يصف المشهد"
             minLines = 2
             contentDescription = "ملاحظة اختيارية تصف المشكلة التي حدثت الآن"
         }
-        AlertDialog.Builder(this)
+        AlertDialog.Builder(this@MainActivity)
             .setTitle("تعليم لحظة المشكلة")
             .setMessage("اكتب ملاحظة اختيارية، ثم اضغط حفظ. سيُربط التوقيت بأقرب الصور والنصوص والأحداث.")
             .setView(note)
@@ -143,7 +149,7 @@ class MainActivity : ComponentActivity() {
     private fun shareDiagnosticFile(file: File) {
         runCatching {
             val uri = FileProvider.getUriForFile(
-                this,
+                this@MainActivity,
                 "$packageName.diagnostics",
                 file,
             )
@@ -162,11 +168,11 @@ class MainActivity : ComponentActivity() {
                 "DIAGNOSTIC_SHARE_SHEET_OPENED",
                 mapOf("fileName" to file.name, "fileBytes" to file.length(), "includesImages" to true),
             )
-            startActivity(Intent.createChooser(share, "مشاركة ملف التشخيص الكامل"))
+            this@MainActivity.startActivity(Intent.createChooser(share, "مشاركة ملف التشخيص الكامل"))
         }.onFailure { error ->
             DiagnosticHub.failure("DIAGNOSTIC_SHARE", error)
             Toast.makeText(
-                this,
+                this@MainActivity,
                 error.message ?: "تعذر مشاركة ملف التشخيص",
                 Toast.LENGTH_LONG,
             ).show()
@@ -177,7 +183,10 @@ class MainActivity : ComponentActivity() {
         DiagnosticHub.record("USER_REQUEST_CAPTURE")
         if (
             Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(
+                this@MainActivity,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) != PackageManager.PERMISSION_GRANTED
         ) {
             startCaptureAfterNotificationPermission = true
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
