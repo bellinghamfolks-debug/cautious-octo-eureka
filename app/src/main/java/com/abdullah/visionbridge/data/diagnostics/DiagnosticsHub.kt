@@ -21,7 +21,10 @@ object DiagnosticsHub {
 
     fun initialize(value: DiagnosticRecorder) {
         recorder = value
-        scope.launch { value.record("PROCESS_INITIALIZED") }
+        scope.launch {
+            value.startSession(settingsMap(latestSettings))
+            value.record("PROCESS_INITIALIZED")
+        }
     }
 
     fun settings(value: AppSettings) {
