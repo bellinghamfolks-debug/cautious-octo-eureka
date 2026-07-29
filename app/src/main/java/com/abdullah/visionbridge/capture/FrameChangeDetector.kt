@@ -127,23 +127,15 @@ class FrameChangeDetector {
         minimumMeanDifference: Double,
         minimumChangedRatio: Double,
     ): Decision {
-        val quality = evaluateUsability(bitmap)
-        if (!quality.accepted) {
-            return Decision(
-                accepted = false,
-                reason = "quality_${quality.reason}",
-                meanAbsoluteDifference = null,
-                changedPixelRatio = null,
-            )
-        }
-
+        // Fast text and scene description must remain available in dark environments. The quality
+        // gate is intentionally limited to stable OCR, where waiting for a better frame is safe.
         val signature = signature(bitmap)
         val accepted = acceptedSignature
         if (accepted == null) {
             accept(signature, System.currentTimeMillis())
             return Decision(
                 accepted = true,
-                reason = "initial_usable_frame",
+                reason = "initial_frame",
                 meanAbsoluteDifference = null,
                 changedPixelRatio = null,
             )
