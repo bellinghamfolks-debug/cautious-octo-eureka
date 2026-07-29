@@ -18,10 +18,8 @@ import kotlin.coroutines.CoroutineContext
 /**
  * Process-wide diagnostic actor.
  *
- * Producers never touch disk and never compete on a recorder mutex. They append commands to one
- * ordered channel; a single IO writer executes them in exactly the same order. Export is itself a
- * queue command, so every event and image submitted before export is guaranteed to be inside the
- * resulting ZIP. Commands submitted during export wait behind the snapshot instead of racing it.
+ * Producers append commands to one ordered channel; a single IO writer executes them in the same
+ * order. Export is a queue command, so everything submitted before it is guaranteed to be included.
  */
 object DiagnosticHub {
     private sealed interface Command {
@@ -253,8 +251,9 @@ object DiagnosticHub {
                 ) ?: mapOf("note" to command.note, "nearestTraceAvailable" to false)
                 val result = runCatching { target.record("USER_MARKED_PROBLEM", fields) }
                 command.completion?.let { completion ->
-                    result.onSuccess { completion.complete(Unit) }
-                        .onFailure(completion::completeExceptionally)
+                    val failure = result.exceptionOrNull()
+                    if (failure == null) completion.complete(Unit)
+                    else completion.completeExceptionally(failure)
                 }
             }
             is Command.Export -> complete(command.completion) { target.export() }
@@ -292,9 +291,11 @@ object DiagnosticHub {
         deferred: CompletableDeferred<T>,
         operation: suspend () -> T,
     ) {
-        runCatching { operation() }
-            .onSuccess(deferred::complete)
-            .onFailure(deferred::completeExceptionally)
+        try {
+            deferred.complete(operation())
+        } catch (error: Throwable) {
+            deferred.completeExceptionally(error)
+        }
     }
 
     private fun sinceCaptureFromMetadata(metadata: Map<String, Any?>, nowNanos: Long): Double? {
