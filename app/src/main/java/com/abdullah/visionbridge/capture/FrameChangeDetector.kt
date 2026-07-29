@@ -191,10 +191,13 @@ class FrameChangeDetector {
     }
 
     /**
-     * Cheap central-content quality guard. It rejects only frames that are essentially blank,
-     * completely dark, or blown out. It intentionally avoids a rigid blur threshold because screen
-     * text and camera text have very different edge statistics; the settling logic then chooses a
-     * later usable frame instead of locking onto the first black transition frame.
+     * Cheap central-content quality guard for stable OCR.
+     *
+     * A raw edge-count would reject a perfectly sharp perfume label simply because it contains only
+     * a few words. Instead this computes the variance of a small Laplacian focus map. Sparse but crisp
+     * letters and object boundaries produce strong second derivatives; a finger, cloth, or motion
+     * smear remains smooth. Thresholds were calibrated against the exact Xiaomi diagnostic frames:
+     * readable settings were around 3,000–4,500 while occluded frames were around 690–850.
      */
     private fun evaluateUsability(bitmap: Bitmap): FrameUsability {
         val largest = maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)
@@ -205,7 +208,9 @@ class FrameChangeDetector {
         return try {
             val top = (height * CONTENT_TOP_FRACTION).roundToInt().coerceIn(0, height - 2)
             val bottom = (height * CONTENT_BOTTOM_FRACTION).roundToInt().coerceIn(top + 2, height)
+            val contentHeight = bottom - top
             val histogram = IntArray(256)
+            val luminance = IntArray(width * contentHeight)
             var dark = 0
             var bright = 0
             var edge = 0
@@ -213,6 +218,7 @@ class FrameChangeDetector {
 
             for (y in top until bottom) {
                 var previous = -1
+                val contentRow = (y - top) * width
                 for (x in 0 until width) {
                     val color = scaled.getPixel(x, y)
                     val gray = (
@@ -220,6 +226,7 @@ class FrameChangeDetector {
                             Color.green(color) * 587 +
                             Color.blue(color) * 114
                         ) / 1000
+                    luminance[contentRow + x] = gray
                     histogram[gray]++
                     if (gray <= DARK_LUMA) dark++
                     if (gray >= BRIGHT_LUMA) bright++
@@ -234,16 +241,44 @@ class FrameChangeDetector {
             val brightRatio = bright.toDouble() / samples
             val edgeRatio = edge.toDouble() / samples
             val range = percentile(histogram, samples, 0.95) - percentile(histogram, samples, 0.05)
+            val focusVariance = laplacianVariance(luminance, width, contentHeight)
 
             when {
                 darkRatio >= 0.965 && edgeRatio < 0.010 -> FrameUsability(false, "almost_black")
                 brightRatio >= 0.70 && edgeRatio < 0.012 -> FrameUsability(false, "overexposed")
                 range <= 14 && edgeRatio < 0.008 -> FrameUsability(false, "blank_low_contrast")
+                brightRatio >= BRIGHT_OCCLUSION_RATIO && focusVariance < BRIGHT_OCCLUSION_MAX_FOCUS ->
+                    FrameUsability(false, "bright_occlusion")
+                focusVariance < MIN_FOCUS_VARIANCE -> FrameUsability(false, "blurred_or_occluded")
                 else -> FrameUsability(true, "usable")
             }
         } finally {
             if (scaled !== bitmap) scaled.recycle()
         }
+    }
+
+    private fun laplacianVariance(values: IntArray, width: Int, height: Int): Double {
+        if (width < 3 || height < 3) return 0.0
+        var count = 0L
+        var sum = 0.0
+        var squareSum = 0.0
+        for (y in 1 until height - 1) {
+            val row = y * width
+            for (x in 1 until width - 1) {
+                val index = row + x
+                val laplacian =
+                    values[index - width] + values[index + width] +
+                        values[index - 1] + values[index + 1] -
+                        4 * values[index]
+                val value = laplacian.toDouble()
+                sum += value
+                squareSum += value * value
+                count++
+            }
+        }
+        if (count == 0L) return 0.0
+        val mean = sum / count
+        return (squareSum / count - mean * mean).coerceAtLeast(0.0)
     }
 
     private fun percentile(histogram: IntArray, total: Int, fraction: Double): Int {
@@ -313,5 +348,8 @@ class FrameChangeDetector {
         const val DARK_LUMA = 12
         const val BRIGHT_LUMA = 248
         const val EDGE_DELTA = 24
+        const val MIN_FOCUS_VARIANCE = 950.0
+        const val BRIGHT_OCCLUSION_RATIO = 0.050
+        const val BRIGHT_OCCLUSION_MAX_FOCUS = 2_000.0
     }
 }

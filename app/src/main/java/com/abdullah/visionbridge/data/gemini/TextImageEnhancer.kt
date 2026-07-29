@@ -46,44 +46,51 @@ class TextImageEnhancer {
     }
 
     /**
-     * Accurate OCR keeps the original colour information. The former full-frame grayscale,
-     * percentile stretch, and Kotlin pixel loop could take several seconds on a 2K frame and could
-     * erase coloured settings labels. Gemini receives a lossless, scaled PNG instead.
+     * Accurate OCR keeps colour and fine text, while removing only detected dark camera chrome.
+     *
+     * The previous lossless full-screen PNG cost roughly two seconds to encode and included Leica
+     * labels, zoom controls and a large black shutter panel. A high-quality colour JPEG of the actual
+     * preview region is substantially smaller and faster, while quality 94 preserves document and UI
+     * text far better than the old fast profile.
      */
     private fun prepareAccurateText(source: Bitmap): EncodedImage {
         val scaleStarted = SystemClock.elapsedRealtimeNanos()
-        val scaled = scaleForAccurateText(source)
+        val content = cropDetectedCameraChrome(source)
+        val scaled = scaleForAccurateText(content)
         val scaleMs = elapsedMs(scaleStarted)
         return try {
             val compressionStarted = SystemClock.elapsedRealtimeNanos()
-            val bytes = compress(scaled, Bitmap.CompressFormat.PNG, 100)
+            val bytes = compress(scaled, Bitmap.CompressFormat.JPEG, ACCURATE_TEXT_JPEG_QUALITY)
             val compressionMs = elapsedMs(compressionStarted)
             EncodedImage(
                 bytes = bytes,
-                mimeType = "image/png",
+                mimeType = "image/jpeg",
                 outputWidth = scaled.width,
                 outputHeight = scaled.height,
-                format = "PNG_COLOR",
-                quality = 100,
+                format = "JPEG_COLOR_FOCUSED",
+                quality = ACCURATE_TEXT_JPEG_QUALITY,
                 scaleMs = scaleMs,
                 enhancementMs = 0.0,
                 compressionMs = compressionMs,
             )
         } finally {
-            if (scaled !== source) scaled.recycle()
+            if (scaled !== content) scaled.recycle()
+            if (content !== source) content.recycle()
         }
     }
 
-    /** Fast text keeps the lightweight contrast enhancement for captions and rapidly changing UI. */
+    /** Fast text keeps lightweight contrast enhancement for captions and rapidly changing UI. */
     private fun prepareFastText(source: Bitmap): EncodedImage {
         val scaleStarted = SystemClock.elapsedRealtimeNanos()
-        val scaled = scaleForFastText(source)
+        val content = cropDetectedCameraChrome(source)
+        val scaled = scaleForFastText(content)
         val scaleMs = elapsedMs(scaleStarted)
 
         val enhancementStarted = SystemClock.elapsedRealtimeNanos()
         val enhancement = enhanceTextContrast(scaled)
         val enhancementMs = elapsedMs(enhancementStarted)
-        if (scaled !== source) scaled.recycle()
+        if (scaled !== content) scaled.recycle()
+        if (content !== source) content.recycle()
 
         return try {
             val compressionStarted = SystemClock.elapsedRealtimeNanos()
@@ -94,7 +101,7 @@ class TextImageEnhancer {
                 mimeType = "image/jpeg",
                 outputWidth = enhancement.bitmap.width,
                 outputHeight = enhancement.bitmap.height,
-                format = "JPEG_ENHANCED",
+                format = "JPEG_ENHANCED_FOCUSED",
                 quality = FAST_TEXT_JPEG_QUALITY,
                 scaleMs = scaleMs,
                 enhancementMs = enhancementMs,
@@ -122,7 +129,8 @@ class TextImageEnhancer {
             COMPREHENSIVE_SCENE_JPEG_QUALITY
         }
         val scaleStarted = SystemClock.elapsedRealtimeNanos()
-        val scaled = scaleToMaxEdge(source, maxEdge)
+        val content = cropDetectedCameraChrome(source)
+        val scaled = scaleToMaxEdge(content, maxEdge)
         val scaleMs = elapsedMs(scaleStarted)
         return try {
             val compressionStarted = SystemClock.elapsedRealtimeNanos()
@@ -133,15 +141,90 @@ class TextImageEnhancer {
                 mimeType = "image/jpeg",
                 outputWidth = scaled.width,
                 outputHeight = scaled.height,
-                format = "JPEG",
+                format = "JPEG_FOCUSED",
                 quality = quality,
                 scaleMs = scaleMs,
                 enhancementMs = 0.0,
                 compressionMs = compressionMs,
             )
         } finally {
-            if (scaled !== source) scaled.recycle()
+            if (scaled !== content) scaled.recycle()
+            if (content !== source) content.recycle()
         }
+    }
+
+    /**
+     * Detects broad dark bands at the top and bottom instead of applying a fixed crop. This preserves
+     * ordinary full-screen documents, yet removes the Xiaomi camera chrome seen in diagnostics. The
+     * crop is accepted only when enough image content remains, so a genuinely dark scene is retained.
+     */
+    private fun cropDetectedCameraChrome(source: Bitmap): Bitmap {
+        if (source.height < MIN_CROP_HEIGHT || source.width < MIN_CROP_WIDTH) return source
+
+        val sampleStepX = (source.width / CROP_HORIZONTAL_SAMPLES).coerceAtLeast(1)
+        val darkRatios = DoubleArray(source.height)
+        for (y in 0 until source.height) {
+            var dark = 0
+            var samples = 0
+            var x = 0
+            while (x < source.width) {
+                val color = source.getPixel(x, y)
+                val gray = (
+                    Color.red(color) * 299 +
+                        Color.green(color) * 587 +
+                        Color.blue(color) * 114
+                    ) / 1000
+                if (gray <= CAMERA_CHROME_DARK_LUMA) dark++
+                samples++
+                x += sampleStepX
+            }
+            darkRatios[y] = if (samples == 0) 0.0 else dark.toDouble() / samples
+        }
+
+        fun smoothedDarkRatio(row: Int): Double {
+            val start = (row - CROP_SMOOTH_RADIUS).coerceAtLeast(0)
+            val end = (row + CROP_SMOOTH_RADIUS).coerceAtMost(source.height - 1)
+            var total = 0.0
+            for (index in start..end) total += darkRatios[index]
+            return total / (end - start + 1)
+        }
+
+        val maxTop = (source.height * MAX_TOP_CROP_FRACTION).roundToInt()
+        var top = 0
+        var lightRun = 0
+        for (y in 0 until maxTop) {
+            if (smoothedDarkRatio(y) >= CAMERA_CHROME_DARK_RATIO) {
+                top = y + 1
+                lightRun = 0
+            } else {
+                lightRun++
+                if (top > 0 && lightRun >= CROP_EXIT_RUN_ROWS) break
+            }
+        }
+
+        val minBottom = (source.height * MIN_BOTTOM_CONTENT_FRACTION).roundToInt()
+        var bottom = source.height
+        lightRun = 0
+        for (y in source.height - 1 downTo minBottom) {
+            if (smoothedDarkRatio(y) >= CAMERA_CHROME_DARK_RATIO) {
+                bottom = y
+                lightRun = 0
+            } else {
+                lightRun++
+                if (bottom < source.height && lightRun >= CROP_EXIT_RUN_ROWS) break
+            }
+        }
+
+        val margin = (source.height * CROP_SAFETY_MARGIN_FRACTION).roundToInt()
+        val safeTop = (top - margin).coerceAtLeast(0)
+        val safeBottom = (bottom + margin).coerceAtMost(source.height)
+        val removed = safeTop + (source.height - safeBottom)
+        val remaining = safeBottom - safeTop
+        val minimumRemaining = (source.height * MIN_REMAINING_CONTENT_FRACTION).roundToInt()
+        val minimumRemoved = (source.height * MIN_REMOVED_FRACTION).roundToInt()
+
+        if (removed < minimumRemoved || remaining < minimumRemaining) return source
+        return Bitmap.createBitmap(source, 0, safeTop, source.width, remaining)
     }
 
     private fun scaleForAccurateText(source: Bitmap): Bitmap {
@@ -255,8 +338,9 @@ class TextImageEnhancer {
 
     private companion object {
         const val MIN_ACCURATE_TEXT_EDGE = 2_000
-        const val MAX_ACCURATE_TEXT_EDGE = 2_800
-        const val ACCURATE_TEXT_UPSCALE_FACTOR = 1.6
+        const val MAX_ACCURATE_TEXT_EDGE = 2_400
+        const val ACCURATE_TEXT_UPSCALE_FACTOR = 1.5
+        const val ACCURATE_TEXT_JPEG_QUALITY = 94
 
         const val MIN_FAST_TEXT_EDGE = 1_440
         const val MAX_FAST_TEXT_EDGE = 1_920
@@ -270,5 +354,18 @@ class TextImageEnhancer {
 
         const val MIN_CONTRAST_RANGE = 42
         const val SHARPEN_AMOUNT = 0.72
+
+        const val MIN_CROP_WIDTH = 320
+        const val MIN_CROP_HEIGHT = 640
+        const val CROP_HORIZONTAL_SAMPLES = 96
+        const val CROP_SMOOTH_RADIUS = 5
+        const val CAMERA_CHROME_DARK_LUMA = 45
+        const val CAMERA_CHROME_DARK_RATIO = 0.68
+        const val MAX_TOP_CROP_FRACTION = 0.24
+        const val MIN_BOTTOM_CONTENT_FRACTION = 0.62
+        const val CROP_EXIT_RUN_ROWS = 12
+        const val CROP_SAFETY_MARGIN_FRACTION = 0.012
+        const val MIN_REMAINING_CONTENT_FRACTION = 0.45
+        const val MIN_REMOVED_FRACTION = 0.08
     }
 }
