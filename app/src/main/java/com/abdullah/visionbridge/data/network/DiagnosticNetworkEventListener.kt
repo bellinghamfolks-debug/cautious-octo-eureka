@@ -24,10 +24,10 @@ class DiagnosticNetworkEventListener(
 
     override fun callStart(call: Call) {
         callStartedAtNanos = SystemClock.elapsedRealtimeNanos()
-        record("OKHTTP_CALL_STARTED", mapOf(
-            "host" to call.request().url.host,
-            "method" to call.request().method,
-        ))
+        record(
+            "OKHTTP_CALL_STARTED",
+            mapOf("host" to call.request().url.host, "method" to call.request().method),
+        )
     }
 
     override fun proxySelectStart(call: Call, url: HttpUrl) {
@@ -35,10 +35,10 @@ class DiagnosticNetworkEventListener(
     }
 
     override fun proxySelectEnd(call: Call, url: HttpUrl, proxies: List<Proxy>) {
-        record("OKHTTP_PROXY_SELECTION_COMPLETED", mapOf(
-            "host" to url.host,
-            "proxies" to proxies.map { it.type().name },
-        ))
+        record(
+            "OKHTTP_PROXY_SELECTION_COMPLETED",
+            mapOf("host" to url.host, "proxies" to proxies.map { it.type().name }),
+        )
     }
 
     override fun dnsStart(call: Call, domainName: String) {
@@ -46,11 +46,14 @@ class DiagnosticNetworkEventListener(
     }
 
     override fun dnsEnd(call: Call, domainName: String, inetAddressList: List<InetAddress>) {
-        record("OKHTTP_DNS_COMPLETED", mapOf(
-            "domain" to domainName,
-            "addresses" to inetAddressList.mapNotNull { it.hostAddress },
-            "addressCount" to inetAddressList.size,
-        ))
+        record(
+            "OKHTTP_DNS_COMPLETED",
+            mapOf(
+                "domain" to domainName,
+                "addresses" to inetAddressList.mapNotNull { it.hostAddress },
+                "addressCount" to inetAddressList.size,
+            ),
+        )
     }
 
     override fun connectStart(call: Call, inetSocketAddress: InetSocketAddress, proxy: Proxy) {
@@ -92,19 +95,24 @@ class DiagnosticNetworkEventListener(
     }
 
     override fun connectionAcquired(call: Call, connection: Connection) {
-        record("OKHTTP_CONNECTION_ACQUIRED", mapOf(
-            "protocol" to connection.protocol().toString(),
-            "route" to connection.route().socketAddress().toString(),
-            "multiplexed" to connection.isMultiplexed,
-            "handshake" to handshakeFields(connection.handshake()),
-        ))
+        record(
+            "OKHTTP_CONNECTION_ACQUIRED",
+            mapOf(
+                "protocol" to connection.protocol().toString(),
+                "route" to connection.route().socketAddress().toString(),
+                "handshake" to handshakeFields(connection.handshake()),
+            ),
+        )
     }
 
     override fun connectionReleased(call: Call, connection: Connection) {
-        record("OKHTTP_CONNECTION_RELEASED", mapOf(
-            "protocol" to connection.protocol().toString(),
-            "route" to connection.route().socketAddress().toString(),
-        ))
+        record(
+            "OKHTTP_CONNECTION_RELEASED",
+            mapOf(
+                "protocol" to connection.protocol().toString(),
+                "route" to connection.route().socketAddress().toString(),
+            ),
+        )
     }
 
     override fun requestHeadersStart(call: Call) {
@@ -112,12 +120,15 @@ class DiagnosticNetworkEventListener(
     }
 
     override fun requestHeadersEnd(call: Call, request: Request) {
-        record("OKHTTP_REQUEST_HEADERS_COMPLETED", mapOf(
-            "method" to request.method,
-            "host" to request.url.host,
-            "contentType" to request.body?.contentType()?.toString(),
-            "declaredContentLength" to runCatching { request.body?.contentLength() }.getOrNull(),
-        ))
+        record(
+            "OKHTTP_REQUEST_HEADERS_COMPLETED",
+            mapOf(
+                "method" to request.method,
+                "host" to request.url.host,
+                "contentType" to request.body?.contentType()?.toString(),
+                "declaredContentLength" to runCatching { request.body?.contentLength() }.getOrNull(),
+            ),
+        )
     }
 
     override fun requestBodyStart(call: Call) {
@@ -137,13 +148,16 @@ class DiagnosticNetworkEventListener(
     }
 
     override fun responseHeadersEnd(call: Call, response: Response) {
-        record("OKHTTP_RESPONSE_HEADERS_COMPLETED", mapOf(
-            "httpCode" to response.code,
-            "protocol" to response.protocol.toString(),
-            "contentType" to response.header("content-type"),
-            "contentLength" to response.header("content-length"),
-            "server" to response.header("server"),
-        ))
+        record(
+            "OKHTTP_RESPONSE_HEADERS_COMPLETED",
+            mapOf(
+                "httpCode" to response.code,
+                "protocol" to response.protocol.toString(),
+                "contentType" to response.header("content-type"),
+                "contentLength" to response.header("content-length"),
+                "server" to response.header("server"),
+            ),
+        )
     }
 
     override fun responseBodyStart(call: Call) {
@@ -192,7 +206,7 @@ class DiagnosticNetworkEventListener(
     private fun handshakeFields(handshake: Handshake?): Map<String, Any?> = mapOf(
         "tlsVersion" to handshake?.tlsVersion?.javaName,
         "cipherSuite" to handshake?.cipherSuite?.javaName,
-        "peerCertificateCount" to handshake?.peerCertificates?.size,
+        "peerCertificateCount" to runCatching { handshake?.peerCertificates?.size }.getOrNull(),
         "localCertificateCount" to handshake?.localCertificates?.size,
     )
 
