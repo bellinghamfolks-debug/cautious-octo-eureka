@@ -18,6 +18,12 @@ class VisualChangeDeliveryPolicyTest {
     }
 
     @Test
+    fun `continuous camera movement still permits completion when interruption is disabled`() {
+        assertTrue(VisualChangeDeliveryPolicy.mayDeliver(1L, 1_000L, false))
+        assertFalse(VisualChangeDeliveryPolicy.shouldCancelActiveRequest(false))
+    }
+
+    @Test
     fun `older generation is rejected when interruption is enabled`() {
         assertFalse(VisualChangeDeliveryPolicy.mayDeliver(7L, 8L, true))
         assertTrue(VisualChangeDeliveryPolicy.shouldCancelActiveRequest(true))
