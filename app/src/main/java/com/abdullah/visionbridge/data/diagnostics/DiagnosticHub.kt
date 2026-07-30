@@ -16,10 +16,11 @@ import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
 
 /**
- * Process-wide diagnostic actor.
+ * Process-wide ordered diagnostic actor.
  *
- * Producers append commands to one ordered channel; a single IO writer executes them in the same
- * order. Export is a queue command, so everything submitted before it is guaranteed to be included.
+ * The recorder is always active once the application container is created. Visual evidence is stored
+ * as non-reconstructive aggregate fingerprints only; no bitmap copy, thumbnail, or encoded image is
+ * queued or written. Export remains a queue barrier, so every event submitted before it is included.
  */
 object DiagnosticHub {
     private const val FATAL_FLUSH_TIMEOUT_MS = 2_000L
@@ -30,18 +31,6 @@ object DiagnosticHub {
             val stage: String,
             val error: Throwable,
             val fields: Map<String, Any?>,
-        ) : Command
-        data class Frame(
-            val bitmap: Bitmap,
-            val frameId: String,
-            val stage: String,
-            val metadata: Map<String, Any?>,
-        ) : Command
-        data class Preview(
-            val bitmap: Bitmap,
-            val frameId: String,
-            val reason: String,
-            val metadata: Map<String, Any?>,
         ) : Command
         data class StartSession(
             val settings: Map<String, Any?>,
@@ -77,6 +66,15 @@ object DiagnosticHub {
 
     fun initialize(value: DiagnosticRecorder) {
         recorder = value
+        record(
+            "DIAGNOSTIC_HUB_INITIALIZED",
+            mapOf(
+                "automaticRecording" to true,
+                "requiresProblemButton" to false,
+                "storesImages" to false,
+                "visualEvidence" to "aggregate_fingerprint",
+            ),
+        )
     }
 
     fun observeTrace(trace: DiagnosticTrace) {
@@ -91,55 +89,82 @@ object DiagnosticHub {
         commands.trySend(Command.Failure(stage, error, fields))
     }
 
+    /**
+     * Records the selected visual input without retaining the image itself.
+     *
+     * Existing callers keep passing the live bitmap, but it is sampled synchronously into aggregate
+     * measurements and a one-way hash. The bitmap is never copied, encoded, or owned by diagnostics.
+     */
     fun frame(
         bitmap: Bitmap,
         frameId: String,
         stage: String,
         metadata: Map<String, Any?> = emptyMap(),
     ) {
-        val copyStarted = SystemClock.elapsedRealtimeNanos()
-        val safeCopy = runCatching { bitmap.copy(Bitmap.Config.ARGB_8888, false) }.getOrElse { error ->
-            failure(
-                "DIAGNOSTIC_FRAME_COPY",
-                error,
-                metadata + mapOf("frameId" to frameId, "stage" to stage),
-            )
-            return
-        }
-        val copyEnded = SystemClock.elapsedRealtimeNanos()
-        val enriched = metadata + mapOf(
-            "diagnosticBitmapCopyMs" to (copyEnded - copyStarted) / 1_000_000.0,
-            "diagnosticCopyCompletedElapsedNanos" to copyEnded,
-            "diagnosticCopySinceCaptureMs" to sinceCaptureFromMetadata(metadata, copyEnded),
+        recordVisualFingerprint(
+            bitmap = bitmap,
+            frameId = frameId,
+            role = "selected_input",
+            reason = stage,
+            eventType = "FRAME_VISUAL_FINGERPRINT",
+            metadata = metadata,
         )
-        if (commands.trySend(Command.Frame(safeCopy, frameId, stage, enriched)).isFailure) {
-            safeCopy.recycle()
-        }
     }
 
+    /** Records a representative rejected frame as metrics only, never as a preview image. */
     fun preview(
         bitmap: Bitmap,
         frameId: String,
         reason: String,
         metadata: Map<String, Any?> = emptyMap(),
     ) {
-        val copyStarted = SystemClock.elapsedRealtimeNanos()
-        val safeCopy = runCatching { bitmap.copy(Bitmap.Config.ARGB_8888, false) }.getOrElse { error ->
-            failure(
-                "DIAGNOSTIC_PREVIEW_COPY",
-                error,
-                metadata + mapOf("frameId" to frameId, "reason" to reason),
-            )
-            return
-        }
-        val copyEnded = SystemClock.elapsedRealtimeNanos()
-        val enriched = metadata + mapOf(
-            "diagnosticBitmapCopyMs" to (copyEnded - copyStarted) / 1_000_000.0,
-            "diagnosticCopyCompletedElapsedNanos" to copyEnded,
-            "diagnosticCopySinceCaptureMs" to sinceCaptureFromMetadata(metadata, copyEnded),
+        recordVisualFingerprint(
+            bitmap = bitmap,
+            frameId = frameId,
+            role = "rejected_or_throttled",
+            reason = reason,
+            eventType = "DROPPED_FRAME_VISUAL_FINGERPRINT",
+            metadata = metadata,
         )
-        if (commands.trySend(Command.Preview(safeCopy, frameId, reason, enriched)).isFailure) {
-            safeCopy.recycle()
+    }
+
+    private fun recordVisualFingerprint(
+        bitmap: Bitmap,
+        frameId: String,
+        role: String,
+        reason: String,
+        eventType: String,
+        metadata: Map<String, Any?>,
+    ) {
+        val started = SystemClock.elapsedRealtimeNanos()
+        runCatching {
+            VisualFingerprintAnalyzer.analyze(
+                bitmap = bitmap,
+                role = role,
+                frameId = frameId,
+                reason = reason,
+            )
+        }.onSuccess { fingerprint ->
+            val completed = SystemClock.elapsedRealtimeNanos()
+            record(
+                eventType,
+                metadata + fingerprint + mapOf(
+                    "fingerprintComputationMs" to (completed - started) / 1_000_000.0,
+                    "fingerprintCompletedElapsedNanos" to completed,
+                    "fingerprintSinceCaptureMs" to sinceCaptureFromMetadata(metadata, completed),
+                ),
+            )
+        }.onFailure { error ->
+            failure(
+                "VISUAL_FINGERPRINT",
+                error,
+                metadata + mapOf(
+                    "frameId" to frameId,
+                    "role" to role,
+                    "reason" to reason,
+                    "storesImage" to false,
+                ),
+            )
         }
     }
 
@@ -155,6 +180,7 @@ object DiagnosticHub {
         completion.await()
     }
 
+    /** Optional manual label. Automatic recording and anomaly detection do not depend on this. */
     suspend fun markProblem(note: String = "") {
         val completion = CompletableDeferred<Unit>()
         commands.send(Command.MarkProblem(note, latestTrace.get(), completion))
@@ -208,7 +234,6 @@ object DiagnosticHub {
         val target = recorder
         if (target == null) {
             completeWithoutRecorder(command)
-            recycleIfNeeded(command)
             return
         }
 
@@ -217,44 +242,8 @@ object DiagnosticHub {
             is Command.Failure -> runCatching {
                 target.recordFailure(command.stage, command.error, command.fields)
             }
-            is Command.Frame -> try {
-                target.recordFrame(command.bitmap, command.frameId, command.stage, command.metadata)
-            } catch (error: Throwable) {
-                runCatching {
-                    target.recordFailure(
-                        "SAVE_DIAGNOSTIC_FRAME",
-                        error,
-                        command.metadata + mapOf(
-                            "frameId" to command.frameId,
-                            "stage" to command.stage,
-                        ),
-                    )
-                }
-            } finally {
-                command.bitmap.recycle()
-            }
-            is Command.Preview -> try {
-                target.recordPreviewFrame(
-                    command.bitmap,
-                    command.frameId,
-                    command.reason,
-                    command.metadata,
-                )
-            } catch (error: Throwable) {
-                runCatching {
-                    target.recordFailure(
-                        "SAVE_DIAGNOSTIC_PREVIEW",
-                        error,
-                        command.metadata + mapOf(
-                            "frameId" to command.frameId,
-                            "reason" to command.reason,
-                        ),
-                    )
-                }
-            } finally {
-                command.bitmap.recycle()
-            }
             is Command.StartSession -> complete(command.completion) {
+                VisualFingerprintAnalyzer.reset()
                 target.startSession(command.settings)
             }
             is Command.EndSession -> complete(command.completion) {
@@ -269,10 +258,12 @@ object DiagnosticHub {
                         "markerAgeFromNearestCaptureMs" to sinceCaptureMs(
                             command.nearestTrace.capturedAtElapsedNanos
                         ),
+                        "manualMarkerOptional" to true,
                     ),
                 ) ?: mapOf(
                     "note" to command.note,
                     "nearestTraceAvailable" to false,
+                    "manualMarkerOptional" to true,
                 )
                 val result = runCatching { target.record("USER_MARKED_PROBLEM", fields) }
                 command.completion?.let { completion ->
@@ -283,9 +274,10 @@ object DiagnosticHub {
             }
             is Command.Export -> complete(command.completion) { target.export() }
             is Command.Status -> complete(command.completion) { target.storageStatus() }
-            is Command.Flush -> command.completion.complete(Unit)
+            is Command.Flush -> complete(command.completion) { target.flush() }
             is Command.Fatal -> complete(command.completion) {
                 target.recordFailure("UNCAUGHT_EXCEPTION", command.error)
+                target.flush()
             }
         }
     }
@@ -300,14 +292,6 @@ object DiagnosticHub {
             is Command.Flush -> command.completion.complete(Unit)
             is Command.Fatal -> command.completion.completeExceptionally(error)
             is Command.MarkProblem -> command.completion?.completeExceptionally(error)
-            else -> Unit
-        }
-    }
-
-    private fun recycleIfNeeded(command: Command) {
-        when (command) {
-            is Command.Frame -> command.bitmap.recycle()
-            is Command.Preview -> command.bitmap.recycle()
             else -> Unit
         }
     }
