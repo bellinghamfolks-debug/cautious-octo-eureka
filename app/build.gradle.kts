@@ -1,5 +1,3 @@
-import java.net.URI
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -9,30 +7,37 @@ plugins {
 
 val arabicTessdataUrl =
     "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/ara.traineddata"
-val generatedTessdataAssets = layout.buildDirectory.dir("generated/tessdataAssets")
-val prepareArabicTessdata by tasks.registering {
-    val destination = generatedTessdataAssets.map { it.file("tessdata/ara.traineddata") }
-    inputs.property("arabicTessdataUrl", arabicTessdataUrl)
-    outputs.file(destination)
-
-    doLast {
-        val target = destination.get().asFile
-        if (target.isFile && target.length() in 1_000_000L..3_000_000L) return@doLast
-
-        target.parentFile.mkdirs()
-        val temporary = target.resolveSibling("${target.name}.download")
-        temporary.delete()
-        URI(arabicTessdataUrl).toURL().openStream().use { input ->
-            temporary.outputStream().buffered().use { output -> input.copyTo(output) }
-        }
-        check(temporary.length() in 1_000_000L..3_000_000L) {
-            "Arabic tessdata download is incomplete: ${temporary.length()} bytes"
-        }
-        if (!temporary.renameTo(target)) {
-            temporary.copyTo(target, overwrite = true)
-            temporary.delete()
-        }
-    }
+val arabicTessdataFile = layout.projectDirectory.file("src/main/assets/tessdata/ara.traineddata")
+val arabicTessdataTemporary = layout.buildDirectory.file("downloads/ara.traineddata")
+val prepareArabicTessdata by tasks.registering(Exec::class) {
+    val destination = arabicTessdataFile.asFile.absolutePath
+    val temporary = arabicTessdataTemporary.get().asFile.absolutePath
+    outputs.file(arabicTessdataFile)
+    commandLine(
+        "bash",
+        "-c",
+        """
+        set -euo pipefail
+        destination='${destination.replace("'", "'\\''")}'
+        temporary='${temporary.replace("'", "'\\''")}'
+        if [ -f "${'$'}destination" ]; then
+          bytes=${'$'}(wc -c < "${'$'}destination")
+          if [ "${'$'}bytes" -ge 1000000 ] && [ "${'$'}bytes" -le 3000000 ]; then
+            exit 0
+          fi
+        fi
+        mkdir -p "${'$'}(dirname "${'$'}destination")" "${'$'}(dirname "${'$'}temporary")"
+        rm -f "${'$'}temporary"
+        curl --fail --location --silent --show-error --retry 3 --retry-delay 2 \
+          '${arabicTessdataUrl}' --output "${'$'}temporary"
+        bytes=${'$'}(wc -c < "${'$'}temporary")
+        if [ "${'$'}bytes" -lt 1000000 ] || [ "${'$'}bytes" -gt 3000000 ]; then
+          echo "Arabic tessdata download is incomplete: ${'$'}bytes bytes" >&2
+          exit 1
+        fi
+        mv "${'$'}temporary" "${'$'}destination"
+        """.trimIndent(),
+    )
 }
 
 android {
@@ -55,8 +60,6 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
-
-    sourceSets.getByName("main").assets.srcDir(generatedTessdataAssets)
 
     buildTypes {
         release {
@@ -103,10 +106,16 @@ android {
     }
 }
 
-tasks.matching { task ->
-    task.name.startsWith("merge") && task.name.endsWith("Assets")
-}.configureEach {
-    dependsOn(prepareArabicTessdata)
+// Both APK assembly and lint model generation inspect the main assets directory.
+// Explicit dependencies keep Gradle 8 configuration-cache validation deterministic.
+tasks.configureEach {
+    if (
+        name == "preBuild" ||
+        name.contains("Assets", ignoreCase = false) ||
+        name.contains("Lint", ignoreCase = false)
+    ) {
+        dependsOn(prepareArabicTessdata)
+    }
 }
 
 dependencies {
