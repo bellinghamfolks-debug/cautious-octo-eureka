@@ -27,6 +27,7 @@ import com.abdullah.visionbridge.R
 import com.abdullah.visionbridge.VisionBridgeApp
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
+import com.abdullah.visionbridge.data.ocr.InstantLocalOcrBridge
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
@@ -75,6 +76,8 @@ class MediaProjectionService : Service() {
     private var lastFrameAt = 0L
     private var lastPreviewAt = 0L
     private var diagnosticSessionOpen = false
+    private var unavailableFeedSince = 0L
+    private var lastUnavailableFeedNoticeAt = 0L
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -216,7 +219,7 @@ class MediaProjectionService : Service() {
         val acquiredAtElapsedNanos = SystemClock.elapsedRealtimeNanos()
         val frameId = String.format(Locale.US, "F%09d", frameSequence.incrementAndGet())
         val trace = DiagnosticTrace(
-            traceId = "T-$frameId-${acquiredAtElapsedNanos}",
+            traceId = "T-$frameId-$acquiredAtElapsedNanos",
             frameId = frameId,
             capturedAtEpochMs = acquiredAtEpochMs,
             capturedAtElapsedNanos = acquiredAtElapsedNanos,
@@ -326,12 +329,14 @@ class MediaProjectionService : Service() {
         )
 
         DiagnosticHub.record("FRAME_CHANGE_DECISION", trace.fields(changeFields))
+        observeVisualFeedHealth(changeDecision, now, trace)
 
         if (!changeDecision.accepted) {
             recordDroppedFrame(bitmap, trace, "change_detector_rejected", changeFields)
             bitmap.recycle()
             return
         }
+        unavailableFeedSince = 0L
         lastFrameAt = now
 
         val targetMean = if (settings.mode == AnalysisMode.SCENE_DESCRIPTION) {
@@ -384,6 +389,44 @@ class MediaProjectionService : Service() {
         )
         DiagnosticHub.record("FRAME_SELECTED_FOR_ANALYSIS", trace.fields())
         submitLatestFrame(PendingFrame(bitmap, trace))
+    }
+
+    private fun observeVisualFeedHealth(
+        decision: FrameChangeDetector.Decision,
+        now: Long,
+        trace: DiagnosticTrace,
+    ) {
+        val unavailable = decision.reason == "quality_almost_black" ||
+            decision.reason == "quality_blank_low_contrast"
+        if (!unavailable) {
+            if (!decision.reason.startsWith("quality_")) unavailableFeedSince = 0L
+            return
+        }
+
+        if (unavailableFeedSince == 0L) unavailableFeedSince = now
+        val unavailableForMs = now - unavailableFeedSince
+        if (
+            unavailableForMs < UNAVAILABLE_FEED_NOTICE_AFTER_MS ||
+            now - lastUnavailableFeedNoticeAt < UNAVAILABLE_FEED_NOTICE_REPEAT_MS
+        ) return
+
+        lastUnavailableFeedNoticeAt = now
+        DiagnosticHub.record(
+            "VISUAL_FEED_UNAVAILABLE_NOTICE_TRIGGERED",
+            trace.fields(
+                mapOf(
+                    "decisionReason" to decision.reason,
+                    "unavailableForMs" to unavailableForMs,
+                    "guidance" to "open_esight_share_your_view_and_keep_live_view_visible",
+                ),
+            ),
+        )
+        serviceScope.launch {
+            InstantLocalOcrBridge.publishSystemNotice(
+                text = VISUAL_FEED_UNAVAILABLE_MESSAGE,
+                code = "VISUAL_FEED_UNAVAILABLE",
+            )
+        }
     }
 
     private fun recordDroppedFrame(
@@ -520,6 +563,8 @@ class MediaProjectionService : Service() {
     private fun resetFrameState() {
         lastFrameAt = 0L
         lastPreviewAt = 0L
+        unavailableFeedSince = 0L
+        lastUnavailableFeedNoticeAt = 0L
         frameChangeDetector.reset()
         targetChangeDetector.reset()
     }
@@ -636,6 +681,11 @@ class MediaProjectionService : Service() {
         private const val SCENE_TARGET_CHANGE_MEAN_DIFFERENCE = 8.0
         private const val SCENE_TARGET_CHANGE_RATIO = 0.12
         private const val DROPPED_PREVIEW_INTERVAL_MS = 1_000L
+
+        private const val UNAVAILABLE_FEED_NOTICE_AFTER_MS = 1_500L
+        private const val UNAVAILABLE_FEED_NOTICE_REPEAT_MS = 30_000L
+        private const val VISUAL_FEED_UNAVAILABLE_MESSAGE =
+            "لا تصل صورة قابلة للتحليل. افتح تطبيق إي سايت واضغط شير يور فيو، وتأكد أن منظر النظارة ظاهر على شاشة الهاتف."
 
         fun startIntent(context: Context, resultCode: Int, resultData: Intent) =
             Intent(context, MediaProjectionService::class.java).apply {
