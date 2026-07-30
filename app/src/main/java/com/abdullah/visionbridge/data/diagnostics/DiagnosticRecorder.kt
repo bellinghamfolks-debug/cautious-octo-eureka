@@ -24,13 +24,7 @@ import java.util.zip.Deflater
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
-/**
- * Continuous image-free diagnostic flight recorder.
- *
- * Recording starts automatically when the process emits its first event. The recorder keeps the raw
- * ordered event stream, recognized text, model output, queue decisions, timings, failures, settings,
- * and non-reconstructive visual fingerprints. It never writes a screenshot, thumbnail, or pixel grid.
- */
+/** Continuous, automatic, image-free diagnostic flight recorder. */
 class DiagnosticRecorder(context: Context) {
     data class StorageStatus(
         val sessionCount: Int,
@@ -158,7 +152,6 @@ class DiagnosticRecorder(context: Context) {
         }
     }
 
-    /** Exports every retained text event and derived analysis while explicitly excluding images. */
     suspend fun export(): File = withContext(Dispatchers.IO) {
         mutex.withLock {
             ensureSessionLocked()
@@ -186,19 +179,16 @@ class DiagnosticRecorder(context: Context) {
 
             ZipOutputStream(FileOutputStream(output)).use { zip ->
                 zip.setLevel(Deflater.BEST_COMPRESSION)
-                sessions.listFiles()
-                    ?.filter { it.isDirectory }
-                    ?.sortedBy { it.name }
-                    ?.forEach { session ->
-                        session.walkTopDown()
-                            .filter { it.isFile && !isImageFile(it) }
-                            .forEach { file ->
-                                val relative = file.relativeTo(root).path.replace(File.separatorChar, '/')
-                                zip.putNextEntry(ZipEntry(relative))
-                                file.inputStream().use { it.copyTo(zip) }
-                                zip.closeEntry()
-                            }
-                    }
+                sessionFiles().forEach { session ->
+                    session.walkTopDown()
+                        .filter { it.isFile && !isImageFile(it) }
+                        .forEach { file ->
+                            val relative = file.relativeTo(root).path.replace(File.separatorChar, '/')
+                            zip.putNextEntry(ZipEntry(relative))
+                            file.inputStream().use { it.copyTo(zip) }
+                            zip.closeEntry()
+                        }
+                }
                 writeZipText(zip, "diagnostic_summary.json", summary.toString(2))
                 writeZipText(zip, "automatic_findings.json", findings.toString(2))
                 writeZipText(zip, "trace_analysis.json", traceAnalysis.toString(2))
@@ -223,7 +213,7 @@ class DiagnosticRecorder(context: Context) {
                         put("includesSpeechTiming", true)
                         put("includesAutomaticFindings", true)
                         put("includesPerTraceAnalysis", true)
-                        put("sessionCount", sessions.listFiles()?.count { it.isDirectory } ?: 0)
+                        put("sessionCount", sessionFiles().size)
                         put("retentionDays", RETENTION_DAYS)
                         put("maximumRawBytes", MAX_TOTAL_BYTES)
                         put(
@@ -243,7 +233,7 @@ class DiagnosticRecorder(context: Context) {
     suspend fun storageStatus(): StorageStatus = withContext(Dispatchers.IO) {
         mutex.withLock {
             purgeLegacyImagesLocked()
-            val all = sessions.listFiles()?.filter { it.isDirectory }.orEmpty()
+            val all = sessionFiles()
             StorageStatus(
                 sessionCount = all.size,
                 totalBytes = all.sumOf(::directoryBytes),
@@ -315,7 +305,6 @@ class DiagnosticRecorder(context: Context) {
         forceDurable: Boolean = false,
         deriveFindings: Boolean = true,
     ) {
-        val dir = sessionDir ?: return
         if (eventWriter == null) openWriterLocked()
         val event = JSONObject().apply {
             put("schemaVersion", SCHEMA_VERSION)
@@ -353,25 +342,21 @@ class DiagnosticRecorder(context: Context) {
                 )
             }
         }
-
-        if (!dir.exists()) error("Diagnostic session directory disappeared during write")
     }
 
     private fun deriveFindings(type: String, fields: Map<String, Any?>): List<Map<String, Any?>> {
         val output = mutableListOf<Map<String, Any?>>()
-        val timingCandidates = listOf(
-            "sinceCaptureMs",
-            "durationMs",
-            "dispatchDurationMs",
-            "fingerprintSinceCaptureMs",
-            "responseHeadersSinceCaptureMs",
-            "firstEventSinceCaptureMs",
-            "totalDurationMs",
-        ).mapNotNull { key -> (fields[key] as? Number)?.toDouble()?.let { key to it } }
+        val timingCandidates = TIMING_FIELDS.mapNotNull { key ->
+            (fields[key] as? Number)?.toDouble()?.let { key to it }
+        }
         val slowest = timingCandidates.maxByOrNull { it.second }
         if (slowest != null && slowest.second >= SLOW_STAGE_MS) {
             output += finding(
-                code = if (slowest.second >= CRITICAL_STAGE_MS) "CRITICAL_PIPELINE_STALL" else "SLOW_PIPELINE_STAGE",
+                code = if (slowest.second >= CRITICAL_STAGE_MS) {
+                    "CRITICAL_PIPELINE_STALL"
+                } else {
+                    "SLOW_PIPELINE_STAGE"
+                },
                 severity = if (slowest.second >= CRITICAL_STAGE_MS) "critical" else "warning",
                 explanation = "تجاوزت مرحلة ${slowest.first} الحد الزمني المتوقع",
                 details = mapOf("timingField" to slowest.first, "valueMs" to slowest.second),
@@ -416,7 +401,7 @@ class DiagnosticRecorder(context: Context) {
             val quality = fields["qualityClass"]?.toString().orEmpty()
             if (quality.isNotBlank() && quality != "usable") {
                 output += finding(
-                    code = "VISUAL_INPUT_$quality".uppercase(Locale.US),
+                    code = "VISUAL_INPUT_${quality.uppercase(Locale.US)}",
                     severity = "warning",
                     explanation = "تشير القياسات البصرية إلى أن اللقطة غير مناسبة للقراءة",
                     details = mapOf(
@@ -442,11 +427,7 @@ class DiagnosticRecorder(context: Context) {
         }
 
         val reason = fields["reason"]?.toString().orEmpty()
-        if (
-            type in DROP_EVENTS &&
-            reason.isNotBlank() &&
-            reason !in EXPECTED_DROP_REASONS
-        ) {
+        if (type in DROP_EVENTS && reason.isNotBlank() && reason !in EXPECTED_DROP_REASONS) {
             output += finding(
                 code = "UNEXPECTED_FRAME_OR_QUEUE_DROP",
                 severity = "warning",
@@ -473,7 +454,10 @@ class DiagnosticRecorder(context: Context) {
         val dir = sessionDir ?: return
         val file = File(dir, "events.jsonl")
         eventStream = FileOutputStream(file, true)
-        eventWriter = BufferedWriter(OutputStreamWriter(eventStream, Charsets.UTF_8), WRITER_BUFFER_CHARS)
+        eventWriter = BufferedWriter(
+            OutputStreamWriter(eventStream, Charsets.UTF_8),
+            WRITER_BUFFER_CHARS,
+        )
         lastDurableSyncNanos = SystemClock.elapsedRealtimeNanos()
         eventsSinceDurableSync = 0
     }
@@ -560,12 +544,17 @@ class DiagnosticRecorder(context: Context) {
         val severityCounts = linkedMapOf<String, Int>()
         sessionFiles().forEach { session ->
             forEachEvent(session) { event ->
-                if (event.optString("type") != "AUTO_DIAGNOSTIC_FINDING") return@forEachEvent
-                val code = event.optString("code", "UNKNOWN")
-                val severity = event.optString("severity", "unknown")
-                codeCounts[code] = (codeCounts[code] ?: 0) + 1
-                severityCounts[severity] = (severityCounts[severity] ?: 0) + 1
-                findings.put(JSONObject(event.toString()).apply { put("sourceSessionId", session.name) })
+                if (event.optString("type") == "AUTO_DIAGNOSTIC_FINDING") {
+                    val code = event.optString("code", "UNKNOWN")
+                    val severity = event.optString("severity", "unknown")
+                    codeCounts[code] = (codeCounts[code] ?: 0) + 1
+                    severityCounts[severity] = (severityCounts[severity] ?: 0) + 1
+                    findings.put(
+                        JSONObject(event.toString()).apply {
+                            put("sourceSessionId", session.name)
+                        },
+                    )
+                }
             }
         }
         return JSONObject().apply {
@@ -583,95 +572,18 @@ class DiagnosticRecorder(context: Context) {
         sessionFiles().forEach { session ->
             forEachEvent(session) { event ->
                 val traceId = event.optString("traceId", event.optString("frameId", ""))
-                if (traceId.isBlank()) return@forEachEvent
-                val key = "${session.name}:$traceId"
-                val stats = traces.getOrPut(key) { TraceStats(session.name, traceId) }
-                stats.eventCount++
-                if (stats.frameId.isBlank()) stats.frameId = event.optString("frameId", "")
-                if (stats.capturedAtEpochMs == 0L) {
-                    stats.capturedAtEpochMs = event.optLong("capturedAtEpochMs", 0L)
-                }
-                val type = event.optString("type")
-                val since = event.optDoubleOrNull("sinceCaptureMs")
-                val textLength = when {
-                    event.has("textLength") -> event.optInt("textLength", 0)
-                    event.has("text") -> event.optString("text").length
-                    else -> 0
-                }
-                when (type) {
-                    "MLKIT_PROCESS_COMPLETED",
-                    "TESSERACT_PROCESS_COMPLETED",
-                    "LOCAL_OCR_COMPLETED",
-                    "INSTANT_LOCAL_OCR_PUBLISHED" -> {
-                        stats.maxLocalChars = maxOf(stats.maxLocalChars, textLength)
-                        stats.firstLocalMs = minNullable(stats.firstLocalMs, since)
-                    }
-                    "GEMINI_ANALYSIS_REQUESTED" ->
-                        stats.firstCloudRequestMs = minNullable(stats.firstCloudRequestMs, since)
-                    "MODEL_TEXT_CHUNK_EMITTED" ->
-                        stats.firstCloudChunkMs = minNullable(stats.firstCloudChunkMs, since)
-                    "MODEL_FINAL_TEXT_AVAILABLE" ->
-                        stats.maxModelChars = maxOf(stats.maxModelChars, textLength)
-                    "TEXT_DISPLAYED" -> {
-                        stats.maxDisplayedChars = maxOf(stats.maxDisplayedChars, textLength)
-                        stats.firstDisplayedMs = minNullable(stats.firstDisplayedMs, since)
-                    }
-                }
-                if (type.contains("CANCELLED") || type.contains("CANCELED")) stats.cancellationCount++
-                if (type in DROP_EVENTS) {
-                    event.optString("reason").takeIf(String::isNotBlank)?.let(stats.dropReasons::add)
-                }
-                if (type.endsWith("VISUAL_FINGERPRINT")) {
-                    stats.fingerprintCount++
-                    event.optString("qualityClass").takeIf(String::isNotBlank)?.let(stats.qualityClasses::add)
-                }
-                if (type == "AUTO_DIAGNOSTIC_FINDING") {
-                    event.optString("code").takeIf(String::isNotBlank)?.let(stats.findingCodes::add)
+                if (traceId.isNotBlank()) {
+                    val key = "${session.name}:$traceId"
+                    val stats = traces.getOrPut(key) { TraceStats(session.name, traceId) }
+                    updateTraceStats(stats, event)
                 }
             }
         }
 
         val traceArray = JSONArray()
-        traces.values.sortedWith(compareBy<TraceStats> { it.capturedAtEpochMs }.thenBy { it.traceId }).forEach { stats ->
-            val strongestEvidence = maxOf(stats.maxLocalChars, stats.maxModelChars)
-            val suspected = mutableListOf<String>()
-            if (strongestEvidence > 0 && stats.maxDisplayedChars == 0) suspected += "no_text_displayed"
-            if (
-                strongestEvidence >= INCOMPLETE_EVIDENCE_MIN_CHARS &&
-                stats.maxDisplayedChars < strongestEvidence * INCOMPLETE_DISPLAY_RATIO
-            ) suspected += "displayed_text_much_shorter_than_extracted_text"
-            if ((stats.firstDisplayedMs ?: 0.0) >= SLOW_STAGE_MS) suspected += "slow_first_useful_response"
-            if ((stats.firstCloudChunkMs ?: 0.0) >= CLOUD_STALL_MS) suspected += "slow_first_cloud_chunk"
-            if (stats.cancellationCount >= 2) suspected += "repeated_cancellation"
-            if (stats.qualityClasses.any { it != "usable" }) suspected += "poor_visual_input"
-
-            traceArray.put(
-                JSONObject().apply {
-                    put("sessionId", stats.sessionId)
-                    put("traceId", stats.traceId)
-                    put("frameId", stats.frameId)
-                    put("capturedAtEpochMs", stats.capturedAtEpochMs)
-                    put("eventCount", stats.eventCount)
-                    put("fingerprintCount", stats.fingerprintCount)
-                    put("timingsMs", JSONObject().apply {
-                        putNullable("firstLocal", stats.firstLocalMs)
-                        putNullable("firstCloudRequest", stats.firstCloudRequestMs)
-                        putNullable("firstCloudChunk", stats.firstCloudChunkMs)
-                        putNullable("firstDisplayed", stats.firstDisplayedMs)
-                    })
-                    put("textLengths", JSONObject().apply {
-                        put("maxLocal", stats.maxLocalChars)
-                        put("maxModel", stats.maxModelChars)
-                        put("maxDisplayed", stats.maxDisplayedChars)
-                    })
-                    put("cancellationCount", stats.cancellationCount)
-                    put("dropReasons", JSONArray(stats.dropReasons.toList()))
-                    put("qualityClasses", JSONArray(stats.qualityClasses.toList()))
-                    put("automaticFindingCodes", JSONArray(stats.findingCodes.toList()))
-                    put("suspectedIssues", JSONArray(suspected))
-                },
-            )
-        }
+        traces.values
+            .sortedWith(compareBy<TraceStats> { it.capturedAtEpochMs }.thenBy { it.traceId })
+            .forEach { stats -> traceArray.put(traceJson(stats)) }
         return JSONObject().apply {
             put("schemaVersion", SCHEMA_VERSION)
             put("generatedAtEpochMs", System.currentTimeMillis())
@@ -680,43 +592,154 @@ class DiagnosticRecorder(context: Context) {
         }
     }
 
+    private fun updateTraceStats(stats: TraceStats, event: JSONObject) {
+        stats.eventCount++
+        if (stats.frameId.isBlank()) stats.frameId = event.optString("frameId", "")
+        if (stats.capturedAtEpochMs == 0L) {
+            stats.capturedAtEpochMs = event.optLong("capturedAtEpochMs", 0L)
+        }
+        val type = event.optString("type")
+        val since = event.optDoubleOrNull("sinceCaptureMs")
+        val textLength = when {
+            event.has("textLength") -> event.optInt("textLength", 0)
+            event.has("text") -> event.optString("text").length
+            else -> 0
+        }
+        when (type) {
+            "MLKIT_PROCESS_COMPLETED",
+            "TESSERACT_PROCESS_COMPLETED",
+            "LOCAL_OCR_COMPLETED",
+            "INSTANT_LOCAL_OCR_PUBLISHED" -> {
+                stats.maxLocalChars = maxOf(stats.maxLocalChars, textLength)
+                stats.firstLocalMs = minNullable(stats.firstLocalMs, since)
+            }
+            "GEMINI_ANALYSIS_REQUESTED" ->
+                stats.firstCloudRequestMs = minNullable(stats.firstCloudRequestMs, since)
+            "MODEL_TEXT_CHUNK_EMITTED" ->
+                stats.firstCloudChunkMs = minNullable(stats.firstCloudChunkMs, since)
+            "MODEL_FINAL_TEXT_AVAILABLE" ->
+                stats.maxModelChars = maxOf(stats.maxModelChars, textLength)
+            "TEXT_DISPLAYED" -> {
+                stats.maxDisplayedChars = maxOf(stats.maxDisplayedChars, textLength)
+                stats.firstDisplayedMs = minNullable(stats.firstDisplayedMs, since)
+            }
+        }
+        if (type.contains("CANCELLED") || type.contains("CANCELED")) stats.cancellationCount++
+        if (type in DROP_EVENTS) {
+            val reason = event.optString("reason")
+            if (reason.isNotBlank()) stats.dropReasons += reason
+        }
+        if (type.endsWith("VISUAL_FINGERPRINT")) {
+            stats.fingerprintCount++
+            val quality = event.optString("qualityClass")
+            if (quality.isNotBlank()) stats.qualityClasses += quality
+        }
+        if (type == "AUTO_DIAGNOSTIC_FINDING") {
+            val code = event.optString("code")
+            if (code.isNotBlank()) stats.findingCodes += code
+        }
+    }
+
+    private fun traceJson(stats: TraceStats): JSONObject {
+        val strongestEvidence = maxOf(stats.maxLocalChars, stats.maxModelChars)
+        val suspected = mutableListOf<String>()
+        if (strongestEvidence > 0 && stats.maxDisplayedChars == 0) suspected += "no_text_displayed"
+        if (
+            strongestEvidence >= INCOMPLETE_EVIDENCE_MIN_CHARS &&
+            stats.maxDisplayedChars < strongestEvidence * INCOMPLETE_DISPLAY_RATIO
+        ) {
+            suspected += "displayed_text_much_shorter_than_extracted_text"
+        }
+        if ((stats.firstDisplayedMs ?: 0.0) >= SLOW_STAGE_MS) suspected += "slow_first_useful_response"
+        if ((stats.firstCloudChunkMs ?: 0.0) >= CLOUD_STALL_MS) suspected += "slow_first_cloud_chunk"
+        if (stats.cancellationCount >= 2) suspected += "repeated_cancellation"
+        if (stats.qualityClasses.any { it != "usable" }) suspected += "poor_visual_input"
+
+        return JSONObject().apply {
+            put("sessionId", stats.sessionId)
+            put("traceId", stats.traceId)
+            put("frameId", stats.frameId)
+            put("capturedAtEpochMs", stats.capturedAtEpochMs)
+            put("eventCount", stats.eventCount)
+            put("fingerprintCount", stats.fingerprintCount)
+            put(
+                "timingsMs",
+                JSONObject().apply {
+                    putNullable("firstLocal", stats.firstLocalMs)
+                    putNullable("firstCloudRequest", stats.firstCloudRequestMs)
+                    putNullable("firstCloudChunk", stats.firstCloudChunkMs)
+                    putNullable("firstDisplayed", stats.firstDisplayedMs)
+                },
+            )
+            put(
+                "textLengths",
+                JSONObject().apply {
+                    put("maxLocal", stats.maxLocalChars)
+                    put("maxModel", stats.maxModelChars)
+                    put("maxDisplayed", stats.maxDisplayedChars)
+                },
+            )
+            put("cancellationCount", stats.cancellationCount)
+            put("dropReasons", JSONArray(stats.dropReasons.toList()))
+            put("qualityClasses", JSONArray(stats.qualityClasses.toList()))
+            put("automaticFindingCodes", JSONArray(stats.findingCodes.toList()))
+            put("suspectedIssues", JSONArray(suspected))
+        }
+    }
+
     private fun pruneRetainedSessionsLocked(): Map<String, Any?> {
         purgeLegacyImagesLocked()
-        val all = sessionFiles().sortedBy { it.lastModified() }.toMutableList()
+        val retained = sessionFiles().sortedBy { it.lastModified() }.toMutableList()
         val deleted = mutableListOf<Map<String, Any?>>()
-        val cutoff = System.currentTimeMillis() - RETENTION_DAYS * 24L * 60L * 60L * 1_000L
+        val cutoff = System.currentTimeMillis() -
+            RETENTION_DAYS.toLong() * 24L * 60L * 60L * 1_000L
 
-        all.toList().forEach { candidate ->
-            if (candidate == sessionDir || candidate.lastModified() >= cutoff) return@forEach
-            val bytes = directoryBytes(candidate)
-            if (candidate.deleteRecursively()) {
-                all.remove(candidate)
-                deleted += mapOf("sessionId" to candidate.name, "bytes" to bytes, "reason" to "age_limit")
+        retained.toList().forEach { candidate ->
+            if (candidate != sessionDir && candidate.lastModified() < cutoff) {
+                val bytes = directoryBytes(candidate)
+                if (candidate.deleteRecursively()) {
+                    retained.remove(candidate)
+                    deleted += mapOf(
+                        "sessionId" to candidate.name,
+                        "bytes" to bytes,
+                        "reason" to "age_limit",
+                    )
+                }
             }
         }
 
-        var total = all.sumOf(::directoryBytes)
-        all.toList().forEach { candidate ->
-            if (total <= MAX_TOTAL_BYTES) return@forEach
-            if (candidate == sessionDir) return@forEach
-            val bytes = directoryBytes(candidate)
-            if (candidate.deleteRecursively()) {
-                total -= bytes
-                deleted += mapOf("sessionId" to candidate.name, "bytes" to bytes, "reason" to "size_limit")
+        var total = retained.sumOf(::directoryBytes)
+        retained.toList().forEach { candidate ->
+            if (total > MAX_TOTAL_BYTES && candidate != sessionDir) {
+                val bytes = directoryBytes(candidate)
+                if (candidate.deleteRecursively()) {
+                    total -= bytes
+                    deleted += mapOf(
+                        "sessionId" to candidate.name,
+                        "bytes" to bytes,
+                        "reason" to "size_limit",
+                    )
+                }
             }
         }
-        return if (deleted.isEmpty()) emptyMap() else mapOf(
-            "deletedSessions" to deleted,
-            "retainedBytes" to total,
-            "eventLogsWereRolledByPolicy" to true,
-        )
+        return if (deleted.isEmpty()) {
+            emptyMap()
+        } else {
+            mapOf(
+                "deletedSessions" to deleted,
+                "retainedBytes" to total,
+                "eventLogsWereRolledByPolicy" to true,
+            )
+        }
     }
 
     private fun purgeLegacyImagesWithoutLock() {
         sessionFiles().forEach { session ->
             File(session, "frames").deleteRecursively()
             File(session, "previews").deleteRecursively()
-            session.walkTopDown().filter { it.isFile && isImageFile(it) }.forEach(File::delete)
+            session.walkTopDown()
+                .filter { it.isFile && isImageFile(it) }
+                .forEach { it.delete() }
         }
     }
 
@@ -725,10 +748,13 @@ class DiagnosticRecorder(context: Context) {
     private fun sessionFiles(): List<File> =
         sessions.listFiles()?.filter { it.isDirectory }?.sortedBy { it.name }.orEmpty()
 
-    private inline fun forEachEvent(session: File, action: (JSONObject) -> Unit) {
+    private fun forEachEvent(session: File, action: (JSONObject) -> Unit) {
         val file = File(session, "events.jsonl")
         if (!file.isFile) return
-        file.forEachLine { line -> runCatching { JSONObject(line) }.getOrNull()?.let(action) }
+        file.forEachLine { line ->
+            val event = runCatching { JSONObject(line) }.getOrNull()
+            if (event != null) action(event)
+        }
     }
 
     private fun isImageFile(file: File): Boolean {
@@ -755,7 +781,9 @@ class DiagnosticRecorder(context: Context) {
 
     private fun jsonValue(value: Any?): Any = when (value) {
         null -> JSONObject.NULL
-        is Map<*, *> -> JSONObject(value.mapKeys { it.key.toString() }.mapValues { jsonValue(it.value) })
+        is Map<*, *> -> JSONObject(
+            value.mapKeys { it.key.toString() }.mapValues { jsonValue(it.value) },
+        )
         is Iterable<*> -> JSONArray(value.map(::jsonValue))
         is Array<*> -> JSONArray(value.map(::jsonValue))
         is Number, is Boolean, is String -> value
@@ -776,7 +804,11 @@ class DiagnosticRecorder(context: Context) {
     }
 
     private fun JSONObject.optDoubleOrNull(name: String): Double? =
-        if (has(name) && !isNull(name)) optDouble(name).takeIf { !it.isNaN() } else null
+        if (has(name) && !isNull(name)) {
+            optDouble(name).takeIf { !it.isNaN() }
+        } else {
+            null
+        }
 
     private fun JSONObject.putNullable(name: String, value: Double?) {
         put(name, value ?: JSONObject.NULL)
@@ -788,7 +820,8 @@ class DiagnosticRecorder(context: Context) {
         else -> minOf(current, candidate)
     }
 
-    private fun timestamp(): String = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+    private fun timestamp(): String =
+        SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
 
     private companion object {
         const val SCHEMA_VERSION = 3
@@ -805,6 +838,15 @@ class DiagnosticRecorder(context: Context) {
         const val INCOMPLETE_EVIDENCE_MIN_CHARS = 60
         const val INCOMPLETE_DISPLAY_RATIO = 0.45
 
+        val TIMING_FIELDS = listOf(
+            "sinceCaptureMs",
+            "durationMs",
+            "dispatchDurationMs",
+            "fingerprintSinceCaptureMs",
+            "responseHeadersSinceCaptureMs",
+            "firstEventSinceCaptureMs",
+            "totalDurationMs",
+        )
         val OCR_COMPLETION_EVENTS = setOf(
             "MLKIT_PROCESS_COMPLETED",
             "TESSERACT_PROCESS_COMPLETED",
@@ -826,33 +868,29 @@ class DiagnosticRecorder(context: Context) {
 
             التسجيل:
             - يبدأ تلقائياً، ولا يحتاج الضغط على «حدثت مشكلة الآن».
-            - زر تعليم المشكلة اختياري فقط لإضافة ملاحظة، وعدم استخدامه لا ينقص السجل.
             - الحزمة لا تحتوي أي صورة أو معاينة أو شبكة بكسلات.
 
             بديل الصور:
-            - لكل لقطة ممثلة توجد بصمة تغيّر أحادية الاتجاه لا يمكن تحويلها إلى صورة.
-            - تُحفظ قياسات السطوع، التباين، المدى الديناميكي، الحواف، الحدة، الضبابية،
-              الانسداد المحتمل، الأشرطة السوداء، مناطق أعلى ووسط وأسفل الشاشة، والمسافة عن اللقطة السابقة.
-            - تُربط هذه القياسات بمعرّف الإطار نفسه وبنتائج ML Kit وTesseract وGemini والنطق.
+            - بصمة تغيّر أحادية الاتجاه لا يمكن تحويلها إلى صورة.
+            - قياسات السطوع والتباين والحدة والحواف والضبابية والانسداد المحتمل
+              والأشرطة السوداء ومناطق أعلى ووسط وأسفل الشاشة.
+            - هندسة كتل وأسطر OCR كنسب موضعية، مع ثقة Tesseract.
 
             الملفات:
-            - sessions/*/device.json: الجهاز والإصدار والإعدادات عند بداية الجلسة.
+            - sessions/*/device.json: معلومات الجهاز والإصدار والإعدادات.
             - sessions/*/events.jsonl: الخط الزمني الخام الكامل والمرتب.
-            - diagnostic_summary.json: أعداد الأحداث والبصمات والنتائج الآلية.
-            - automatic_findings.json: الأعطال التي اكتشفها النظام تلقائياً، مثل التأخير والإلغاء
-              والصورة المظلمة أو المطموسة وعودة OCR فارغاً.
-            - trace_analysis.json: تحليل كل لقطة من الالتقاط إلى أول قراءة محلية وطلب Gemini
-              وأول مقطع سحابي والنص المعروض، مع كشف الاشتباه في القراءة الناقصة.
-            - export_manifest.json: سياسة الخصوصية ومحتويات الحزمة.
+            - diagnostic_summary.json: ملخص جميع الجلسات والأحداث.
+            - automatic_findings.json: الأعطال المكتشفة تلقائياً.
+            - trace_analysis.json: تحليل كل لقطة من الالتقاط حتى النص المعروض.
+            - export_manifest.json: وصف الحزمة وسياسة الخصوصية.
 
             الخصوصية:
-            - لا توجد صور شاشة داخل الحزمة.
-            - قد تتضمن الحزمة النص الذي قرأه التطبيق ونتيجة Gemini لأنهما ضروريان لمعرفة النقص.
+            - لا توجد صور شاشة.
+            - قد توجد النصوص المقروءة ونتائج Gemini لمعرفة النقص.
             - لا تُحفظ مفاتيح Gemini أو ترويسات التفويض.
 
             الاحتفاظ:
-            - يحتفظ التطبيق بسجل متحرك لآخر 14 يوماً بحد أقصى 256 ميجابايت من البيانات النصية.
-            - عند بلوغ الحد تُحذف أقدم جلسة كاملة، ويُسجل قرار الاحتفاظ داخل الجلسة الجديدة.
+            - آخر 14 يوماً بحد أقصى 256 ميجابايت من البيانات النصية.
         """.trimIndent()
     }
 }
