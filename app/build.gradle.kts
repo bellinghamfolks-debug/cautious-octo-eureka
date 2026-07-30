@@ -1,8 +1,38 @@
+import java.net.URI
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
+}
+
+val arabicTessdataUrl =
+    "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/ara.traineddata"
+val generatedTessdataAssets = layout.buildDirectory.dir("generated/tessdataAssets")
+val prepareArabicTessdata by tasks.registering {
+    val destination = generatedTessdataAssets.map { it.file("tessdata/ara.traineddata") }
+    inputs.property("arabicTessdataUrl", arabicTessdataUrl)
+    outputs.file(destination)
+
+    doLast {
+        val target = destination.get().asFile
+        if (target.isFile && target.length() in 1_000_000L..3_000_000L) return@doLast
+
+        target.parentFile.mkdirs()
+        val temporary = target.resolveSibling("${target.name}.download")
+        temporary.delete()
+        URI(arabicTessdataUrl).toURL().openStream().use { input ->
+            temporary.outputStream().buffered().use { output -> input.copyTo(output) }
+        }
+        check(temporary.length() in 1_000_000L..3_000_000L) {
+            "Arabic tessdata download is incomplete: ${temporary.length()} bytes"
+        }
+        if (!temporary.renameTo(target)) {
+            temporary.copyTo(target, overwrite = true)
+            temporary.delete()
+        }
+    }
 }
 
 android {
@@ -13,11 +43,11 @@ android {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10
-        versionName = "1.8.0"
+        versionCode = 11
+        versionName = "1.9.0"
 
         // Xiaomi 14T uses a 64-bit ARM processor. Keeping only arm64-v8a removes native ML Kit
-        // binaries for emulators and legacy 32-bit phones from the installable APK.
+        // and Tesseract binaries for emulators and legacy 32-bit phones.
         ndk {
             abiFilters += "arm64-v8a"
         }
@@ -25,6 +55,8 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
+
+    sourceSets.getByName("main").assets.srcDir(generatedTessdataAssets)
 
     buildTypes {
         release {
@@ -71,6 +103,12 @@ android {
     }
 }
 
+tasks.matching { task ->
+    task.name.startsWith("merge") && task.name.endsWith("Assets")
+}.configureEach {
+    dependsOn(prepareArabicTessdata)
+}
+
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)
@@ -95,6 +133,7 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
     implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("cz.adaptech.tesseract4android:tesseract4android-openmp:4.9.0")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
