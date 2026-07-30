@@ -7,6 +7,7 @@ import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticRecorder
 import com.abdullah.visionbridge.data.gemini.GeminiVisionRepository
 import com.abdullah.visionbridge.data.network.CellularNetworkManager
+import com.abdullah.visionbridge.data.ocr.InstantLocalOcrBridge
 import com.abdullah.visionbridge.data.ocr.LocalTextRecognizer
 import com.abdullah.visionbridge.data.security.AndroidKeystoreApiKeyStore
 import com.abdullah.visionbridge.data.settings.SettingsRepositoryImpl
@@ -24,8 +25,17 @@ class AppContainer(context: Context) {
     val apiKeyStore: ApiKeyStore = AndroidKeystoreApiKeyStore(appContext)
     private val networkManager = CellularNetworkManager(appContext)
     private val visionRepository = GeminiVisionRepository(networkManager)
-    private val localOcr = LocalTextRecognizer()
     private val tts = BilingualTtsEngine(appContext)
+
+    init {
+        InstantLocalOcrBridge.initialize(
+            settingsRepository = settingsRepository,
+            runtime = runtime,
+            tts = tts,
+        )
+    }
+
+    private val localOcr = LocalTextRecognizer(appContext)
 
     val coordinator = FrameAnalysisCoordinator(
         settingsRepository = settingsRepository,

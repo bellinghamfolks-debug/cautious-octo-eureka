@@ -5,6 +5,41 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+val arabicTessdataUrl =
+    "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/ara.traineddata"
+val arabicTessdataFile = layout.projectDirectory.file("src/main/assets/tessdata/ara.traineddata")
+val arabicTessdataTemporary = layout.buildDirectory.file("downloads/ara.traineddata")
+val prepareArabicTessdata by tasks.registering(Exec::class) {
+    val destination = arabicTessdataFile.asFile.absolutePath
+    val temporary = arabicTessdataTemporary.get().asFile.absolutePath
+    outputs.file(arabicTessdataFile)
+    commandLine(
+        "bash",
+        "-c",
+        """
+        set -euo pipefail
+        destination='${destination.replace("'", "'\\''")}'
+        temporary='${temporary.replace("'", "'\\''")}'
+        if [ -f "${'$'}destination" ]; then
+          bytes=${'$'}(wc -c < "${'$'}destination")
+          if [ "${'$'}bytes" -ge 1000000 ] && [ "${'$'}bytes" -le 3000000 ]; then
+            exit 0
+          fi
+        fi
+        mkdir -p "${'$'}(dirname "${'$'}destination")" "${'$'}(dirname "${'$'}temporary")"
+        rm -f "${'$'}temporary"
+        curl --fail --location --silent --show-error --retry 3 --retry-delay 2 \
+          '${arabicTessdataUrl}' --output "${'$'}temporary"
+        bytes=${'$'}(wc -c < "${'$'}temporary")
+        if [ "${'$'}bytes" -lt 1000000 ] || [ "${'$'}bytes" -gt 3000000 ]; then
+          echo "Arabic tessdata download is incomplete: ${'$'}bytes bytes" >&2
+          exit 1
+        fi
+        mv "${'$'}temporary" "${'$'}destination"
+        """.trimIndent(),
+    )
+}
+
 android {
     namespace = "com.abdullah.visionbridge"
     compileSdk = 35
@@ -13,11 +48,11 @@ android {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10
-        versionName = "1.8.0"
+        versionCode = 11
+        versionName = "1.9.0"
 
         // Xiaomi 14T uses a 64-bit ARM processor. Keeping only arm64-v8a removes native ML Kit
-        // binaries for emulators and legacy 32-bit phones from the installable APK.
+        // and Tesseract binaries for emulators and legacy 32-bit phones.
         ndk {
             abiFilters += "arm64-v8a"
         }
@@ -71,6 +106,18 @@ android {
     }
 }
 
+// Both APK assembly and lint model generation inspect the main assets directory.
+// Explicit dependencies keep Gradle 8 configuration-cache validation deterministic.
+tasks.configureEach {
+    if (
+        name == "preBuild" ||
+        name.contains("Assets", ignoreCase = false) ||
+        name.contains("Lint", ignoreCase = false)
+    ) {
+        dependsOn(prepareArabicTessdata)
+    }
+}
+
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)
@@ -95,6 +142,7 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
     implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("cz.adaptech.tesseract4android:tesseract4android-openmp:4.9.0")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
