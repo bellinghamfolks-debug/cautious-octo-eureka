@@ -5,7 +5,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.abdullah.visionbridge.VisionBridgeApp
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
-import com.abdullah.visionbridge.data.diagnostics.SmartDiagnosticExport
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
@@ -95,27 +94,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         container.settingsRepository.setSpeechRate(rate)
     }
 
+    /** Optional label only. The recorder already captures the complete timeline automatically. */
     fun markDiagnosticProblem(note: String) = viewModelScope.launch {
         runCatching {
             DiagnosticHub.markProblem(note)
             DiagnosticHub.storageStatus()
         }.onSuccess { status ->
+            val megabytes = status.totalBytes.toDouble() / (1024.0 * 1024.0)
             message.value =
-                "تم تعليم لحظة المشكلة وربطها بأقرب إطار. محفوظ ${status.imageCount} صورة تشخيصية في ${status.sessionCount} جلسة"
-        }.onFailure { message.value = it.message ?: "تعذر تعليم لحظة المشكلة" }
+                "أضيفت العلامة الاختيارية. التشخيص التلقائي كان يعمل مسبقاً، ومحفوظ ${status.sessionCount} جلسة بلا صور بحجم ${String.format(Locale.US, "%.1f", megabytes)} ميجابايت"
+        }.onFailure { message.value = it.message ?: "تعذر إضافة العلامة الاختيارية" }
     }
 
     fun exportDiagnostics(onReady: (File) -> Unit) = viewModelScope.launch {
-        message.value = "يجري تجهيز حزمة تشخيص ذكية صغيرة حول آخر مشكلة"
+        message.value = "يجري ضغط سجل التشخيص التلقائي الشامل بلا صور"
         runCatching {
-            DiagnosticHub.record("SMART_DIAGNOSTIC_EXPORT_REQUESTED")
-            DiagnosticHub.flush()
-            SmartDiagnosticExport.create(getApplication())
+            DiagnosticHub.record(
+                "AUTOMATIC_DIAGNOSTIC_EXPORT_REQUESTED",
+                mapOf(
+                    "manualProblemMarkerRequired" to false,
+                    "includesImages" to false,
+                ),
+            )
+            DiagnosticHub.export()
         }.onSuccess { file ->
             val megabytes = file.length().toDouble() / (1024.0 * 1024.0)
-            message.value = "تم تجهيز حزمة التشخيص: ${String.format(Locale.US, "%.1f", megabytes)} ميجابايت"
+            message.value =
+                "تم تجهيز التشخيص التلقائي الشامل بلا صور: ${String.format(Locale.US, "%.1f", megabytes)} ميجابايت"
             onReady(file)
-        }.onFailure { message.value = it.message ?: "تعذر إنشاء حزمة التشخيص الذكية" }
+        }.onFailure { message.value = it.message ?: "تعذر إنشاء حزمة التشخيص التلقائي" }
     }
 
     fun clearMessage() { message.value = null }

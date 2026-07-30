@@ -2,14 +2,12 @@ package com.abdullah.visionbridge.ui
 
 import android.Manifest
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
-import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -68,7 +66,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        DiagnosticHub.record("MAIN_ACTIVITY_CREATED")
+        DiagnosticHub.record(
+            "MAIN_ACTIVITY_CREATED",
+            mapOf(
+                "automaticDiagnostics" to true,
+                "manualProblemMarkerRequired" to false,
+                "storesImages" to false,
+            ),
+        )
         setContent {
             val state = viewModel.uiState.collectAsStateWithLifecycle().value
             VisionBridgeTheme {
@@ -100,19 +105,16 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
                             .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
                         horizontalAlignment = Alignment.End,
                     ) {
-                        Button(
-                            onClick = { this@MainActivity.showProblemMarkerDialog() },
-                            modifier = Modifier
-                                .height(56.dp)
-                                .semantics {
-                                    contentDescription = "تعليم لحظة حدوث مشكلة في القراءة أو وصف المشهد داخل ملف التشخيص"
-                                },
-                        ) {
-                            Text("حدثت مشكلة الآن")
-                        }
+                        Text(
+                            "التشخيص يسجل تلقائياً بلا صور",
+                            modifier = Modifier.semantics {
+                                contentDescription =
+                                    "نظام التشخيص التلقائي يعمل باستمرار ولا يحتاج تعليم لحظة المشكلة، ولا يحفظ صور الشاشة"
+                            },
+                        )
                         Button(
                             onClick = {
                                 viewModel.exportDiagnostics { file ->
@@ -122,35 +124,16 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier
                                 .height(56.dp)
                                 .semantics {
-                                    contentDescription = "مشاركة حزمة تشخيص ذكية صغيرة تركز على آخر مشكلة وصورها القريبة"
+                                    contentDescription =
+                                        "مشاركة سجل التشخيص التلقائي الشامل، بلا صور، مع البصمات البصرية والتوقيتات والنصوص"
                                 },
                         ) {
-                            Text("مشاركة التشخيص")
+                            Text("مشاركة التشخيص التلقائي")
                         }
                     }
                 }
             }
         }
-    }
-
-    private fun showProblemMarkerDialog() {
-        DiagnosticHub.record("PROBLEM_MARKER_DIALOG_OPENED")
-        val note = EditText(this@MainActivity).apply {
-            hint = "مثال: صورت عطراً ولم يقرأه، أو لم يصف المشهد"
-            minLines = 2
-            contentDescription = "ملاحظة اختيارية تصف المشكلة التي حدثت الآن"
-        }
-        AlertDialog.Builder(this@MainActivity)
-            .setTitle("تعليم لحظة المشكلة")
-            .setMessage("اكتب ملاحظة اختيارية، ثم اضغط حفظ. سيُربط التوقيت بأقرب الصور والنصوص والأحداث.")
-            .setView(note)
-            .setPositiveButton("حفظ العلامة") { _, _ ->
-                val value = note.text?.toString().orEmpty()
-                DiagnosticHub.record("USER_CONFIRMED_PROBLEM_MARKER", mapOf("note" to value))
-                viewModel.markDiagnosticProblem(value)
-            }
-            .setNegativeButton("إلغاء", null)
-            .show()
     }
 
     private fun shareDiagnosticFile(file: File) {
@@ -163,10 +146,10 @@ class MainActivity : ComponentActivity() {
             val share = Intent(Intent.ACTION_SEND).apply {
                 type = "application/zip"
                 putExtra(Intent.EXTRA_STREAM, uri)
-                putExtra(Intent.EXTRA_SUBJECT, "VisionBridge smart diagnostic bundle")
+                putExtra(Intent.EXTRA_SUBJECT, "VisionBridge automatic image-free diagnostics")
                 putExtra(
                     Intent.EXTRA_TEXT,
-                    "حزمة تشخيص رفيق الرؤية الذكية. تركز على آخر مشكلة، وتضم الأحداث والصور الأقرب إليها ضمن ملف واحد محدود الحجم.",
+                    "حزمة تشخيص رفيق الرؤية التلقائية الشاملة. لا تحتوي صوراً، وتضم الخط الزمني الكامل والبصمات البصرية غير القابلة لإعادة البناء ونتائج OCR وGemini والنطق والتوقيتات والتحليل الآلي لكل لقطة.",
                 )
                 clipData = ClipData.newRawUri("VisionBridge diagnostics", uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -176,11 +159,14 @@ class MainActivity : ComponentActivity() {
                 mapOf(
                     "fileName" to file.name,
                     "fileBytes" to file.length(),
-                    "includesImages" to true,
-                    "smartFocusedExport" to true,
+                    "includesImages" to false,
+                    "automaticContinuousRecording" to true,
+                    "manualProblemMarkerRequired" to false,
                 ),
             )
-            this@MainActivity.startActivity(Intent.createChooser(share, "مشاركة حزمة التشخيص الذكية"))
+            this@MainActivity.startActivity(
+                Intent.createChooser(share, "مشاركة التشخيص التلقائي الشامل")
+            )
         }.onFailure { error ->
             DiagnosticHub.failure("DIAGNOSTIC_SHARE", error)
             Toast.makeText(
