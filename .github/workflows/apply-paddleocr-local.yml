@@ -1,0 +1,127 @@
+name: Apply PaddleOCR local mode
+
+on:
+  push:
+    branches: ["codex/paddleocr-ar-en-local"]
+    paths:
+      - ".github/workflows/apply-paddleocr-local.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-paddleocr-local
+  cancel-in-progress: false
+
+jobs:
+  generate-build-and-publish:
+    name: Generate PaddleOCR, verify, and publish branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build tools, NDK, and CMake
+        run: |
+          yes | sdkmanager \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.0.12077973" \
+            "cmake;3.22.1"
+
+      - name: Reconstruct pinned PaddleOCR bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat \
+            scripts/.paddle-bootstrap.part-aa \
+            scripts/.paddle-bootstrap.part-ab \
+            scripts/.paddle-bootstrap.part-ac \
+            | base64 --decode > scripts/bootstrap_paddleocr_local.py
+          cat scripts/.paddle-bootstrap.tail-1 >> scripts/bootstrap_paddleocr_local.py
+          if [ -f scripts/.paddle-bootstrap.tail-2 ]; then
+            cat scripts/.paddle-bootstrap.tail-2 >> scripts/bootstrap_paddleocr_local.py
+          fi
+          python3 -m py_compile scripts/bootstrap_paddleocr_local.py
+
+      - name: Install official Paddle Lite optimizer
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --pre paddlelite
+
+      - name: Generate arm64 PaddleOCR implementation
+        run: python3 scripts/bootstrap_paddleocr_local.py
+
+      - name: Verify project structure and secrets
+        run: python3 scripts/verify_project.py
+
+      - name: Lint, unit tests, and assemble ARM64 APK
+        shell: bash
+        run: |
+          set +e
+          ./gradlew --no-daemon --console=plain lintDebug testDebugUnitTest assembleDebug > paddle-build.log 2>&1
+          status=$?
+          cat paddle-build.log
+          exit "$status"
+
+      - name: Verify local OCR composition
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f app/src/main/assets/paddleocr/arabic_ppocrv5_mobile_rec.nb
+          test -f app/src/main/assets/paddleocr/en_ppocrv5_mobile_rec.nb
+          test -f app/src/main/assets/paddleocr/ppocrv5_mobile_det.nb
+          test -f app/build/outputs/apk/debug/app-debug.apk
+          ! grep -RinE 'mlkit:text-recognition|tesseract|tess-two' app/build.gradle.kts app/src/main || false
+          if grep -RinE 'mlkit:text-recognition|tesseract|tess-two' app/build.gradle.kts app/src/main; then
+            echo "Competing OCR implementation remains" >&2
+            exit 1
+          fi
+
+      - name: Commit generated implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f scripts/.paddle-bootstrap.part-* scripts/.paddle-bootstrap.tail-*
+          rm -f .github/workflows/apply-paddleocr-local.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Release VisionBridge 1.12.0 local PaddleOCR"
+          git push
+
+      - name: Upload VisionBridge 1.12.0 ARM64 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VisionBridge-1.12.0-PaddleOCR-arm64-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paddleocr-build-log
+          path: paddle-build.log
+          if-no-files-found: ignore
+          retention-days: 5
