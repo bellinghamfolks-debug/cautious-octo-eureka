@@ -480,7 +480,14 @@ class FrameAnalysisCoordinator(
                 ),
             ),
         )
-        if (localText.isNotBlank() && generationAtCapture == visualGeneration.get()) {
+        if (
+            localText.isNotBlank() &&
+            VisualChangeDeliveryPolicy.mayDeliver(
+                generationAtCapture = generationAtCapture,
+                currentGeneration = visualGeneration.get(),
+                interruptOnVisualChange = settings.interruptSpeechOnVisualChange,
+            )
+        ) {
             val result = AnalysisResult(
                 text = localText,
                 source = AnalysisSource.LOCAL_OCR,
@@ -688,9 +695,14 @@ class FrameAnalysisCoordinator(
         generationAtCapture: Long,
         trace: DiagnosticTrace?,
     ) {
-        val targetChanged = generationAtCapture != visualGeneration.get()
-        val staleMustStop = settings.mode == AnalysisMode.TEXT_READING || settings.interruptSpeechOnVisualChange
-        if (targetChanged && staleMustStop) {
+        val currentGeneration = visualGeneration.get()
+        if (
+            !VisualChangeDeliveryPolicy.mayDeliver(
+                generationAtCapture = generationAtCapture,
+                currentGeneration = currentGeneration,
+                interruptOnVisualChange = settings.interruptSpeechOnVisualChange,
+            )
+        ) {
             DiagnosticHub.record(
                 "STREAM_CHUNK_REJECTED",
                 trace.fieldsOrEmpty(
@@ -712,10 +724,12 @@ class FrameAnalysisCoordinator(
         generationAtCapture: Long,
         trace: DiagnosticTrace?,
     ) {
-        val targetCurrent = generationAtCapture == visualGeneration.get()
-        val mayPublishStaleScene =
-            settings.mode == AnalysisMode.SCENE_DESCRIPTION && !settings.interruptSpeechOnVisualChange
-        if (targetCurrent || mayPublishStaleScene) {
+        val mayDeliver = VisualChangeDeliveryPolicy.mayDeliver(
+            generationAtCapture = generationAtCapture,
+            currentGeneration = visualGeneration.get(),
+            interruptOnVisualChange = settings.interruptSpeechOnVisualChange,
+        )
+        if (mayDeliver) {
             runtime.result(result)
             DiagnosticHub.record(
                 "TEXT_DISPLAYED",
@@ -744,10 +758,11 @@ class FrameAnalysisCoordinator(
     }
 
     /**
-     * Speech interruption and network supersession are separate concerns. A user may choose to let
-     * an utterance finish, but an OCR request for a page they no longer view must never hold the only
-     * cloud lane. Text requests are therefore cancelled on a real target change regardless of the
-     * speech setting; live scene requests retain the original user-controlled behaviour.
+     * Visual generations always advance so queue quality and diagnostics know that the camera moved.
+     * Cancelling an active Gemini request is controlled only by the user's interruption setting.
+     * When interruption is disabled, the current response finishes while the queue retains only the
+     * newest pending frame. This prevents camera movement from cancelling every request before the
+     * server has time to answer.
      */
     fun onVisualTargetChanged(interruptSpeech: Boolean) {
         val newGeneration = visualGeneration.incrementAndGet()
@@ -762,8 +777,24 @@ class FrameAnalysisCoordinator(
         if (interruptSpeech) tts.onVisualTargetChanged(true)
 
         synchronized(cloudQueueLock) {
-            val shouldSupersedeCloud = activeCloudMode == AnalysisMode.TEXT_READING || interruptSpeech
-            if (!shouldSupersedeCloud) return@synchronized
+            if (!VisualChangeDeliveryPolicy.shouldCancelActiveRequest(interruptSpeech)) {
+                val hasActiveRequest = cloudJob?.isActive == true
+                val hasPendingFrame = pendingCloudFrame != null
+                if (hasActiveRequest || hasPendingFrame) {
+                    DiagnosticHub.record(
+                        "CLOUD_ACTIVE_REQUEST_PRESERVED",
+                        mapOf(
+                            "activeCloudMode" to activeCloudMode?.name,
+                            "newGeneration" to newGeneration,
+                            "interruptSpeech" to false,
+                            "hasActiveRequest" to hasActiveRequest,
+                            "hasPendingFrame" to hasPendingFrame,
+                            "reason" to "visual_change_interruption_disabled",
+                        ),
+                    )
+                }
+                return@synchronized
+            }
 
             pendingCloudFrame?.let { pending ->
                 DiagnosticHub.record(
@@ -784,7 +815,7 @@ class FrameAnalysisCoordinator(
                     mapOf(
                         "activeCloudMode" to activeCloudMode?.name,
                         "newGeneration" to newGeneration,
-                        "interruptSpeech" to interruptSpeech,
+                        "interruptSpeech" to true,
                     ),
                 )
                 active.cancel(CancellationException("visual_target_changed"))
