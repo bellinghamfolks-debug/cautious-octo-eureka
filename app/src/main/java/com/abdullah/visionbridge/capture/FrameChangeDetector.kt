@@ -127,8 +127,20 @@ class FrameChangeDetector {
         minimumMeanDifference: Double,
         minimumChangedRatio: Double,
     ): Decision {
-        // Fast text and scene description must remain available in dark environments. The quality
-        // gate is intentionally limited to stable OCR, where waiting for a better frame is safe.
+        // A truly black or blank MediaProjection frame is not a dark scene; it means there is no
+        // usable visual feed to analyze. Reject only these two terminal states in every mode so the
+        // service can tell the user to open eSight's Share your view. Other low-light or blurred
+        // frames remain available to fast text and scene description as before.
+        val quality = evaluateUsability(bitmap)
+        if (!quality.accepted && quality.reason in FAST_TERMINAL_QUALITY_REASONS) {
+            return Decision(
+                accepted = false,
+                reason = "quality_${quality.reason}",
+                meanAbsoluteDifference = null,
+                changedPixelRatio = null,
+            )
+        }
+
         val signature = signature(bitmap)
         val accepted = acceptedSignature
         if (accepted == null) {
@@ -351,5 +363,7 @@ class FrameChangeDetector {
         const val MIN_FOCUS_VARIANCE = 950.0
         const val BRIGHT_OCCLUSION_RATIO = 0.050
         const val BRIGHT_OCCLUSION_MAX_FOCUS = 2_000.0
+
+        val FAST_TERMINAL_QUALITY_REASONS = setOf("almost_black", "blank_low_contrast")
     }
 }
