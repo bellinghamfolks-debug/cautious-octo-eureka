@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: android-${{ github.ref }}
@@ -35,6 +35,25 @@ jobs:
 
       - name: Install Android 35 SDK
         run: yes | sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Apply VisionBridge 1.11.0 stability implementation
+        if: github.ref == 'refs/heads/codex/visionbridge-stability-1.11.0'
+        run: python3 scripts/apply_stability_1_11.py
+
+      - name: Commit materialized stability implementation
+        if: github.ref == 'refs/heads/codex/visionbridge-stability-1.11.0'
+        shell: bash
+        run: |
+          if ! git diff --quiet; then
+            git config user.name "VisionBridge CI"
+            git config user.email "actions@users.noreply.github.com"
+            git add \
+              app/build.gradle.kts \
+              app/src/main/java/com/abdullah/visionbridge/capture/FrameAnalysisCoordinator.kt \
+              app/src/main/java/com/abdullah/visionbridge/data/speech/BilingualTtsEngine.kt
+            git commit -m "Release VisionBridge 1.11.0 stability recovery"
+            git push
+          fi
 
       - name: Verify repository structure and secrets
         run: python3 scripts/verify_project.py
