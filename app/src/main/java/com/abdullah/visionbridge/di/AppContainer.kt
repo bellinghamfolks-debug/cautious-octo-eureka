@@ -24,7 +24,7 @@ class AppContainer(context: Context) {
     val apiKeyStore: ApiKeyStore = AndroidKeystoreApiKeyStore(appContext)
     private val networkManager = CellularNetworkManager(appContext)
     private val visionRepository = GeminiVisionRepository(networkManager)
-    private val localOcr = LocalTextRecognizer()
+    private val localOcr = LocalTextRecognizer(appContext)
     private val tts = BilingualTtsEngine(appContext)
 
     val coordinator = FrameAnalysisCoordinator(
