@@ -2,10 +2,12 @@ package com.abdullah.visionbridge.data.ocr
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Rect
 import android.os.SystemClock
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.googlecode.tesseract.android.TessBaseAPI
@@ -30,6 +32,7 @@ import kotlin.math.roundToInt
  *
  * ML Kit returns Latin text very quickly, while a pre-warmed Tesseract LSTM instance reads Arabic.
  * The first useful lane is emitted immediately; the merged result follows when both lanes finish.
+ * Diagnostics include text geometry and confidence summaries so image files are not required.
  */
 class LocalTextRecognizer(context: Context) {
     private val appContext = context.applicationContext
@@ -102,6 +105,20 @@ class LocalTextRecognizer(context: Context) {
             val latinText = latin.await()
             val arabicText = arabic.await()
             val merged = LocalOcrTextMerger.merge(arabicText, latinText)
+            DiagnosticHub.record(
+                "HYBRID_LOCAL_OCR_MERGED",
+                mapOf(
+                    "requestId" to requestId,
+                    "latinLength" to latinText.length,
+                    "arabicLength" to arabicText.length,
+                    "mergedLength" to merged.length,
+                    "mergedLineCount" to merged.lineSequence().count { it.isNotBlank() },
+                    "mergedWordCount" to wordCount(merged),
+                    "arabicCharacterCount" to merged.count(::isArabic),
+                    "latinCharacterCount" to merged.count(::isLatin),
+                    "text" to merged,
+                ),
+            )
             if (merged.isNotBlank() && LocalOcrTextMerger.novel(firstText, merged).isNotBlank()) {
                 emit(merged, "HYBRID_LOCAL_FINAL")
             }
@@ -116,13 +133,38 @@ class LocalTextRecognizer(context: Context) {
             "MLKIT_PROCESS_STARTED",
             trace.fieldsOrEmpty(mapOf("width" to bitmap.width, "height" to bitmap.height)),
         )
-        val text = latinRecognizer.process(InputImage.fromBitmap(bitmap, 0)).await().text.trim()
+        val result = latinRecognizer.process(InputImage.fromBitmap(bitmap, 0)).await()
+        val text = result.text.trim()
+        val blockGeometry = result.textBlocks.mapIndexed { blockIndex, block ->
+            mapOf(
+                "blockIndex" to blockIndex,
+                "textLength" to block.text.length,
+                "lineCount" to block.lines.size,
+                "boundingBox" to normalizedBox(block.boundingBox, bitmap.width, bitmap.height),
+                "lines" to block.lines.mapIndexed { lineIndex, line ->
+                    mapOf(
+                        "lineIndex" to lineIndex,
+                        "textLength" to line.text.length,
+                        "elementCount" to line.elements.size,
+                        "boundingBox" to normalizedBox(line.boundingBox, bitmap.width, bitmap.height),
+                        "recognizedText" to line.text,
+                    )
+                },
+            )
+        }
         DiagnosticHub.record(
             "MLKIT_PROCESS_COMPLETED",
             trace.fieldsOrEmpty(
                 mapOf(
                     "durationMs" to elapsedMs(started),
                     "textLength" to text.length,
+                    "lineCount" to result.textBlocks.sumOf { it.lines.size },
+                    "blockCount" to result.textBlocks.size,
+                    "wordCount" to wordCount(text),
+                    "arabicCharacterCount" to text.count(::isArabic),
+                    "latinCharacterCount" to text.count(::isLatin),
+                    "textCoverage" to textCoverage(result, bitmap.width, bitmap.height),
+                    "textGeometry" to blockGeometry,
                     "text" to text,
                     "blank" to text.isBlank(),
                 ),
@@ -150,6 +192,7 @@ class LocalTextRecognizer(context: Context) {
             val engine = ensureArabicEngineLocked()
             engine.setImage(prepared)
             val text = engine.getUTF8Text().orEmpty().trim()
+            val confidence = runCatching { engine.meanConfidence() }.getOrDefault(-1)
             engine.clear()
             DiagnosticHub.record(
                 "TESSERACT_PROCESS_COMPLETED",
@@ -157,6 +200,12 @@ class LocalTextRecognizer(context: Context) {
                     mapOf(
                         "durationMs" to elapsedMs(started),
                         "textLength" to text.length,
+                        "lineCount" to text.lineSequence().count { it.isNotBlank() },
+                        "wordCount" to wordCount(text),
+                        "meanConfidence" to confidence,
+                        "arabicCharacterCount" to text.count(::isArabic),
+                        "latinCharacterCount" to text.count(::isLatin),
+                        "digitCount" to text.count(Char::isDigit),
                         "text" to text,
                         "blank" to text.isBlank(),
                     ),
@@ -166,6 +215,29 @@ class LocalTextRecognizer(context: Context) {
         } finally {
             if (prepared !== bitmap) prepared.recycle()
         }
+    }
+
+    private fun textCoverage(result: Text, width: Int, height: Int): Double {
+        val frameArea = width.toDouble() * height.toDouble()
+        if (frameArea <= 0.0) return 0.0
+        val estimatedArea = result.textBlocks.sumOf { block ->
+            block.boundingBox?.let { it.width().coerceAtLeast(0).toLong() * it.height().coerceAtLeast(0).toLong() }
+                ?: 0L
+        }
+        return (estimatedArea / frameArea).coerceIn(0.0, 1.0)
+    }
+
+    private fun normalizedBox(rect: Rect?, width: Int, height: Int): Map<String, Double>? {
+        rect ?: return null
+        if (width <= 0 || height <= 0) return null
+        return mapOf(
+            "left" to (rect.left.toDouble() / width).coerceIn(0.0, 1.0),
+            "top" to (rect.top.toDouble() / height).coerceIn(0.0, 1.0),
+            "right" to (rect.right.toDouble() / width).coerceIn(0.0, 1.0),
+            "bottom" to (rect.bottom.toDouble() / height).coerceIn(0.0, 1.0),
+            "width" to (rect.width().toDouble() / width).coerceIn(0.0, 1.0),
+            "height" to (rect.height().toDouble() / height).coerceIn(0.0, 1.0),
+        )
     }
 
     private fun ensureArabicEngineLocked(): TessBaseAPI {
@@ -214,6 +286,14 @@ class LocalTextRecognizer(context: Context) {
             true,
         )
     }
+
+    private fun wordCount(text: String): Int = text
+        .trim()
+        .split(Regex("\\s+"))
+        .count { it.isNotBlank() }
+
+    private fun isArabic(value: Char): Boolean = value in '\u0600'..'\u06FF'
+    private fun isLatin(value: Char): Boolean = value in 'A'..'Z' || value in 'a'..'z'
 
     private fun elapsedMs(started: Long): Double =
         (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0
