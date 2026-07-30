@@ -17,10 +17,11 @@ import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Publishes useful on-device OCR immediately, independently of the slower cloud lane.
+ * Publishes safe on-device Latin OCR immediately, independently of the slower cloud lane.
  *
- * This bridge is process-scoped because capture and OCR already live for the application lifetime.
- * Request IDs prevent an older local result from replacing a newer frame.
+ * Only ML Kit Latin output is allowed to reach the user. This is a defense-in-depth boundary: even
+ * if another local engine is added accidentally, its output is logged and suppressed until an
+ * explicit reliability policy approves it.
  */
 internal object InstantLocalOcrBridge {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -45,6 +46,20 @@ internal object InstantLocalOcrBridge {
     }
 
     suspend fun publish(requestId: Long, text: String, source: String) {
+        if (source != SAFE_LOCAL_SOURCE) {
+            DiagnosticHub.record(
+                "INSTANT_LOCAL_OCR_SUPPRESSED",
+                mapOf(
+                    "requestId" to requestId,
+                    "source" to source,
+                    "reason" to "source_not_approved_for_user_facing_output",
+                    "text" to text,
+                    "approvedSource" to SAFE_LOCAL_SOURCE,
+                ),
+            )
+            return
+        }
+
         val cleaned = LocalOcrTextMerger.merge(text, "")
         if (!isUseful(cleaned)) {
             DiagnosticHub.record(
@@ -81,12 +96,11 @@ internal object InstantLocalOcrBridge {
             if (novel.isBlank()) return
             publishedForRequest = LocalOcrTextMerger.merge(cleaned, publishedForRequest)
 
-            val language = if (cleaned.any { it in '\u0600'..'\u06FF' }) "mixed" else "en"
             runtime?.result(
                 AnalysisResult(
                     text = cleaned,
                     source = AnalysisSource.LOCAL_OCR,
-                    language = language,
+                    language = "en",
                 )
             )
             DiagnosticHub.record(
@@ -96,7 +110,7 @@ internal object InstantLocalOcrBridge {
                     "source" to source,
                     "text" to cleaned,
                     "spokenDelta" to novel,
-                    "language" to language,
+                    "language" to "en",
                 ),
             )
 
@@ -121,6 +135,28 @@ internal object InstantLocalOcrBridge {
         }
     }
 
+    /** Speaks an operational warning that is not OCR content. */
+    suspend fun publishSystemNotice(text: String, code: String) {
+        runtime?.notice(text)
+        DiagnosticHub.record(
+            "SYSTEM_NOTICE_PUBLISHED",
+            mapOf(
+                "code" to code,
+                "text" to text,
+                "speechEnabled" to settings.get().speechEnabled,
+            ),
+        )
+        val currentSettings = settings.get()
+        if (currentSettings.speechEnabled) {
+            tts?.speak(
+                text = text,
+                urgent = true,
+                rate = currentSettings.speechRate,
+                interruptPrevious = true,
+            )
+        }
+    }
+
     private fun isUseful(text: String): Boolean {
         val letters = text.count(Char::isLetter)
         val digits = text.count(Char::isDigit)
@@ -128,6 +164,7 @@ internal object InstantLocalOcrBridge {
         return letters >= MIN_LETTERS || (letters + digits >= MIN_ALNUM && lines >= 2)
     }
 
+    private const val SAFE_LOCAL_SOURCE = "MLKIT_LATIN"
     private const val MIN_LETTERS = 4
     private const val MIN_ALNUM = 6
 }
