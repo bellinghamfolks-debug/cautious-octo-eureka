@@ -16,9 +16,9 @@ concurrency:
 
 jobs:
   generate-build-and-publish:
-    name: Generate PaddleOCR, verify, and publish branch
+    name: Generate PaddleOCR, diagnostics v4, verify, and publish
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Checkout branch
@@ -62,6 +62,7 @@ jobs:
             cat scripts/.paddle-bootstrap.tail-2 >> scripts/bootstrap_paddleocr_local.py
           fi
           python3 -m py_compile scripts/bootstrap_paddleocr_local.py
+          python3 -m py_compile scripts/apply_paddle_diagnostics.py
 
       - name: Install official Paddle Lite optimizer
         run: |
@@ -71,8 +72,27 @@ jobs:
       - name: Generate arm64 PaddleOCR implementation
         run: python3 scripts/bootstrap_paddleocr_local.py
 
+      - name: Apply comprehensive image-free PaddleOCR diagnostics
+        run: python3 scripts/apply_paddle_diagnostics.py
+
       - name: Verify project structure and secrets
         run: python3 scripts/verify_project.py
+
+      - name: Verify PaddleOCR diagnostic contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'SCHEMA_VERSION = 4' app/src/main/java/com/abdullah/visionbridge/data/diagnostics/DiagnosticRecorder.kt
+          grep -q 'paddleocr_analysis.json' app/src/main/java/com/abdullah/visionbridge/data/diagnostics/DiagnosticRecorder.kt
+          grep -q 'PADDLE_OCR_MODELS_READY' app/src/main/java/com/abdullah/visionbridge/data/ocr/PaddleOcrModels.kt
+          grep -q 'PADDLE_OCR_INITIALIZED' app/src/main/java/com/abdullah/visionbridge/data/ocr/LocalTextRecognizer.kt
+          grep -q 'lineDiagnostics' app/src/main/java/com/abdullah/visionbridge/data/ocr/LocalTextRecognizer.kt
+          grep -q 'rejectionReasons' app/src/main/java/com/abdullah/visionbridge/data/ocr/LocalTextRecognizer.kt
+          grep -q 'detectorMs' app/src/main/cpp/visionbridge_paddleocr.cpp
+          grep -q 'arabicMs' app/src/main/cpp/visionbridge_paddleocr.cpp
+          grep -q 'englishMs' app/src/main/cpp/visionbridge_paddleocr.cpp
+          grep -q 'memoryDeltaBytes' app/src/main/java/com/abdullah/visionbridge/data/ocr/LocalTextRecognizer.kt
+          grep -q 'textRecognitionEngine' app/src/main/java/com/abdullah/visionbridge/capture/MediaProjectionService.kt
 
       - name: Lint, unit tests, and assemble ARM64 APK
         shell: bash
@@ -83,7 +103,7 @@ jobs:
           cat paddle-build.log
           exit "$status"
 
-      - name: Verify local OCR composition
+      - name: Verify local OCR composition and privacy
         shell: bash
         run: |
           set -euo pipefail
@@ -91,9 +111,12 @@ jobs:
           test -f app/src/main/assets/paddleocr/en_ppocrv5_mobile_rec.nb
           test -f app/src/main/assets/paddleocr/ppocrv5_mobile_det.nb
           test -f app/build/outputs/apk/debug/app-debug.apk
-          ! grep -RinE 'mlkit:text-recognition|tesseract|tess-two' app/build.gradle.kts app/src/main || false
           if grep -RinE 'mlkit:text-recognition|tesseract|tess-two' app/build.gradle.kts app/src/main; then
             echo "Competing OCR implementation remains" >&2
+            exit 1
+          fi
+          if find app/src/main/java/com/abdullah/visionbridge/data/diagnostics -type f -print0 | xargs -0 grep -nE 'compress\(|BitmapFactory|\.png|\.jpg'; then
+            echo "Diagnostics must remain image-free" >&2
             exit 1
           fi
 
@@ -106,13 +129,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Release VisionBridge 1.12.0 local PaddleOCR"
+          git commit -m "Release VisionBridge 1.12.0 local PaddleOCR diagnostics v4"
           git push
 
       - name: Upload VisionBridge 1.12.0 ARM64 APK
         uses: actions/upload-artifact@v4
         with:
-          name: VisionBridge-1.12.0-PaddleOCR-arm64-debug
+          name: VisionBridge-1.12.0-PaddleOCR-diagnostics-v4-arm64-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
