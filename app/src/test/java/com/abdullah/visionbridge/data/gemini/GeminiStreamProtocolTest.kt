@@ -119,4 +119,44 @@ class GeminiStreamProtocolTest {
         assertTrue(buffer.append("النص الأخير بلا نقطة", urgent = false).isEmpty())
         assertEquals(listOf("النص الأخير بلا نقطة"), buffer.finish())
     }
+
+    @Test
+    fun `a document is never cut at a comma`() {
+        val buffer = StreamingSpeechBuffer(StreamingSpeechBuffer.Profile.DOCUMENT)
+        val line = "أمامك ممر واضح يمتد إلى الأمام مع كرسي قريب على اليمين وطاولة صغيرة على اليسار"
+        val output = buffer.append("$line، ثم يظهر الباب في نهاية الممر.", urgent = false) + buffer.finish()
+        assertEquals(listOf("$line، ثم يظهر الباب في نهاية الممر."), output)
+    }
+
+    @Test
+    fun `separator only fragments never reach speech`() {
+        val buffer = StreamingSpeechBuffer(StreamingSpeechBuffer.Profile.DOCUMENT)
+        val output = buffer.append("..\n...\n. .\n", urgent = false) + buffer.finish()
+        assertTrue(output.isEmpty())
+    }
+
+    /**
+     * The dense screen from the diagnostics was split into twenty eight blocks, most of which were
+     * then lost to a bounded queue. Document phrasing keeps it to a handful of whole blocks.
+     */
+    @Test
+    fun `a dense page becomes a few whole blocks instead of dozens of fragments`() {
+        val buffer = StreamingSpeechBuffer(StreamingSpeechBuffer.Profile.DOCUMENT)
+        val page = """
+            Current balance: 9.20 SAR.
+            Subscribe to sawa packages and enjoy more.
+            الخميس Customer care ... خدمة العملاء الجديدة ...
+            عذراً عبدالله، الأربعاء STC مرحبا.
+            نوّد التنويه بوجود مبلغ مستحق على حسابك.
+            عزيزي عميل تابي نود إفادتكم بعدم السداد.
+            لديك دفعة مستحقة خلال 3 أيام، تأكد من سدادها.
+        """.trimIndent()
+        val output = buffer.append(page, urgent = false) + buffer.finish()
+
+        assertTrue("expected few blocks but got ${output.size}", output.size <= 6)
+        assertTrue(output.all { block -> block.any(Char::isLetterOrDigit) })
+        val rejoined = output.joinToString(" ")
+        assertTrue(rejoined.contains("Current balance"))
+        assertTrue(rejoined.contains("لديك دفعة مستحقة"))
+    }
 }

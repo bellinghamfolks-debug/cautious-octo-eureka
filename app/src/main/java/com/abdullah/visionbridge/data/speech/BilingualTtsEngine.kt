@@ -12,7 +12,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
@@ -20,20 +19,28 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Ordered bilingual speech with a bounded latest-useful queue and self-healing TTS timeouts.
+ * Ordered bilingual speech built around whole readings rather than independent blocks.
  *
- * A stalled Android TTS callback can no longer block speech for a full minute while an unlimited
- * queue grows behind it. The queue is bounded, old requests are discarded explicitly, and a timed
- * out engine is stopped and recreated after repeated failures.
+ * A reading is one document the user is being read: it is opened once, fed blocks in visual order,
+ * and drained to completion without losing anything in the middle. The previous implementation used
+ * a bounded eight-slot queue that discarded the *oldest* pending block on overflow, so a dense page
+ * lost the very text that was next in line to be spoken. Blocks are now queued without a ceiling and
+ * are only ever discarded together, when a genuinely different reading supersedes this one.
+ *
+ * Content de-duplication does not belong here either. It lives one level up in [ReadingLedger],
+ * which decides whether a whole page deserves to be read, so a retry of a half-heard page can no
+ * longer have most of its blocks silenced individually.
  */
 class BilingualTtsEngine(context: Context) {
     private data class SpeechRequest(
         val text: String,
         val rate: Float,
         val generation: Long,
+        val readingId: Long,
         val flushFirst: Boolean,
         val trace: DiagnosticTrace?,
         val enqueuedAtElapsedNanos: Long,
@@ -57,8 +64,14 @@ class BilingualTtsEngine(context: Context) {
     private val utterances = ConcurrentHashMap<String, UtteranceState>()
     private val generation = AtomicLong(0L)
     private val engineEpoch = AtomicLong(0L)
-    private val deduplicator = SpeechDeduplicator()
+    private val readingSequence = AtomicLong(0L)
+    private val activeReadingId = AtomicLong(NO_READING)
+    private val outstandingBlocks = AtomicInteger(0)
+    private val noticeDeduplicator = SpeechDeduplicator()
     private val engineLock = Any()
+
+    @Volatile
+    private var readingOpen = false
 
     @Volatile
     private var ready = CompletableDeferred<Boolean>()
@@ -69,23 +82,11 @@ class BilingualTtsEngine(context: Context) {
     @Volatile
     private var consecutiveTimeouts = 0
 
-    private val requests = Channel<SpeechRequest>(
-        capacity = MAX_PENDING_REQUESTS,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST,
-        onUndeliveredElement = { request: SpeechRequest ->
-            DiagnosticHub.record(
-                "TTS_REQUEST_DROPPED",
-                request.trace.fieldsOrEmpty(
-                    mapOf(
-                        "reason" to "bounded_queue_drop_oldest",
-                        "text" to request.text,
-                        "requestGeneration" to request.generation,
-                        "queueCapacity" to MAX_PENDING_REQUESTS,
-                    ),
-                ),
-            )
-        },
-    )
+    /**
+     * Unbounded on purpose. Backpressure is applied one level up by refusing to analyze a page that
+     * is still being read, not by throwing away speech the user has already been promised.
+     */
+    private val requests = Channel<SpeechRequest>(Channel.UNLIMITED)
 
     init {
         initializeEngine("initialization")
@@ -98,16 +99,130 @@ class BilingualTtsEngine(context: Context) {
                         "TTS_REQUEST_DROPPED",
                         request.trace.fieldsOrEmpty(
                             mapOf(
-                                "reason" to "stale_generation_before_worker",
+                                "reason" to "superseded_reading_before_worker",
                                 "text" to request.text,
                                 "requestGeneration" to request.generation,
                                 "currentGeneration" to generation.get(),
+                                "readingId" to request.readingId,
                             ),
                         ),
                     )
                 }
+                if (request.readingId != NO_READING) releaseBlock()
             }
         }
+    }
+
+    // region reading lifecycle
+
+    /**
+     * Opens a reading and returns its id. Blocks queued against an older reading stop being spoken
+     * as soon as a new one opens, which is the only place speech is deliberately discarded.
+     */
+    suspend fun beginReading(interruptPrevious: Boolean): Long = withContext(Dispatchers.Main.immediate) {
+        val readingId = readingSequence.incrementAndGet()
+        if (interruptPrevious) {
+            // Only an interrupting reading clears the counter. A continuation queues behind speech
+            // that is still playing, and that speech is still owed to the user.
+            interruptInternal("new_reading_started")
+            outstandingBlocks.set(0)
+        }
+        activeReadingId.set(readingId)
+        readingOpen = true
+        DiagnosticHub.record(
+            "TTS_READING_STARTED",
+            mapOf(
+                "readingId" to readingId,
+                "interruptPrevious" to interruptPrevious,
+                "generation" to generation.get(),
+            ),
+        )
+        readingId
+    }
+
+    /** Queues the next block of [readingId] in visual order. Nothing is dropped for capacity. */
+    suspend fun speakReadingBlock(readingId: Long, text: String, rate: Float) {
+        if (!DocumentSpeechPolicy.isSpeakable(text)) return
+        val trace = currentCoroutineContext()[DiagnosticTrace]
+        if (readingId != activeReadingId.get()) {
+            DiagnosticHub.record(
+                "TTS_REQUEST_DROPPED",
+                trace.fieldsOrEmpty(
+                    mapOf(
+                        "reason" to "superseded_reading",
+                        "text" to text,
+                        "readingId" to readingId,
+                        "activeReadingId" to activeReadingId.get(),
+                    ),
+                ),
+            )
+            return
+        }
+        outstandingBlocks.incrementAndGet()
+        enqueue(
+            text = text.trim(),
+            rate = rate,
+            interruptPrevious = false,
+            readingId = readingId,
+            trace = trace,
+        )
+    }
+
+    /** Marks the end of the stream for [readingId]; queued blocks still drain to completion. */
+    fun finishReading(readingId: Long) {
+        if (readingId != activeReadingId.get()) return
+        readingOpen = false
+        DiagnosticHub.record(
+            "TTS_READING_FINISHED",
+            mapOf("readingId" to readingId, "outstandingBlocks" to outstandingBlocks.get()),
+        )
+    }
+
+    /** True while the user is still owed audio from the current reading. */
+    fun isReadingInProgress(): Boolean =
+        activeReadingId.get() != NO_READING && (readingOpen || outstandingBlocks.get() > 0)
+
+    /** Retires one queued block, never dropping the counter below zero after an interrupt. */
+    private fun releaseBlock() {
+        outstandingBlocks.updateAndGet { current -> if (current > 0) current - 1 else 0 }
+    }
+
+    // endregion
+
+    /** One-shot content speech that is not part of a streamed reading, such as local OCR output. */
+    suspend fun speak(
+        text: String,
+        urgent: Boolean = false,
+        rate: Float = 1.0f,
+        interruptPrevious: Boolean = false,
+    ) {
+        if (!DocumentSpeechPolicy.isSpeakable(text)) return
+        val trace = currentCoroutineContext()[DiagnosticTrace]
+        val novelText = noticeDeduplicator.filter(text, urgent)
+        if (novelText == null) {
+            DiagnosticHub.record(
+                "TTS_TEXT_DEDUPLICATED",
+                trace.fieldsOrEmpty(mapOf("text" to text, "urgent" to urgent)),
+            )
+            return
+        }
+        enqueue(novelText, rate, interruptPrevious, NO_READING, trace)
+    }
+
+    /** Status speech intentionally bypasses content deduplication. */
+    suspend fun speakFeedback(
+        text: String,
+        rate: Float = 1.0f,
+        interruptPrevious: Boolean = true,
+    ) {
+        if (text.isBlank()) return
+        enqueue(
+            text = text.trim(),
+            rate = rate,
+            interruptPrevious = interruptPrevious,
+            readingId = NO_READING,
+            trace = currentCoroutineContext()[DiagnosticTrace],
+        )
     }
 
     private fun initializeEngine(reason: String) {
@@ -253,42 +368,18 @@ class BilingualTtsEngine(context: Context) {
         state.completion.complete(Unit)
     }
 
-    suspend fun speak(
-        text: String,
-        urgent: Boolean = false,
-        rate: Float = 1.0f,
-        interruptPrevious: Boolean = false,
-    ) {
-        val trace = currentCoroutineContext()[DiagnosticTrace]
-        val novelText = deduplicator.filter(text, urgent)
-        if (novelText == null) {
-            DiagnosticHub.record(
-                "TTS_TEXT_DEDUPLICATED",
-                trace.fieldsOrEmpty(mapOf("text" to text, "urgent" to urgent)),
-            )
-            return
-        }
-        enqueue(novelText, rate, interruptPrevious, trace)
-    }
-
-    /** Status speech intentionally bypasses content deduplication. */
-    suspend fun speakFeedback(
-        text: String,
-        rate: Float = 1.0f,
-        interruptPrevious: Boolean = true,
-    ) {
-        if (text.isBlank()) return
-        enqueue(text.trim(), rate, interruptPrevious, currentCoroutineContext()[DiagnosticTrace])
-    }
-
     private suspend fun enqueue(
         text: String,
         rate: Float,
         interruptPrevious: Boolean,
+        readingId: Long,
         trace: DiagnosticTrace?,
     ) {
         val readyStarted = SystemClock.elapsedRealtimeNanos()
-        if (!ensureEngineReady(trace, text)) return
+        if (!ensureEngineReady(trace, text)) {
+            if (readingId != NO_READING) releaseBlock()
+            return
+        }
         val afterReady = SystemClock.elapsedRealtimeNanos()
 
         withContext(Dispatchers.Main.immediate) {
@@ -302,6 +393,7 @@ class BilingualTtsEngine(context: Context) {
                 text = text,
                 rate = rate.coerceIn(0.6f, 1.8f),
                 generation = requestGeneration,
+                readingId = readingId,
                 flushFirst = interruptPrevious,
                 trace = trace,
                 enqueuedAtElapsedNanos = enqueuedAt,
@@ -314,14 +406,15 @@ class BilingualTtsEngine(context: Context) {
                         "text" to text,
                         "rate" to request.rate,
                         "generation" to requestGeneration,
+                        "readingId" to readingId,
                         "flushFirst" to interruptPrevious,
                         "accepted" to accepted,
-                        "queueCapacity" to MAX_PENDING_REQUESTS,
                         "waitForEngineReadyMs" to
                             (afterReady - readyStarted) / 1_000_000.0,
                     ),
                 ),
             )
+            if (!accepted && readingId != NO_READING) releaseBlock()
         }
     }
 
@@ -362,15 +455,25 @@ class BilingualTtsEngine(context: Context) {
 
     fun onVisualTargetChanged(enabled: Boolean) {
         if (!enabled) return
-        scope.launch { interruptInternal("visual_target_changed") }
+        scope.launch {
+            activeReadingId.set(NO_READING)
+            readingOpen = false
+            outstandingBlocks.set(0)
+            interruptInternal("visual_target_changed")
+        }
     }
 
     fun stop() {
-        scope.launch { interruptInternal("explicit_stop") }
+        scope.launch {
+            activeReadingId.set(NO_READING)
+            readingOpen = false
+            outstandingBlocks.set(0)
+            interruptInternal("explicit_stop")
+        }
     }
 
     fun resetHistory() {
-        deduplicator.reset()
+        noticeDeduplicator.reset()
         DiagnosticHub.record("TTS_DEDUPLICATION_HISTORY_RESET")
     }
 
@@ -388,6 +491,7 @@ class BilingualTtsEngine(context: Context) {
                         mapOf("text" to it.text, "language" to it.language.name)
                     },
                     "generation" to request.generation,
+                    "readingId" to request.readingId,
                 ),
             ),
         )
@@ -549,6 +653,7 @@ class BilingualTtsEngine(context: Context) {
             state.completion.complete(Unit)
         }
         utterances.clear()
+        outstandingBlocks.set(0)
         val stopResult = tts?.stop()
         DiagnosticHub.record(
             "TTS_QUEUE_INTERRUPTED",
@@ -586,7 +691,7 @@ class BilingualTtsEngine(context: Context) {
     ): Map<String, Any?> = this?.fields(extra) ?: extra
 
     private companion object {
-        const val MAX_PENDING_REQUESTS = 8
+        const val NO_READING = 0L
         const val ENGINE_READY_TIMEOUT_MS = 8_000L
         const val TIMEOUTS_BEFORE_ENGINE_RESTART = 2
         const val BASE_UTTERANCE_TIMEOUT_MS = 8_000L

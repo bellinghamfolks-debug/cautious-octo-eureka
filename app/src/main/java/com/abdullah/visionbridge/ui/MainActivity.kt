@@ -13,19 +13,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.Text
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -76,13 +67,13 @@ class MainActivity : ComponentActivity() {
         )
         setContent {
             val state = viewModel.uiState.collectAsStateWithLifecycle().value
+            var showSettings by rememberSaveable { mutableStateOf(false) }
             VisionBridgeTheme {
-                Box(Modifier.fillMaxSize()) {
-                    MainScreen(
+                if (showSettings) {
+                    SettingsScreen(
                         state = state,
                         onSaveApiKey = viewModel::saveApiKey,
                         onDeleteApiKey = viewModel::deleteApiKey,
-                        onModeChange = viewModel::setMode,
                         onModelChange = viewModel::setModel,
                         onForceCellularChange = viewModel::setForceCellular,
                         onSpeechChange = viewModel::setSpeechEnabled,
@@ -92,6 +83,19 @@ class MainActivity : ComponentActivity() {
                         onInterruptSpeechChange = viewModel::setInterruptSpeechOnVisualChange,
                         onSceneDescriptionStyleChange = viewModel::setSceneDescriptionStyle,
                         onSpeechRateChange = viewModel::setSpeechRate,
+                        onExportDiagnostics = {
+                            viewModel.exportDiagnostics { file ->
+                                this@MainActivity.shareDiagnosticFile(file)
+                            }
+                        },
+                        onBack = { showSettings = false },
+                        onMessageConsumed = viewModel::clearMessage,
+                    )
+                } else {
+                    MainScreen(
+                        state = state,
+                        onModeChange = viewModel::setMode,
+                        onOpenSettings = { showSettings = true },
                         onStartCapture = { this@MainActivity.requestCapture() },
                         onStopCapture = {
                             DiagnosticHub.record("USER_STOP_CAPTURE")
@@ -101,36 +105,6 @@ class MainActivity : ComponentActivity() {
                         },
                         onMessageConsumed = viewModel::clearMessage,
                     )
-                    Column(
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        horizontalAlignment = Alignment.End,
-                    ) {
-                        Text(
-                            "التشخيص يسجل تلقائياً بلا صور",
-                            modifier = Modifier.semantics {
-                                contentDescription =
-                                    "نظام التشخيص التلقائي يعمل باستمرار ولا يحتاج تعليم لحظة المشكلة، ولا يحفظ صور الشاشة"
-                            },
-                        )
-                        Button(
-                            onClick = {
-                                viewModel.exportDiagnostics { file ->
-                                    this@MainActivity.shareDiagnosticFile(file)
-                                }
-                            },
-                            modifier = Modifier
-                                .height(56.dp)
-                                .semantics {
-                                    contentDescription =
-                                        "مشاركة سجل التشخيص التلقائي الشامل، بلا صور، مع البصمات البصرية والتوقيتات والنصوص"
-                                },
-                        ) {
-                            Text("مشاركة التشخيص التلقائي")
-                        }
-                    }
                 }
             }
         }

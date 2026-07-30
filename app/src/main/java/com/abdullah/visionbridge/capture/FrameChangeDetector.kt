@@ -352,7 +352,13 @@ class FrameChangeDetector {
         const val GRID = 24
         const val PIXEL_CHANGE_THRESHOLD = 18
         const val MAX_STABLE_SETTLING_MS = 650L
-        const val FORCE_STABLE_REFRESH_MS = 5_000L
+        /**
+         * Retry interval for a motionless screen. Five seconds re-offered a static page long before
+         * the previous reading of it could finish being spoken, and the coordinator now owns the
+         * decision about whether a re-read has anything to add, so this only needs to be a slow
+         * backstop rather than a fast poll.
+         */
+        const val FORCE_STABLE_REFRESH_MS = 15_000L
 
         const val QUALITY_LONG_EDGE = 192
         const val CONTENT_TOP_FRACTION = 0.13

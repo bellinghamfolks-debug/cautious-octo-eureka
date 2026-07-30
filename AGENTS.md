@@ -28,5 +28,12 @@ A change is not complete until `lintDebug`, `testDebugUnitTest`, and `assembleDe
 - `data/network/CellularNetworkManager.kt`: per-request cellular acquisition.
 - `data/gemini/GeminiVisionRepository.kt`: official Gemini REST call.
 - `data/security/AndroidKeystoreApiKeyStore.kt`: AES-GCM key storage.
-- `data/speech/BilingualTtsEngine.kt`: Arabic/English speech segmentation.
-- `ui/MainScreen.kt`: TalkBack-first Compose interface.
+- `data/speech/BilingualTtsEngine.kt`: Arabic/English speech segmentation and the ordered, lossless
+  reading queue. Blocks of one reading are never dropped for capacity; only a superseding reading
+  discards them.
+- `data/speech/ReadingLedger.kt`: decides whether a recognized page is new, a continuation of one the
+  user has partly heard, or already read. Text reading has no per-block de-duplication.
+- `data/speech/DocumentSpeechPolicy.kt`: pure line-level page identity and continuation rules.
+- `ui/MainScreen.kt`: minimal TalkBack-first surface — status, mode, start/stop.
+- `ui/SettingsScreen.kt`: everything configured once — key, model, capture accuracy, speech,
+  diagnostics.

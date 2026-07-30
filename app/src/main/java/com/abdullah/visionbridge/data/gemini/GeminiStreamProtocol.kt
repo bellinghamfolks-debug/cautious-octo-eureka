@@ -160,7 +160,24 @@ class GeminiStreamAccumulator(
     }
 }
 
-class StreamingSpeechBuffer {
+/**
+ * Splits a streamed answer into speakable blocks.
+ *
+ * The block size is deliberately different for the two things this app says out loud. A scene
+ * description is a warning that has to reach the user quickly, so it is cut at the first natural
+ * pause. A page of text is a document, and cutting it at every comma turned a single screen into
+ * dozens of tiny utterances that stuttered, queued badly and read as fragments. Documents are
+ * therefore cut at sentence and line boundaries only, into far larger blocks.
+ */
+class StreamingSpeechBuffer(private val profile: Profile = Profile.RESPONSIVE) {
+    enum class Profile {
+        /** Scene description: shortest useful block wins, latency matters most. */
+        RESPONSIVE,
+
+        /** Text reading: whole sentences and lines, completeness and phrasing matter most. */
+        DOCUMENT,
+    }
+
     private val pending = StringBuilder()
 
     fun append(delta: String, urgent: Boolean): List<String> {
@@ -184,25 +201,38 @@ class StreamingSpeechBuffer {
     }
 
     private fun findNaturalBoundary(urgent: Boolean): Int {
+        val minimumSentence = when {
+            profile == Profile.DOCUMENT -> MIN_DOCUMENT_SENTENCE_CHARS
+            urgent -> MIN_URGENT_SENTENCE_CHARS
+            else -> MIN_SENTENCE_CHARS
+        }
+        val maximumBlock = if (profile == Profile.DOCUMENT) MAX_DOCUMENT_BLOCK_CHARS else MAX_BLOCK_CHARS
+        val maximumSentences =
+            if (profile == Profile.DOCUMENT) MAX_DOCUMENT_SENTENCES_PER_BLOCK else MAX_SENTENCES_PER_BLOCK
+
         var completeSentences = 0
         for (index in pending.indices) {
             val character = pending[index]
             val visibleLength = pending.substring(0, index + 1).trim().length
             if (character in STRONG_BOUNDARIES) {
                 completeSentences++
-                val minimum = if (urgent) MIN_URGENT_SENTENCE_CHARS else MIN_SENTENCE_CHARS
-                if (visibleLength >= minimum || completeSentences >= MAX_SENTENCES_PER_BLOCK) {
+                if (visibleLength >= minimumSentence || completeSentences >= maximumSentences) {
                     return index + 1
                 }
             }
-            if (character in CLAUSE_BOUNDARIES && visibleLength >= MIN_CLAUSE_CHARS) {
+            // Clause splitting keeps a spoken warning responsive, but it is what shredded documents
+            // into fragments, so a document is never cut at a comma.
+            if (profile != Profile.DOCUMENT &&
+                character in CLAUSE_BOUNDARIES &&
+                visibleLength >= MIN_CLAUSE_CHARS
+            ) {
                 return index + 1
             }
         }
 
-        if (pending.length >= MAX_BLOCK_CHARS) {
-            val preferred = pending.lastIndexOf(' ', startIndex = MAX_BLOCK_CHARS)
-            return if (preferred >= MIN_SENTENCE_CHARS) preferred + 1 else -1
+        if (pending.length >= maximumBlock) {
+            val preferred = pending.lastIndexOf(' ', startIndex = maximumBlock)
+            return if (preferred >= minimumSentence) preferred + 1 else -1
         }
         return -1
     }
@@ -211,7 +241,8 @@ class StreamingSpeechBuffer {
         val value = pending.substring(0, boundary).trim()
         pending.delete(0, boundary)
         while (pending.isNotEmpty() && pending.first().isWhitespace()) pending.deleteCharAt(0)
-        if (value.isNotEmpty()) output += value
+        // A block of nothing but separators reached TTS as an audible stumble between sentences.
+        if (value.any(Char::isLetterOrDigit)) output += value
     }
 
     private companion object {
@@ -222,5 +253,9 @@ class StreamingSpeechBuffer {
         const val MIN_CLAUSE_CHARS = 36
         const val MAX_SENTENCES_PER_BLOCK = 3
         const val MAX_BLOCK_CHARS = 160
+
+        const val MIN_DOCUMENT_SENTENCE_CHARS = 90
+        const val MAX_DOCUMENT_SENTENCES_PER_BLOCK = 6
+        const val MAX_DOCUMENT_BLOCK_CHARS = 320
     }
 }

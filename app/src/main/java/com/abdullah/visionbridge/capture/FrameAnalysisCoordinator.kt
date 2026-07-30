@@ -5,9 +5,11 @@ import android.os.SystemClock
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
 import com.abdullah.visionbridge.data.gemini.OcrTrustRejectedException
+import com.abdullah.visionbridge.data.gemini.StreamingSpeechBuffer
 import com.abdullah.visionbridge.data.ocr.LocalTextRecognizer
 import com.abdullah.visionbridge.data.ocr.SameFrameOcrEvidenceFilter
 import com.abdullah.visionbridge.data.speech.BilingualTtsEngine
+import com.abdullah.visionbridge.data.speech.ReadingLedger
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AnalysisResult
 import com.abdullah.visionbridge.domain.model.AnalysisSource
@@ -73,6 +75,18 @@ class FrameAnalysisCoordinator(
     private val visualGeneration = AtomicLong(0L)
     private val lastTrustFeedbackGeneration = AtomicLong(Long.MIN_VALUE)
     private val evidenceFilter = SameFrameOcrEvidenceFilter()
+    private val readingLedger = ReadingLedger()
+
+    /** Visual generation that the reading currently being spoken belongs to. */
+    @Volatile
+    private var activeReadingGeneration = Long.MIN_VALUE
+
+    /** Visual generation of the last completed text analysis, and when it completed. */
+    @Volatile
+    private var lastTextAnalysisGeneration = Long.MIN_VALUE
+
+    @Volatile
+    private var lastTextAnalysisAtElapsedMs = 0L
 
     private var lastCloudOcrAt = 0L
     private var lastSceneAt = 0L
@@ -119,6 +133,7 @@ class FrameAnalysisCoordinator(
         try {
             when (settings.mode) {
                 AnalysisMode.TEXT_READING -> {
+                    if (shouldDeferStaticTextReading(generationAtCapture, trace)) return@withLock
                     if (settings.captureProfile == CaptureProfile.FAST_TEXT) {
                         processFastText(bitmap, settings, generationAtCapture, trace)
                     } else {
@@ -490,7 +505,14 @@ class FrameAnalysisCoordinator(
                         ),
                     ),
                 )
+                if (frame.mode == AnalysisMode.TEXT_READING) {
+                    lastTextAnalysisGeneration = frame.visualGeneration
+                    lastTextAnalysisAtElapsedMs = SystemClock.elapsedRealtime()
+                }
                 publishIfCurrent(result, frame.settings, frame.visualGeneration, frame.trace)
+                if (frame.mode == AnalysisMode.TEXT_READING) {
+                    speakDocument(result, frame.settings, frame.visualGeneration, frame.trace)
+                }
             } catch (error: OcrTrustRejectedException) {
                 DiagnosticHub.record(
                     "OCR_TRUST_REJECTED",
@@ -729,6 +751,10 @@ class FrameAnalysisCoordinator(
                 synchronized(cloudQueueLock) {
                     lastCloudProgressAtElapsedMs = SystemClock.elapsedRealtime()
                 }
+                // Text reading speaks whole pages once the stream is complete, so streamed blocks
+                // only keep the watchdog fed here. Speaking them as they arrived is what allowed a
+                // page to be started, cut off, and restarted from the top on the next frame.
+                if (mode == AnalysisMode.TEXT_READING) return@speechChunk
                 if (!targetMayPublish(settings, generationAtCapture)) {
                     DiagnosticHub.record(
                         "STREAM_CHUNK_REJECTED",
@@ -799,6 +825,9 @@ class FrameAnalysisCoordinator(
         )
 
         if (mode != AnalysisMode.TEXT_READING || !settings.trustGateEnabled) return rawResult
+        // An empty result means the frame simply had no text. It is not an untrustworthy reading,
+        // so it must not be reported as one.
+        if (rawResult.text.isBlank()) return rawResult
         val safeFullText = evidenceFilter.filter(rawResult.text, localEvidence)
         DiagnosticHub.record(
             "EVIDENCE_FILTER_COMPLETED",
@@ -874,6 +903,119 @@ class FrameAnalysisCoordinator(
         }
     }
 
+    /**
+     * Refuses to re-read a page the user is already hearing, or has just heard.
+     *
+     * The capture layer deliberately re-offers a motionless screen on a timer so that one truncated
+     * response can never permanently silence the rest of a page. Without this gate that safety net
+     * became the defect: diagnostics show a single static screen analyzed twenty-five times in one
+     * hundred and forty-five seconds, each pass racing the previous one into the same speech queue.
+     * Completeness is now owned by [ReadingLedger], which speaks the missing tail of a page instead,
+     * so re-analysis while nothing has visually changed has nothing left to contribute.
+     */
+    private fun shouldDeferStaticTextReading(
+        generationAtCapture: Long,
+        trace: DiagnosticTrace?,
+    ): Boolean {
+        val targetChanged = generationAtCapture != activeReadingGeneration
+        if (tts.isReadingInProgress() && !targetChanged) {
+            DiagnosticHub.record(
+                "TEXT_READING_DEFERRED",
+                trace.fieldsOrEmpty(
+                    mapOf(
+                        "reason" to "reading_in_progress_for_same_visual_target",
+                        "visualGeneration" to generationAtCapture,
+                    ),
+                ),
+            )
+            return true
+        }
+
+        // Second gate for the speech-disabled case, where no reading is ever "in progress". A
+        // motionless screen still must not be sent to the model twice per five seconds.
+        val sinceLastAnalysisMs = SystemClock.elapsedRealtime() - lastTextAnalysisAtElapsedMs
+        if (
+            generationAtCapture == lastTextAnalysisGeneration &&
+            lastTextAnalysisAtElapsedMs > 0L &&
+            sinceLastAnalysisMs < STATIC_TEXT_REANALYSIS_INTERVAL_MS
+        ) {
+            DiagnosticHub.record(
+                "TEXT_READING_DEFERRED",
+                trace.fieldsOrEmpty(
+                    mapOf(
+                        "reason" to "static_target_reanalysis_interval",
+                        "visualGeneration" to generationAtCapture,
+                        "sinceLastAnalysisMs" to sinceLastAnalysisMs,
+                        "intervalMs" to STATIC_TEXT_REANALYSIS_INTERVAL_MS,
+                    ),
+                ),
+            )
+            return true
+        }
+        return false
+    }
+
+    /**
+     * Speaks a recognized page exactly once, in visual order, and only the part the user has not
+     * heard yet. Text reading intentionally decides after the stream completes rather than speaking
+     * partial blocks as they arrive: a page is a document, and half of one read out of order is
+     * worse than the same page read a second later in full.
+     */
+    private suspend fun speakDocument(
+        result: AnalysisResult,
+        settings: AppSettings,
+        generationAtCapture: Long,
+        trace: DiagnosticTrace?,
+    ) {
+        if (!settings.speechEnabled || result.text.isBlank()) return
+
+        when (val decision = readingLedger.evaluate(result.text)) {
+            is ReadingLedger.Decision.Skip -> DiagnosticHub.record(
+                "DOCUMENT_READING_SKIPPED",
+                trace.fieldsOrEmpty(
+                    mapOf(
+                        "reason" to decision.reason,
+                        "text" to result.text,
+                        "visualGeneration" to generationAtCapture,
+                    ),
+                ),
+            )
+
+            is ReadingLedger.Decision.Speak -> {
+                val blocks = documentBlocks(decision.text)
+                DiagnosticHub.record(
+                    "DOCUMENT_READING_ACCEPTED",
+                    trace.fieldsOrEmpty(
+                        mapOf(
+                            "continuation" to decision.continuation,
+                            "text" to decision.text,
+                            "characters" to decision.text.length,
+                            "blockCount" to blocks.size,
+                            "visualGeneration" to generationAtCapture,
+                        ),
+                    ),
+                )
+                if (blocks.isEmpty()) return
+
+                activeReadingGeneration = generationAtCapture
+                val readingId = tts.beginReading(
+                    interruptPrevious = settings.interruptSpeechOnVisualChange && !decision.continuation,
+                )
+                blocks.forEach { block ->
+                    tts.speakReadingBlock(readingId, block, settings.speechRate)
+                }
+                tts.finishReading(readingId)
+                readingLedger.recordSpoken(decision.document)
+            }
+        }
+    }
+
+    /** Splits an accepted page into ordered speech blocks with document-sized phrasing. */
+    private fun documentBlocks(text: String): List<String> {
+        val buffer = StreamingSpeechBuffer(StreamingSpeechBuffer.Profile.DOCUMENT)
+        return buffer.append(text, urgent = false) + buffer.finish()
+    }
+
     private fun targetMayPublish(settings: AppSettings, generationAtCapture: Long): Boolean {
         val targetCurrent = generationAtCapture == visualGeneration.get()
         val mayPublishStaleScene =
@@ -887,7 +1029,20 @@ class FrameAnalysisCoordinator(
         generationAtCapture: Long,
         trace: DiagnosticTrace?,
     ) {
-        if (targetMayPublish(settings, generationAtCapture)) {
+        if (result.text.isBlank()) {
+            DiagnosticHub.record(
+                "FINAL_RESULT_SUPPRESSED",
+                trace.fieldsOrEmpty(mapOf("reason" to "no_text_recognized")),
+            )
+            return
+        }
+
+        // A scene description is a live safety statement, so a stale one is withheld. Recognized
+        // text is not: it is still the correct transcription of the page the user asked about, and
+        // withholding it left the screen blank after the work had already been paid for.
+        val mayPublish = settings.mode == AnalysisMode.TEXT_READING ||
+            targetMayPublish(settings, generationAtCapture)
+        if (mayPublish) {
             runtime.result(result)
             DiagnosticHub.record(
                 "TEXT_DISPLAYED",
@@ -897,6 +1052,7 @@ class FrameAnalysisCoordinator(
                         "source" to result.source.name,
                         "language" to result.language,
                         "urgent" to result.urgent,
+                        "staleVisualGeneration" to !targetMayPublish(settings, generationAtCapture),
                     ),
                 ),
             )
@@ -935,6 +1091,9 @@ class FrameAnalysisCoordinator(
         lastCloudOcrAt = 0L
         lastSceneAt = 0L
         lastCloudSnapshotAt = 0L
+        // The page that was being read is no longer in front of the user, so the next recognition
+        // is allowed to open a new reading instead of being treated as a re-read of this one.
+        activeReadingGeneration = Long.MIN_VALUE
 
         if (interruptSpeech && now - lastSpeechInterruptAtElapsedMs >= SPEECH_INTERRUPT_COOLDOWN_MS) {
             lastSpeechInterruptAtElapsedMs = now
@@ -1038,6 +1197,10 @@ class FrameAnalysisCoordinator(
         lastSceneAt = 0L
         lastCloudSnapshotAt = 0L
         lastSpeechInterruptAtElapsedMs = 0L
+        activeReadingGeneration = Long.MIN_VALUE
+        lastTextAnalysisGeneration = Long.MIN_VALUE
+        lastTextAnalysisAtElapsedMs = 0L
+        readingLedger.reset()
         synchronized(cloudQueueLock) {
             delayedLaunchJob?.cancel()
             delayedLaunchJob = null
@@ -1076,6 +1239,12 @@ class FrameAnalysisCoordinator(
         const val COMPREHENSIVE_SCENE_INTERVAL_MS = 900L
         const val MIN_EVIDENCE_SCORE_ADVANTAGE = 24
         const val EVIDENCE_LINE_BONUS = 8
+
+        /**
+         * Floor between two analyses of a visually identical page. It only applies while nothing has
+         * changed on screen, so a genuine page turn is still read immediately.
+         */
+        const val STATIC_TEXT_REANALYSIS_INTERVAL_MS = 15_000L
 
         const val CLOUD_REQUEST_HARD_TIMEOUT_MS = 42_000L
         const val CLOUD_WATCHDOG_TIMEOUT_MS = 48_000L

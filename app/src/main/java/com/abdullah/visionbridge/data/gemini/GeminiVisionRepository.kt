@@ -259,7 +259,13 @@ class GeminiVisionRepository(
         val signals = Channel<StreamSignal>(Channel.UNLIMITED)
         val requireQualityHeader = mode == AnalysisMode.TEXT_READING && trustGateEnabled
         val accumulator = GeminiStreamAccumulator(requireQualityHeader = requireQualityHeader)
-        val speechBuffer = StreamingSpeechBuffer()
+        val speechBuffer = StreamingSpeechBuffer(
+            profile = if (mode == AnalysisMode.TEXT_READING) {
+                StreamingSpeechBuffer.Profile.DOCUMENT
+            } else {
+                StreamingSpeechBuffer.Profile.RESPONSIVE
+            },
+        )
         val firstEventSeen = AtomicBoolean(false)
         val eventSequence = AtomicLong(0L)
         var completedNormally = false
@@ -503,9 +509,22 @@ class GeminiVisionRepository(
             if (requireQualityHeader) {
                 throw OcrTrustRejectedException("لم يظهر نص واضح. قرّب الصورة أو غيّر زاوية النظر.")
             }
-            throw IllegalStateException(
-                if (mode == AnalysisMode.TEXT_READING) "لم يظهر نص في الإطار" else "لم يرجع Gemini وصفاً"
-            )
+            // Pointing text reading at a screen with no text is ordinary use, not a fault. Raising
+            // it as an exception produced a spoken error and a failure streak that pushed the whole
+            // cloud lane into recovery. An empty result lets the coordinator stay silent instead.
+            if (mode == AnalysisMode.TEXT_READING) {
+                DiagnosticHub.record(
+                    "MODEL_REPORTED_NO_TEXT",
+                    trace.fieldsOrEmpty(mapOf("eventCount" to eventSequence.get())),
+                )
+                return AnalysisResult(
+                    text = "",
+                    source = AnalysisSource.GEMINI,
+                    language = accumulator.language,
+                    urgent = false,
+                )
+            }
+            throw IllegalStateException("لم يرجع Gemini وصفاً")
         }
         return AnalysisResult(
             text = fullText,
@@ -519,7 +538,10 @@ class GeminiVisionRepository(
         mode: AnalysisMode,
         sceneDescriptionStyle: SceneDescriptionStyle,
     ): Int = when (mode) {
-        AnalysisMode.TEXT_READING -> 900
+        // A dense screen of Arabic and Latin text runs well past the old 900-token ceiling, and the
+        // response was being cut off mid-page. The user then heard a partial read and the retry loop
+        // started over from the top.
+        AnalysisMode.TEXT_READING -> 3_000
         AnalysisMode.SCENE_DESCRIPTION -> when (sceneDescriptionStyle) {
             SceneDescriptionStyle.COMPREHENSIVE -> 360
             SceneDescriptionStyle.BRIEF -> 96
