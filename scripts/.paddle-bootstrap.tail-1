@@ -1,0 +1,353 @@
+ognizer,
+                            englishRecognizer = paths.englishRecognizer,
+                            arabicDictionary = paths.arabicDictionary,
+                            englishDictionary = paths.englishDictionary,
+                            threads = 4,
+                        ),
+                    ) { "تعذر تهيئة PaddleOCR على هذا الجهاز" }
+                    initialized = true
+                }
+            }
+
+            fun close() = Unit
+
+            private fun DiagnosticTrace?.fieldsOrEmpty(
+                extra: Map<String, Any?> = emptyMap(),
+            ): Map<String, Any?> = this?.fields(extra) ?: extra
+        }
+    ''')
+
+    write(ROOT / "app/src/test/java/com/abdullah/visionbridge/data/ocr/PaddleOcrTextPolicyTest.kt", '''
+        package com.abdullah.visionbridge.data.ocr
+
+        import com.abdullah.visionbridge.domain.model.CaptureProfile
+        import org.junit.Assert.assertEquals
+        import org.junit.Assert.assertNull
+        import org.junit.Assert.assertTrue
+        import org.junit.Test
+
+        class PaddleOcrTextPolicyTest {
+            @Test
+            fun `Arabic text remains in logical Unicode order with numbers and symbols`() {
+                val line = PaddleOcrTextPolicy.accept(
+                    PaddleRawLine(
+                        box = box(500, 20, 900, 80),
+                        arabic = "السعر ١٢٫٥٠ ر.س",
+                        arabicScore = 0.94,
+                        english = "12.50",
+                        englishScore = 0.77,
+                    ),
+                    1000, 1000, CaptureProfile.STABLE,
+                )
+                assertEquals("السعر ١٢٫٥٠ ر.س", line?.text)
+            }
+
+            @Test
+            fun `English candidate wins when it is materially more confident`() {
+                val line = PaddleOcrTextPolicy.accept(
+                    PaddleRawLine(box(10, 20, 400, 80), "V1sion", 0.86, "VisionBridge 1.12", 0.96),
+                    1000, 1000, CaptureProfile.STABLE,
+                )
+                assertEquals("VisionBridge 1.12", line?.text)
+            }
+
+            @Test
+            fun `low confidence and replacement characters are rejected`() {
+                assertNull(PaddleOcrTextPolicy.accept(
+                    PaddleRawLine(box(0, 0, 100, 40), "نص", 0.60, "text", 0.61),
+                    100, 100, CaptureProfile.STABLE,
+                ))
+                assertNull(PaddleOcrTextPolicy.accept(
+                    PaddleRawLine(box(0, 0, 100, 40), "نص�", 0.99, "", 0.0),
+                    100, 100, CaptureProfile.STABLE,
+                ))
+            }
+
+            @Test
+            fun `Arabic row reads right to left without reversing each string`() {
+                val right = accepted("السلام", 0.60, 0.95)
+                val left = accepted("عليكم", 0.10, 0.40)
+                val ordered = PaddleOcrTextPolicy.readingOrder(listOf(left, right))
+                assertEquals(listOf("السلام", "عليكم"), ordered.map { it.text })
+            }
+
+            @Test
+            fun `fast mode uses stricter confidence`() {
+                val raw = PaddleRawLine(box(0, 0, 200, 50), "اختبار", 0.87, "", 0.0)
+                assertTrue(PaddleOcrTextPolicy.accept(raw, 200, 100, CaptureProfile.STABLE) != null)
+                assertNull(PaddleOcrTextPolicy.accept(raw, 200, 100, CaptureProfile.FAST_TEXT))
+            }
+
+            private fun box(left: Int, top: Int, right: Int, bottom: Int) = listOf(
+                listOf(left, top), listOf(right, top), listOf(right, bottom), listOf(left, bottom),
+            )
+
+            private fun accepted(text: String, left: Double, right: Double) = PaddleAcceptedLine(
+                text = text, confidence = 0.95, left = left, top = 0.1, right = right, bottom = 0.2,
+                arabicDominant = true,
+            )
+        }
+    ''')
+
+
+def patch_app() -> None:
+    gradle = APP / "build.gradle.kts"
+    replace_once(gradle, 'versionCode = 14\n        versionName = "1.11.0"', 'versionCode = 15\n        versionName = "1.12.0"')
+    replace_once(gradle, 'android {\n    namespace = "com.abdullah.visionbridge"', 'android {\n    namespace = "com.abdullah.visionbridge"\n    ndkVersion = "27.0.12077973"')
+    replace_once(
+        gradle,
+        '        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"\n        vectorDrawables.useSupportLibrary = true',
+        '        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"\n'
+        '        vectorDrawables.useSupportLibrary = true\n'
+        '        externalNativeBuild {\n'
+        '            cmake {\n'
+        '                cppFlags += "-std=c++17"\n'
+        '            }\n'
+        '        }',
+    )
+    replace_once(
+        gradle,
+        '    buildFeatures {\n        compose = true\n        buildConfig = true\n    }',
+        '    buildFeatures {\n        compose = true\n        buildConfig = true\n    }\n\n'
+        '    externalNativeBuild {\n'
+        '        cmake {\n'
+        '            path = file("src/main/cpp/CMakeLists.txt")\n'
+        '            version = "3.22.1"\n'
+        '        }\n'
+        '    }',
+    )
+    replace_once(gradle, '    implementation("com.google.mlkit:text-recognition:16.0.1")\n', '')
+
+    settings_model = JAVA / "domain/model/AppSettings.kt"
+    replace_once(
+        settings_model,
+        '    val localOcrEnabled: Boolean = true,',
+        '    val localOcrEnabled: Boolean = true,\n    val textRecognitionEngine: TextRecognitionEngine = TextRecognitionEngine.GEMINI_CLOUD,',
+    )
+
+    repo_interface = JAVA / "domain/repository/SettingsRepository.kt"
+    replace_once(
+        repo_interface,
+        'import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle',
+        'import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle\nimport com.abdullah.visionbridge.domain.model.TextRecognitionEngine',
+    )
+    replace_once(
+        repo_interface,
+        '    suspend fun setLocalOcrEnabled(enabled: Boolean)',
+        '    suspend fun setLocalOcrEnabled(enabled: Boolean)\n    suspend fun setTextRecognitionEngine(engine: TextRecognitionEngine)',
+    )
+
+    settings_repo = JAVA / "data/settings/SettingsRepositoryImpl.kt"
+    replace_once(
+        settings_repo,
+        'import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle',
+        'import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle\nimport com.abdullah.visionbridge.domain.model.TextRecognitionEngine',
+    )
+    replace_once(
+        settings_repo,
+        '            localOcrEnabled = values[Keys.LOCAL_OCR] ?: true,',
+        '            localOcrEnabled = true,\n'
+        '            textRecognitionEngine = TextRecognitionEngine.fromStored(values[Keys.TEXT_RECOGNITION_ENGINE]),',
+    )
+    replace_once(
+        settings_repo,
+        '    override suspend fun setLocalOcrEnabled(enabled: Boolean) = update(Keys.LOCAL_OCR, enabled)',
+        '    override suspend fun setLocalOcrEnabled(enabled: Boolean) = Unit\n'
+        '    override suspend fun setTextRecognitionEngine(engine: TextRecognitionEngine) =\n'
+        '        update(Keys.TEXT_RECOGNITION_ENGINE, engine.name)',
+    )
+    replace_once(
+        settings_repo,
+        '        val LOCAL_OCR = booleanPreferencesKey("local_ocr")',
+        '        val LOCAL_OCR = booleanPreferencesKey("local_ocr")\n'
+        '        val TEXT_RECOGNITION_ENGINE = stringPreferencesKey("text_recognition_engine_v1")',
+    )
+
+    viewmodel = JAVA / "ui/MainViewModel.kt"
+    replace_once(
+        viewmodel,
+        'import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle',
+        'import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle\nimport com.abdullah.visionbridge.domain.model.TextRecognitionEngine',
+    )
+    replace_once(
+        viewmodel,
+        '    fun setLocalOcrEnabled(enabled: Boolean) = viewModelScope.launch {\n'
+        '        container.settingsRepository.setLocalOcrEnabled(enabled)\n'
+        '    }',
+        '    fun setLocalOcrEnabled(enabled: Boolean) = viewModelScope.launch {\n'
+        '        container.settingsRepository.setLocalOcrEnabled(enabled)\n'
+        '    }\n\n'
+        '    fun setTextRecognitionEngine(engine: TextRecognitionEngine) = viewModelScope.launch {\n'
+        '        container.settingsRepository.setTextRecognitionEngine(engine)\n'
+        '    }',
+    )
+
+    activity = JAVA / "ui/MainActivity.kt"
+    replace_once(
+        activity,
+        '                        onLocalOcrChange = viewModel::setLocalOcrEnabled,',
+        '                        onLocalOcrChange = viewModel::setLocalOcrEnabled,\n'
+        '                        onTextRecognitionEngineChange = viewModel::setTextRecognitionEngine,',
+    )
+
+    screen = JAVA / "ui/MainScreen.kt"
+    replace_once(
+        screen,
+        'import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle',
+        'import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle\nimport com.abdullah.visionbridge.domain.model.TextRecognitionEngine',
+    )
+    replace_once(
+        screen,
+        '    onLocalOcrChange: (Boolean) -> Unit,',
+        '    onLocalOcrChange: (Boolean) -> Unit,\n'
+        '    onTextRecognitionEngineChange: (TextRecognitionEngine) -> Unit,',
+    )
+    old_switch = '''
+                AccessibleSwitchRow(
+                    title = "OCR محلي سريع للإنجليزية",
+                    description = "يقرأ النص اللاتيني على الجهاز فوراً، ويستعين بـGemini للعربية والنص المختلط.",
+                    checked = state.settings.localOcrEnabled,
+                    onCheckedChange = onLocalOcrChange,
+                )
+    '''
+    new_selector = '''
+                if (state.settings.mode == AnalysisMode.TEXT_READING) {
+                    SectionTitle("محرك قراءة النص")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        FilterChip(
+                            selected = state.settings.textRecognitionEngine == TextRecognitionEngine.GEMINI_CLOUD,
+                            onClick = { onTextRecognitionEngineChange(TextRecognitionEngine.GEMINI_CLOUD) },
+                            label = { Text("Gemini سحابي") },
+                            modifier = Modifier.weight(1f).height(64.dp).semantics {
+                                contentDescription = "اختيار القراءة السحابية بواسطة Gemini"
+                            },
+                        )
+                        FilterChip(
+                            selected = state.settings.textRecognitionEngine == TextRecognitionEngine.PADDLE_LOCAL,
+                            onClick = { onTextRecognitionEngineChange(TextRecognitionEngine.PADDLE_LOCAL) },
+                            label = { Text("PaddleOCR محلي") },
+                            modifier = Modifier.weight(1f).height(64.dp).semantics {
+                                contentDescription = "اختيار قراءة عربية وإنجليزية محلية بالكامل بلا شبكة"
+                            },
+                        )
+                    }
+                    Text(
+                        if (state.settings.textRecognitionEngine == TextRecognitionEngine.PADDLE_LOCAL) {
+                            "يعمل بلا إنترنت وبلا مفتاح. يستخدم PP-OCRv5 العربي والإنجليزي على هاتف ARM64، ويحفظ ترتيب Unicode والرموز ويرفض السطر منخفض الثقة بدلاً من تخمينه."
+                        } else {
+                            "يستخدم Gemini لقراءة النص. لا يعمل وضع القراءة السحابي من دون مفتاح محفوظ."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+    '''
+    replace_once(screen, old_switch.strip("\n"), new_selector.strip("\n"))
+
+    coordinator = JAVA / "capture/FrameAnalysisCoordinator.kt"
+    replace_once(
+        coordinator,
+        'import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle',
+        'import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle\nimport com.abdullah.visionbridge.domain.model.TextRecognitionEngine',
+    )
+    stable_anchor = '''
+    ) {
+        val keyStarted = SystemClock.elapsedRealtimeNanos()
+        val key = apiKeyStore.get()
+    '''
+    stable_new = '''
+    ) {
+        if (settings.textRecognitionEngine == TextRecognitionEngine.PADDLE_LOCAL) {
+            recognizeLocal(bitmap, settings, generationAtCapture, true, trace)
+            DiagnosticHub.record("CLOUD_SKIPPED", trace.fieldsOrEmpty(mapOf("reason" to "paddle_local_mode")))
+            return
+        }
+        val keyStarted = SystemClock.elapsedRealtimeNanos()
+        val key = apiKeyStore.get()
+    '''
+    # Only the first occurrence is processStableText.
+    replace_once(coordinator, stable_anchor.strip("\n"), stable_new.strip("\n"))
+    fast_anchor = '''
+    ) {
+        val key = apiKeyStore.get()
+        DiagnosticHub.record(
+            "API_KEY_LOOKUP_COMPLETED",
+    '''
+    fast_new = '''
+    ) {
+        if (settings.textRecognitionEngine == TextRecognitionEngine.PADDLE_LOCAL) {
+            recognizeLocal(bitmap, settings, generationAtCapture, true, trace)
+            DiagnosticHub.record("CLOUD_SKIPPED", trace.fieldsOrEmpty(mapOf("reason" to "paddle_local_mode")))
+            return
+        }
+        val key = apiKeyStore.get()
+        DiagnosticHub.record(
+            "API_KEY_LOOKUP_COMPLETED",
+    '''
+    replace_once(coordinator, fast_anchor.strip("\n"), fast_new.strip("\n"))
+    replace_once(
+        coordinator,
+        '        val outcome = runCatching { localTextRecognizer.recognize(bitmap) }',
+        '        val outcome = runCatching { localTextRecognizer.recognize(bitmap, settings.captureProfile) }',
+    )
+
+    bridge = JAVA / "data/ocr/InstantLocalOcrBridge.kt"
+    bridge_text = bridge.read_text(encoding="utf-8")
+    bridge_text = bridge_text.replace("safe on-device Latin OCR", "safe on-device PaddleOCR")
+    bridge_text = bridge_text.replace("Only ML Kit Latin output is allowed", "Only verified PaddleOCR output is allowed")
+    bridge_text = bridge_text.replace('language = "en"', 'language = if (cleaned.any { it in \'\\u0600\'..\'\\u06FF\' }) "mixed" else "en"')
+    bridge_text = bridge_text.replace('"language" to "en"', '"language" to if (cleaned.any { it in \'\\u0600\'..\'\\u06FF\' }) "mixed" else "en"')
+    bridge_text = bridge_text.replace('private const val SAFE_LOCAL_SOURCE = "MLKIT_LATIN"', 'private const val SAFE_LOCAL_SOURCE = "PADDLE_OCR_V5"')
+    bridge.write_text(bridge_text, encoding="utf-8")
+
+    readme = ROOT / "README.md"
+    with readme.open("a", encoding="utf-8") as stream:
+        stream.write(textwrap.dedent('''
+
+            ## وضع PaddleOCR المحلي العربي والإنجليزي
+
+            يوفر الإصدار 1.12.0 اختياراً محلياً بالكامل لقراءة النص باستخدام PP-OCRv5 على arm64-v8a.
+            يستخدم كاشفاً واحداً ونموذجي تعرف رسميين للعربية والإنجليزية، ولا يستعمل ML Kit أو Tesseract.
+            لا يعكس النص العربي يدوياً ولا يصحح الكلمات أو الرموز قاموسياً؛ يحفظ Unicode بترتيبه المنطقي
+            ويختار نتيجة كل سطر وفق الثقة ونوع الحروف. السطور منخفضة الثقة تُرفض بدلاً من تخمينها.
+            وضع وصف المشهد يبقى سحابياً بواسطة Gemini.
+        '''))
+
+    write(ROOT / "THIRD_PARTY_NOTICES_PADDLEOCR.md", '''
+        # PaddleOCR local mode notices
+
+        VisionBridge bundles arm64-v8a binaries and model assets from the official PaddlePaddle projects:
+
+        - Paddle Lite 2.14rc, Apache License 2.0.
+        - PaddleOCR / PP-OCRv5 mobile detection and Arabic/English recognition models, Apache License 2.0.
+        - OpenCV Android 4.1.0, Apache License 2.0 / BSD-3-Clause components.
+
+        Upstream source revisions are pinned in `scripts/bootstrap_paddleocr_local.py`. No user image,
+        API key or model output is sent to PaddlePaddle by the local engine.
+    ''')
+
+
+def verify_no_other_ocr() -> None:
+    gradle = (APP / "build.gradle.kts").read_text(encoding="utf-8").lower()
+    forbidden = ["mlkit:text-recognition", "tesseract", "tess-two"]
+    found = [item for item in forbidden if item in gradle]
+    if found:
+        fail(f"forbidden OCR dependencies remain: {found}")
+    if not (ASSETS / "arabic_ppocrv5_mobile_rec.nb").exists():
+        fail("Arabic PaddleOCR model missing")
+
+
+def main() -> None:
+    hashes = install_upstream()
+    install_native_sources()
+    install_kotlin()
+    patch_app()
+    verify_no_other_ocr()
+    print(json.dumps({"status": "ok", "assets": hashes}, ensure_ascii=False, indent=2))
+    shutil.rmtree(TMP, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()
