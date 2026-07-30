@@ -23,15 +23,26 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.EmptyCoroutineContext
 
+/**
+ * Coordinates local OCR, the single Gemini lane, result freshness and speech.
+ *
+ * The cloud lane deliberately owns at most one active request and one latest pending frame. A visual
+ * target change marks an active result stale but never cancels a healthy HTTP/SSE request. Repeated
+ * target changes therefore cannot starve Gemini by cancelling every request before its first token.
+ */
 class FrameAnalysisCoordinator(
     private val settingsRepository: SettingsRepository,
     private val apiKeyStore: ApiKeyStore,
@@ -48,14 +59,15 @@ class FrameAnalysisCoordinator(
         val mode: AnalysisMode,
         val localEvidence: String = "",
         val trace: DiagnosticTrace? = null,
+        val queuedAtElapsedMs: Long = SystemClock.elapsedRealtime(),
     )
 
-    private data class CloudLaneState(
+    private data class FinishedLane(
         val ownedByFinishingJob: Boolean,
         val next: PendingCloudFrame?,
     )
 
-    private val mutex = Mutex()
+    private val processMutex = Mutex()
     private val cloudScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val cloudQueueLock = Any()
     private val visualGeneration = AtomicLong(0L)
@@ -66,10 +78,27 @@ class FrameAnalysisCoordinator(
     private var lastSceneAt = 0L
     private var lastCloudSnapshotAt = 0L
     private var cloudJob: Job? = null
+    private var delayedLaunchJob: Job? = null
     private var activeCloudMode: AnalysisMode? = null
+    private var activeCloudFrameId: String? = null
+    private var activeCloudStartedAtElapsedMs = 0L
+    private var lastCloudProgressAtElapsedMs = 0L
+    private var lastCloudCompletedAtElapsedMs = 0L
+    private var cloudFailureStreak = 0
     private var pendingCloudFrame: PendingCloudFrame? = null
+    private var lastHealthSnapshotAtElapsedMs = 0L
+    private var lastSpeechInterruptAtElapsedMs = 0L
 
-    suspend fun process(bitmap: Bitmap) = mutex.withLock {
+    init {
+        cloudScope.launch {
+            while (isActive) {
+                delay(HEALTH_CHECK_INTERVAL_MS)
+                runHealthCheck()
+            }
+        }
+    }
+
+    suspend fun process(bitmap: Bitmap) = processMutex.withLock {
         val trace = currentCoroutineContext()[DiagnosticTrace]
         val settings = settingsRepository.settings.first()
         val generationAtCapture = visualGeneration.get()
@@ -96,12 +125,23 @@ class FrameAnalysisCoordinator(
                         processStableText(bitmap, settings, generationAtCapture, trace)
                     }
                 }
-                AnalysisMode.SCENE_DESCRIPTION -> queueDynamicScene(bitmap, settings, generationAtCapture, trace)
+
+                AnalysisMode.SCENE_DESCRIPTION -> queueDynamicScene(
+                    bitmap,
+                    settings,
+                    generationAtCapture,
+                    trace,
+                )
             }
         } catch (error: OcrTrustRejectedException) {
             DiagnosticHub.record(
                 "OCR_TRUST_REJECTED",
-                trace.fieldsOrEmpty(mapOf("message" to error.spokenMessage, "visualGeneration" to generationAtCapture)),
+                trace.fieldsOrEmpty(
+                    mapOf(
+                        "message" to error.spokenMessage,
+                        "visualGeneration" to generationAtCapture,
+                    ),
+                ),
             )
             notifyTrustRejection(error, settings, generationAtCapture, trace)
         } catch (error: Throwable) {
@@ -109,13 +149,19 @@ class FrameAnalysisCoordinator(
                 DiagnosticHub.failure("COORDINATOR_PROCESS", error, trace.fieldsOrEmpty())
                 runtime.error(error.userMessage())
             } else {
-                DiagnosticHub.record("COORDINATOR_CANCELLED", trace.fieldsOrEmpty(mapOf("reason" to error.message)))
+                DiagnosticHub.record(
+                    "COORDINATOR_CANCELLED",
+                    trace.fieldsOrEmpty(mapOf("reason" to error.message)),
+                )
             }
         } finally {
             DiagnosticHub.record(
                 "COORDINATOR_PROCESS_RETURNED",
                 trace.fieldsOrEmpty(
-                    mapOf("durationMs" to (SystemClock.elapsedRealtimeNanos() - processStarted) / 1_000_000.0),
+                    mapOf(
+                        "durationMs" to
+                            (SystemClock.elapsedRealtimeNanos() - processStarted) / 1_000_000.0,
+                    ),
                 ),
             )
             runtime.processing(false)
@@ -135,13 +181,17 @@ class FrameAnalysisCoordinator(
             trace.fieldsOrEmpty(
                 mapOf(
                     "hasApiKey" to (key != null),
-                    "durationMs" to (SystemClock.elapsedRealtimeNanos() - keyStarted) / 1_000_000.0,
+                    "durationMs" to
+                        (SystemClock.elapsedRealtimeNanos() - keyStarted) / 1_000_000.0,
                 ),
             ),
         )
         val localText = recognizeLocal(bitmap, settings, generationAtCapture, key == null, trace)
         if (key == null) {
-            DiagnosticHub.record("CLOUD_SKIPPED", trace.fieldsOrEmpty(mapOf("reason" to "api_key_missing")))
+            DiagnosticHub.record(
+                "CLOUD_SKIPPED",
+                trace.fieldsOrEmpty(mapOf("reason" to "api_key_missing")),
+            )
             return
         }
 
@@ -156,7 +206,7 @@ class FrameAnalysisCoordinator(
                 trace = trace,
             ),
             now = System.currentTimeMillis(),
-            minimumLaunchIntervalMs = if (localText.isBlank()) 350L else 500L,
+            minimumLaunchIntervalMs = if (localText.isBlank()) 600L else 850L,
             pendingSnapshotIntervalMs = STABLE_PENDING_SNAPSHOT_INTERVAL_MS,
         )
     }
@@ -168,10 +218,16 @@ class FrameAnalysisCoordinator(
         trace: DiagnosticTrace?,
     ) {
         val key = apiKeyStore.get()
-        DiagnosticHub.record("API_KEY_LOOKUP_COMPLETED", trace.fieldsOrEmpty(mapOf("hasApiKey" to (key != null))))
+        DiagnosticHub.record(
+            "API_KEY_LOOKUP_COMPLETED",
+            trace.fieldsOrEmpty(mapOf("hasApiKey" to (key != null))),
+        )
         if (key == null) {
             recognizeLocal(bitmap, settings, generationAtCapture, true, trace)
-            DiagnosticHub.record("CLOUD_SKIPPED", trace.fieldsOrEmpty(mapOf("reason" to "api_key_missing")))
+            DiagnosticHub.record(
+                "CLOUD_SKIPPED",
+                trace.fieldsOrEmpty(mapOf("reason" to "api_key_missing")),
+            )
             return
         }
 
@@ -207,7 +263,7 @@ class FrameAnalysisCoordinator(
                 trace = trace,
             ),
             now = System.currentTimeMillis(),
-            minimumLaunchIntervalMs = if (localEvidence.isBlank()) 250L else 420L,
+            minimumLaunchIntervalMs = if (localEvidence.isBlank()) 450L else 650L,
             pendingSnapshotIntervalMs = FAST_PENDING_SNAPSHOT_INTERVAL_MS,
         )
     }
@@ -239,15 +295,25 @@ class FrameAnalysisCoordinator(
         )
     }
 
+    /**
+     * One active request plus one latest pending frame. Incoming frames can replace only the pending
+     * slot; they never cancel the active network request. This is the backpressure boundary that
+     * prevents request storms and the two-minute silent failure seen in diagnostics.
+     */
     private fun queueCloudFrame(
         frame: PendingCloudFrame,
         now: Long,
         minimumLaunchIntervalMs: Long,
         pendingSnapshotIntervalMs: Long,
     ) {
+        var launchNow: PendingCloudFrame? = null
+        var delayedByMs = 0L
+
         synchronized(cloudQueueLock) {
-            if (cloudJob?.isActive == true) {
-                if (now - lastCloudSnapshotAt < pendingSnapshotIntervalMs) {
+            val active = cloudJob?.isCompleted == false
+            if (active) {
+                val sameGeneration = pendingCloudFrame?.visualGeneration == frame.visualGeneration
+                if (sameGeneration && now - lastCloudSnapshotAt < pendingSnapshotIntervalMs) {
                     DiagnosticHub.record(
                         "CLOUD_FRAME_DROPPED",
                         frame.trace.fieldsOrEmpty(
@@ -255,6 +321,7 @@ class FrameAnalysisCoordinator(
                                 "reason" to "pending_snapshot_interval",
                                 "pendingSnapshotIntervalMs" to pendingSnapshotIntervalMs,
                                 "mode" to frame.mode.name,
+                                "activeFrameId" to activeCloudFrameId,
                             ),
                         ),
                     )
@@ -280,25 +347,14 @@ class FrameAnalysisCoordinator(
                     return
                 }
 
-                old?.let { replaced ->
-                    DiagnosticHub.record(
-                        "CLOUD_FRAME_DROPPED",
-                        replaced.trace.fieldsOrEmpty(
-                            mapOf(
-                                "reason" to "replaced_by_newer_cloud_frame",
-                                "replacementFrameId" to frame.trace?.frameId,
-                            ),
-                        ),
-                    )
-                    replaced.bitmap.recycle()
-                }
-                pendingCloudFrame = frame
+                replacePendingLocked(frame, "replaced_by_newer_cloud_frame")
                 DiagnosticHub.record(
                     "CLOUD_FRAME_QUEUED_AS_LATEST",
                     frame.trace.fieldsOrEmpty(
                         mapOf(
                             "mode" to frame.mode.name,
                             "localEvidenceScore" to textEvidenceScore(frame.localEvidence),
+                            "activeFrameId" to activeCloudFrameId,
                         ),
                     ),
                 )
@@ -306,38 +362,86 @@ class FrameAnalysisCoordinator(
             }
 
             val lastLaunch = if (frame.mode == AnalysisMode.TEXT_READING) lastCloudOcrAt else lastSceneAt
-            if (now - lastLaunch < minimumLaunchIntervalMs) {
+            val elapsed = now - lastLaunch
+            if (elapsed < minimumLaunchIntervalMs) {
+                delayedByMs = minimumLaunchIntervalMs - elapsed
+                replacePendingLocked(frame, "replaced_while_waiting_for_launch_interval")
                 DiagnosticHub.record(
-                    "CLOUD_FRAME_DROPPED",
+                    "CLOUD_FRAME_DELAYED",
                     frame.trace.fieldsOrEmpty(
                         mapOf(
                             "reason" to "minimum_cloud_launch_interval",
-                            "minimumLaunchIntervalMs" to minimumLaunchIntervalMs,
-                            "elapsedSinceLastLaunchMs" to (now - lastLaunch),
+                            "delayMs" to delayedByMs,
                             "mode" to frame.mode.name,
                         ),
                     ),
                 )
-                frame.bitmap.recycle()
-                return
+            } else {
+                launchNow = frame
             }
-            if (frame.mode == AnalysisMode.TEXT_READING) lastCloudOcrAt = now else lastSceneAt = now
-            lastCloudSnapshotAt = now
-            DiagnosticHub.record("CLOUD_FRAME_LAUNCHING", frame.trace.fieldsOrEmpty(mapOf("mode" to frame.mode.name)))
-            launchCloud(frame)
+        }
+
+        if (launchNow != null) {
+            launchCloud(launchNow!!)
+        } else if (delayedByMs > 0L) {
+            schedulePendingPromotion(delayedByMs)
         }
     }
 
-    /**
-     * Within one visual target, a later hand tremor must not evict a readable settings page. ML Kit
-     * evidence is only a queue-quality hint here; Gemini still performs Arabic and complete OCR.
-     * Different visual generations always prefer the new target.
-     */
+    private fun replacePendingLocked(frame: PendingCloudFrame, oldReason: String) {
+        pendingCloudFrame?.let { old ->
+            DiagnosticHub.record(
+                "CLOUD_FRAME_DROPPED",
+                old.trace.fieldsOrEmpty(
+                    mapOf(
+                        "reason" to oldReason,
+                        "replacementFrameId" to frame.trace?.frameId,
+                    ),
+                ),
+            )
+            old.bitmap.recycle()
+        }
+        pendingCloudFrame = frame
+    }
+
+    private fun schedulePendingPromotion(delayMs: Long) {
+        synchronized(cloudQueueLock) {
+            if (delayedLaunchJob?.isActive == true) return
+            delayedLaunchJob = cloudScope.launch {
+                delay(delayMs.coerceAtLeast(1L))
+                promotePendingIfIdle("minimum_interval_elapsed")
+            }
+        }
+    }
+
+    private fun promotePendingIfIdle(reason: String) {
+        val next = synchronized(cloudQueueLock) {
+            if (cloudJob?.isCompleted == false) return
+            delayedLaunchJob = null
+            pendingCloudFrame.also { pendingCloudFrame = null }
+        } ?: return
+
+        DiagnosticHub.record(
+            "CLOUD_PENDING_FRAME_PROMOTED",
+            next.trace.fieldsOrEmpty(
+                mapOf(
+                    "mode" to next.mode.name,
+                    "reason" to reason,
+                    "queuedForMs" to (SystemClock.elapsedRealtime() - next.queuedAtElapsedMs),
+                ),
+            ),
+        )
+        launchCloud(next)
+    }
+
+    /** A readable pending text frame is not evicted by a weaker frame from the same visual target. */
     private fun shouldKeepRicherPendingText(
         pending: PendingCloudFrame,
         incoming: PendingCloudFrame,
     ): Boolean {
-        if (pending.mode != AnalysisMode.TEXT_READING || incoming.mode != AnalysisMode.TEXT_READING) return false
+        if (pending.mode != AnalysisMode.TEXT_READING || incoming.mode != AnalysisMode.TEXT_READING) {
+            return false
+        }
         if (pending.visualGeneration != incoming.visualGeneration) return false
         val pendingScore = textEvidenceScore(pending.localEvidence)
         val incomingScore = textEvidenceScore(incoming.localEvidence)
@@ -353,25 +457,32 @@ class FrameAnalysisCoordinator(
 
     private fun launchCloud(frame: PendingCloudFrame) {
         val launched = cloudScope.launch(start = CoroutineStart.LAZY) {
-            val thisJob = coroutineContext[Job]
+            val thisJob = currentCoroutineContext()[Job]
             val cloudStarted = SystemClock.elapsedRealtimeNanos()
             try {
                 val result = withContext(frame.trace ?: EmptyCoroutineContext) {
-                    streamAnalysis(
-                        bitmap = frame.bitmap,
-                        mode = frame.mode,
-                        settings = frame.settings,
-                        apiKey = frame.apiKey,
-                        generationAtCapture = frame.visualGeneration,
-                        localEvidence = frame.localEvidence,
-                        trace = frame.trace,
-                    )
+                    withTimeout(CLOUD_REQUEST_HARD_TIMEOUT_MS) {
+                        streamAnalysis(
+                            bitmap = frame.bitmap,
+                            mode = frame.mode,
+                            settings = frame.settings,
+                            apiKey = frame.apiKey,
+                            generationAtCapture = frame.visualGeneration,
+                            localEvidence = frame.localEvidence,
+                            trace = frame.trace,
+                        )
+                    }
+                }
+                synchronized(cloudQueueLock) {
+                    cloudFailureStreak = 0
+                    lastCloudCompletedAtElapsedMs = SystemClock.elapsedRealtime()
                 }
                 DiagnosticHub.record(
                     "CLOUD_ANALYSIS_COMPLETED",
                     frame.trace.fieldsOrEmpty(
                         mapOf(
-                            "durationMs" to (SystemClock.elapsedRealtimeNanos() - cloudStarted) / 1_000_000.0,
+                            "durationMs" to
+                                (SystemClock.elapsedRealtimeNanos() - cloudStarted) / 1_000_000.0,
                             "text" to result.text,
                             "language" to result.language,
                             "urgent" to result.urgent,
@@ -386,9 +497,32 @@ class FrameAnalysisCoordinator(
                     frame.trace.fieldsOrEmpty(mapOf("message" to error.spokenMessage)),
                 )
                 notifyTrustRejection(error, frame.settings, frame.visualGeneration, frame.trace)
+            } catch (timeout: TimeoutCancellationException) {
+                synchronized(cloudQueueLock) {
+                    cloudFailureStreak++
+                    resetLaunchIntervalLocked(frame.mode)
+                }
+                DiagnosticHub.record(
+                    "CLOUD_ANALYSIS_TIMED_OUT",
+                    frame.trace.fieldsOrEmpty(
+                        mapOf(
+                            "timeoutMs" to CLOUD_REQUEST_HARD_TIMEOUT_MS,
+                            "failureStreak" to cloudFailureStreak,
+                        ),
+                    ),
+                )
+                runtime.notice("تأخر التحليل؛ انتقلت تلقائياً إلى أحدث صورة")
             } catch (error: Throwable) {
                 if (error !is CancellationException) {
-                    DiagnosticHub.failure("CLOUD_ANALYSIS", error, frame.trace.fieldsOrEmpty())
+                    synchronized(cloudQueueLock) {
+                        cloudFailureStreak++
+                        resetLaunchIntervalLocked(frame.mode)
+                    }
+                    DiagnosticHub.failure(
+                        "CLOUD_ANALYSIS",
+                        error,
+                        frame.trace.fieldsOrEmpty(mapOf("failureStreak" to cloudFailureStreak)),
+                    )
                     runtime.error(error.userMessage())
                 } else {
                     DiagnosticHub.record(
@@ -398,56 +532,80 @@ class FrameAnalysisCoordinator(
                 }
             } finally {
                 frame.bitmap.recycle()
-                val laneState = synchronized(cloudQueueLock) {
+                val lane = synchronized(cloudQueueLock) {
                     val ownsLane = cloudJob === thisJob
                     val next = if (ownsLane) {
+                        cloudJob = null
+                        activeCloudMode = null
+                        activeCloudFrameId = null
+                        activeCloudStartedAtElapsedMs = 0L
+                        lastCloudProgressAtElapsedMs = 0L
                         pendingCloudFrame.also { pendingCloudFrame = null }
                     } else {
                         null
                     }
-                    CloudLaneState(ownsLane, next)
+                    FinishedLane(ownsLane, next)
                 }
 
-                if (laneState.ownedByFinishingJob) {
-                    val next = laneState.next
-                    val mayContinue = next != null && (
-                        next.mode == AnalysisMode.TEXT_READING ||
-                            !next.settings.interruptSpeechOnVisualChange ||
-                            next.visualGeneration == visualGeneration.get()
+                if (lane.ownedByFinishingJob) {
+                    val next = lane.next
+                    if (next != null && pendingFrameStillUseful(next)) {
+                        DiagnosticHub.record(
+                            "CLOUD_PENDING_FRAME_PROMOTED",
+                            next.trace.fieldsOrEmpty(
+                                mapOf(
+                                    "mode" to next.mode.name,
+                                    "reason" to "active_request_finished",
+                                    "queuedForMs" to
+                                        (SystemClock.elapsedRealtime() - next.queuedAtElapsedMs),
+                                ),
+                            ),
                         )
-                    if (mayContinue) {
-                        synchronized(cloudQueueLock) {
-                            val now = System.currentTimeMillis()
-                            if (next!!.mode == AnalysisMode.TEXT_READING) lastCloudOcrAt = now else lastSceneAt = now
-                            DiagnosticHub.record(
-                                "CLOUD_PENDING_FRAME_PROMOTED",
-                                next.trace.fieldsOrEmpty(mapOf("mode" to next.mode.name)),
-                            )
-                            launchCloud(next)
-                        }
+                        launchCloud(next)
                     } else {
-                        next?.let { dropped ->
+                        next?.let { stale ->
                             DiagnosticHub.record(
                                 "CLOUD_FRAME_DROPPED",
-                                dropped.trace.fieldsOrEmpty(mapOf("reason" to "stale_visual_generation")),
+                                stale.trace.fieldsOrEmpty(mapOf("reason" to "stale_visual_generation")),
                             )
-                            dropped.bitmap.recycle()
-                        }
-                        synchronized(cloudQueueLock) {
-                            if (cloudJob === thisJob) {
-                                cloudJob = null
-                                activeCloudMode = null
-                            }
+                            stale.bitmap.recycle()
                         }
                     }
                 }
             }
         }
+
         synchronized(cloudQueueLock) {
+            delayedLaunchJob?.cancel()
+            delayedLaunchJob = null
             cloudJob = launched
             activeCloudMode = frame.mode
+            activeCloudFrameId = frame.trace?.frameId
+            activeCloudStartedAtElapsedMs = SystemClock.elapsedRealtime()
+            lastCloudProgressAtElapsedMs = activeCloudStartedAtElapsedMs
+            val now = System.currentTimeMillis()
+            if (frame.mode == AnalysisMode.TEXT_READING) lastCloudOcrAt = now else lastSceneAt = now
+            lastCloudSnapshotAt = now
         }
+        DiagnosticHub.record(
+            "CLOUD_FRAME_LAUNCHING",
+            frame.trace.fieldsOrEmpty(
+                mapOf(
+                    "mode" to frame.mode.name,
+                    "visualGeneration" to frame.visualGeneration,
+                    "pendingQueueCapacity" to 1,
+                ),
+            ),
+        )
         launched.start()
+    }
+
+    private fun pendingFrameStillUseful(frame: PendingCloudFrame): Boolean =
+        frame.mode == AnalysisMode.SCENE_DESCRIPTION && !frame.settings.interruptSpeechOnVisualChange ||
+            frame.visualGeneration == visualGeneration.get()
+
+    private fun resetLaunchIntervalLocked(mode: AnalysisMode) {
+        if (mode == AnalysisMode.TEXT_READING) lastCloudOcrAt = 0L else lastSceneAt = 0L
     }
 
     private suspend fun recognizeLocal(
@@ -458,7 +616,10 @@ class FrameAnalysisCoordinator(
         trace: DiagnosticTrace?,
     ): String {
         if (!settings.localOcrEnabled) {
-            DiagnosticHub.record("LOCAL_OCR_SKIPPED", trace.fieldsOrEmpty(mapOf("reason" to "disabled")))
+            DiagnosticHub.record(
+                "LOCAL_OCR_SKIPPED",
+                trace.fieldsOrEmpty(mapOf("reason" to "disabled")),
+            )
             return ""
         }
         val started = SystemClock.elapsedRealtimeNanos()
@@ -472,7 +633,8 @@ class FrameAnalysisCoordinator(
             "LOCAL_OCR_COMPLETED",
             trace.fieldsOrEmpty(
                 mapOf(
-                    "durationMs" to (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0,
+                    "durationMs" to
+                        (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0,
                     "text" to localText,
                     "textLength" to localText.length,
                     "blank" to localText.isBlank(),
@@ -563,8 +725,26 @@ class FrameAnalysisCoordinator(
             sceneDescriptionStyle = settings.sceneDescriptionStyle,
             captureProfile = settings.captureProfile,
             trustGateEnabled = settings.trustGateEnabled,
-            onSpeechChunk = { streamedText, urgent ->
-                ensureTargetIsAllowed(settings, generationAtCapture, trace)
+            onSpeechChunk = speechChunk@{ streamedText, urgent ->
+                synchronized(cloudQueueLock) {
+                    lastCloudProgressAtElapsedMs = SystemClock.elapsedRealtime()
+                }
+                if (!targetMayPublish(settings, generationAtCapture)) {
+                    DiagnosticHub.record(
+                        "STREAM_CHUNK_REJECTED",
+                        trace.fieldsOrEmpty(
+                            mapOf(
+                                "reason" to "visual_target_changed",
+                                "capturedGeneration" to generationAtCapture,
+                                "currentGeneration" to visualGeneration.get(),
+                                "mode" to settings.mode.name,
+                                "networkRequestContinues" to true,
+                            ),
+                        ),
+                    )
+                    return@speechChunk
+                }
+
                 val safeText = if (mode == AnalysisMode.TEXT_READING && settings.trustGateEnabled) {
                     evidenceFilter.filter(streamedText, localEvidence)
                 } else {
@@ -577,7 +757,8 @@ class FrameAnalysisCoordinator(
                             "rawText" to streamedText,
                             "text" to safeText,
                             "urgent" to urgent,
-                            "removedByEvidenceFilter" to (streamedText.isNotBlank() && safeText.isBlank()),
+                            "removedByEvidenceFilter" to
+                                (streamedText.isNotBlank() && safeText.isBlank()),
                         ),
                     ),
                 )
@@ -643,17 +824,27 @@ class FrameAnalysisCoordinator(
         trace: DiagnosticTrace?,
     ) {
         if (!settings.trustGateEnabled) return
-        if (settings.interruptSpeechOnVisualChange && generationAtCapture != visualGeneration.get()) {
+        if (!targetMayPublish(settings, generationAtCapture)) {
             DiagnosticHub.record(
                 "TRUST_FEEDBACK_SUPPRESSED",
-                trace.fieldsOrEmpty(mapOf("reason" to "stale_visual_generation", "message" to error.spokenMessage)),
+                trace.fieldsOrEmpty(
+                    mapOf(
+                        "reason" to "stale_visual_generation",
+                        "message" to error.spokenMessage,
+                    ),
+                ),
             )
             return
         }
         if (lastTrustFeedbackGeneration.getAndSet(generationAtCapture) == generationAtCapture) {
             DiagnosticHub.record(
                 "TRUST_FEEDBACK_SUPPRESSED",
-                trace.fieldsOrEmpty(mapOf("reason" to "already_spoken_for_generation", "message" to error.spokenMessage)),
+                trace.fieldsOrEmpty(
+                    mapOf(
+                        "reason" to "already_spoken_for_generation",
+                        "message" to error.spokenMessage,
+                    ),
+                ),
             )
             return
         }
@@ -683,27 +874,11 @@ class FrameAnalysisCoordinator(
         }
     }
 
-    private fun ensureTargetIsAllowed(
-        settings: AppSettings,
-        generationAtCapture: Long,
-        trace: DiagnosticTrace?,
-    ) {
-        val targetChanged = generationAtCapture != visualGeneration.get()
-        val staleMustStop = settings.mode == AnalysisMode.TEXT_READING || settings.interruptSpeechOnVisualChange
-        if (targetChanged && staleMustStop) {
-            DiagnosticHub.record(
-                "STREAM_CHUNK_REJECTED",
-                trace.fieldsOrEmpty(
-                    mapOf(
-                        "reason" to "visual_target_changed",
-                        "capturedGeneration" to generationAtCapture,
-                        "currentGeneration" to visualGeneration.get(),
-                        "mode" to settings.mode.name,
-                    ),
-                ),
-            )
-            throw CancellationException("تغيّر الهدف البصري قبل اكتمال بث Gemini")
-        }
+    private fun targetMayPublish(settings: AppSettings, generationAtCapture: Long): Boolean {
+        val targetCurrent = generationAtCapture == visualGeneration.get()
+        val mayPublishStaleScene =
+            settings.mode == AnalysisMode.SCENE_DESCRIPTION && !settings.interruptSpeechOnVisualChange
+        return targetCurrent || mayPublishStaleScene
     }
 
     private fun publishIfCurrent(
@@ -712,10 +887,7 @@ class FrameAnalysisCoordinator(
         generationAtCapture: Long,
         trace: DiagnosticTrace?,
     ) {
-        val targetCurrent = generationAtCapture == visualGeneration.get()
-        val mayPublishStaleScene =
-            settings.mode == AnalysisMode.SCENE_DESCRIPTION && !settings.interruptSpeechOnVisualChange
-        if (targetCurrent || mayPublishStaleScene) {
+        if (targetMayPublish(settings, generationAtCapture)) {
             runtime.result(result)
             DiagnosticHub.record(
                 "TEXT_DISPLAYED",
@@ -744,33 +916,38 @@ class FrameAnalysisCoordinator(
     }
 
     /**
-     * Speech interruption and network supersession are separate concerns. A user may choose to let
-     * an utterance finish, but an OCR request for a page they no longer view must never hold the only
-     * cloud lane. Text requests are therefore cancelled on a real target change regardless of the
-     * speech setting; live scene requests retain the original user-controlled behaviour.
+     * A visual change invalidates output freshness and the old pending snapshot. It does not cancel
+     * the active cloud request; that request finishes silently, releases its resources and immediately
+     * promotes the newest pending frame. Only reset and the hard watchdog may cancel an active job.
      */
     fun onVisualTargetChanged(interruptSpeech: Boolean) {
         val newGeneration = visualGeneration.incrementAndGet()
+        val now = SystemClock.elapsedRealtime()
         DiagnosticHub.record(
             "VISUAL_TARGET_CHANGED",
-            mapOf("newGeneration" to newGeneration, "interruptSpeech" to interruptSpeech),
+            mapOf(
+                "newGeneration" to newGeneration,
+                "interruptSpeech" to interruptSpeech,
+                "activeCloudFrameId" to activeCloudFrameId,
+                "activeRequestWillContinue" to true,
+            ),
         )
         lastCloudOcrAt = 0L
         lastSceneAt = 0L
         lastCloudSnapshotAt = 0L
 
-        if (interruptSpeech) tts.onVisualTargetChanged(true)
+        if (interruptSpeech && now - lastSpeechInterruptAtElapsedMs >= SPEECH_INTERRUPT_COOLDOWN_MS) {
+            lastSpeechInterruptAtElapsedMs = now
+            tts.onVisualTargetChanged(true)
+        }
 
         synchronized(cloudQueueLock) {
-            val shouldSupersedeCloud = activeCloudMode == AnalysisMode.TEXT_READING || interruptSpeech
-            if (!shouldSupersedeCloud) return@synchronized
-
             pendingCloudFrame?.let { pending ->
                 DiagnosticHub.record(
                     "CLOUD_FRAME_DROPPED",
                     pending.trace.fieldsOrEmpty(
                         mapOf(
-                            "reason" to "visual_target_changed",
+                            "reason" to "visual_target_changed_pending_only",
                             "activeCloudMode" to activeCloudMode?.name,
                         ),
                     ),
@@ -778,20 +955,74 @@ class FrameAnalysisCoordinator(
                 pending.bitmap.recycle()
             }
             pendingCloudFrame = null
-            cloudJob?.let { active ->
+            if (cloudJob?.isCompleted == false) {
                 DiagnosticHub.record(
-                    "CLOUD_ACTIVE_REQUEST_SUPERSEDED",
+                    "CLOUD_ACTIVE_REQUEST_MARKED_STALE",
                     mapOf(
                         "activeCloudMode" to activeCloudMode?.name,
+                        "activeFrameId" to activeCloudFrameId,
                         "newGeneration" to newGeneration,
-                        "interruptSpeech" to interruptSpeech,
+                        "requestCancelled" to false,
                     ),
                 )
-                active.cancel(CancellationException("visual_target_changed"))
             }
-            cloudJob = null
-            activeCloudMode = null
         }
+    }
+
+    private fun runHealthCheck() {
+        val now = SystemClock.elapsedRealtime()
+        var timedOutJob: Job? = null
+        var orphanedPending = false
+        val snapshot = synchronized(cloudQueueLock) {
+            val job = cloudJob
+            val active = job?.isCompleted == false
+            val activeAgeMs = if (active && activeCloudStartedAtElapsedMs > 0L) {
+                now - activeCloudStartedAtElapsedMs
+            } else {
+                0L
+            }
+            val progressAgeMs = if (active && lastCloudProgressAtElapsedMs > 0L) {
+                now - lastCloudProgressAtElapsedMs
+            } else {
+                0L
+            }
+            if (active && activeAgeMs >= CLOUD_WATCHDOG_TIMEOUT_MS) {
+                timedOutJob = job
+            }
+            orphanedPending = !active && pendingCloudFrame != null
+            mapOf(
+                "active" to active,
+                "activeFrameId" to activeCloudFrameId,
+                "activeMode" to activeCloudMode?.name,
+                "activeAgeMs" to activeAgeMs,
+                "progressAgeMs" to progressAgeMs,
+                "pending" to (pendingCloudFrame != null),
+                "pendingFrameId" to pendingCloudFrame?.trace?.frameId,
+                "failureStreak" to cloudFailureStreak,
+                "lastCompletionAgeMs" to if (lastCloudCompletedAtElapsedMs > 0L) {
+                    now - lastCloudCompletedAtElapsedMs
+                } else {
+                    null
+                },
+            )
+        }
+
+        if (now - lastHealthSnapshotAtElapsedMs >= HEALTH_SNAPSHOT_INTERVAL_MS) {
+            lastHealthSnapshotAtElapsedMs = now
+            DiagnosticHub.record("CLOUD_HEALTH_SNAPSHOT", snapshot)
+        }
+
+        timedOutJob?.let { job ->
+            DiagnosticHub.record(
+                "CLOUD_WATCHDOG_RECOVERY",
+                snapshot + mapOf(
+                    "action" to "cancel_hard_timeout_and_promote_latest",
+                    "timeoutMs" to CLOUD_WATCHDOG_TIMEOUT_MS,
+                ),
+            )
+            job.cancel(CancellationException("cloud_watchdog_hard_timeout"))
+        }
+        if (orphanedPending) promotePendingIfIdle("watchdog_orphan_recovery")
     }
 
     fun stopSpeech() {
@@ -806,10 +1037,16 @@ class FrameAnalysisCoordinator(
         lastCloudOcrAt = 0L
         lastSceneAt = 0L
         lastCloudSnapshotAt = 0L
+        lastSpeechInterruptAtElapsedMs = 0L
         synchronized(cloudQueueLock) {
+            delayedLaunchJob?.cancel()
+            delayedLaunchJob = null
             cloudJob?.cancel(CancellationException("coordinator_reset"))
             cloudJob = null
             activeCloudMode = null
+            activeCloudFrameId = null
+            activeCloudStartedAtElapsedMs = 0L
+            lastCloudProgressAtElapsedMs = 0L
             pendingCloudFrame?.let { pending ->
                 DiagnosticHub.record(
                     "CLOUD_FRAME_DROPPED",
@@ -818,25 +1055,34 @@ class FrameAnalysisCoordinator(
                 pending.bitmap.recycle()
             }
             pendingCloudFrame = null
+            cloudFailureStreak = 0
         }
         tts.stop()
         tts.resetHistory()
     }
 
-    private fun DiagnosticTrace?.fieldsOrEmpty(extra: Map<String, Any?> = emptyMap()): Map<String, Any?> =
-        this?.fields(extra) ?: extra
+    private fun DiagnosticTrace?.fieldsOrEmpty(
+        extra: Map<String, Any?> = emptyMap(),
+    ): Map<String, Any?> = this?.fields(extra) ?: extra
 
     private fun Throwable.userMessage(): String =
         message?.takeIf { it.isNotBlank() } ?: "تعذر تحليل إطار الشاشة"
 
     private companion object {
-        const val STABLE_PENDING_SNAPSHOT_INTERVAL_MS = 240L
-        const val FAST_PENDING_SNAPSHOT_INTERVAL_MS = 160L
-        const val SCENE_PENDING_SNAPSHOT_INTERVAL_MS = 140L
-        const val BRIEF_SCENE_INTERVAL_MS = 300L
-        const val COMPREHENSIVE_SCENE_INTERVAL_MS = 500L
+        const val STABLE_PENDING_SNAPSHOT_INTERVAL_MS = 1_000L
+        const val FAST_PENDING_SNAPSHOT_INTERVAL_MS = 650L
+        const val SCENE_PENDING_SNAPSHOT_INTERVAL_MS = 500L
+        const val BRIEF_SCENE_INTERVAL_MS = 650L
+        const val COMPREHENSIVE_SCENE_INTERVAL_MS = 900L
         const val MIN_EVIDENCE_SCORE_ADVANTAGE = 24
         const val EVIDENCE_LINE_BONUS = 8
+
+        const val CLOUD_REQUEST_HARD_TIMEOUT_MS = 42_000L
+        const val CLOUD_WATCHDOG_TIMEOUT_MS = 48_000L
+        const val HEALTH_CHECK_INTERVAL_MS = 5_000L
+        const val HEALTH_SNAPSHOT_INTERVAL_MS = 30_000L
+        const val SPEECH_INTERRUPT_COOLDOWN_MS = 1_200L
+
         val CAMERA_CHROME_TOKEN = Regex(
             "^(?:LEICA|VIBR?|[0-9]+(?:\\.[0-9]+)?x?|lx)$",
             RegexOption.IGNORE_CASE,

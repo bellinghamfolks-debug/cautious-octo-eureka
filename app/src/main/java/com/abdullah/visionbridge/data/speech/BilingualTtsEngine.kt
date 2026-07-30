@@ -12,6 +12,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
@@ -22,9 +23,11 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Ordered bilingual speech engine with an instrumented utterance queue.
- * Each request keeps the originating visual-frame trace until Android reports start, completion,
- * interruption or failure.
+ * Ordered bilingual speech with a bounded latest-useful queue and self-healing TTS timeouts.
+ *
+ * A stalled Android TTS callback can no longer block speech for a full minute while an unlimited
+ * queue grows behind it. The queue is bounded, old requests are discarded explicitly, and a timed
+ * out engine is stopped and recreated after repeated failures.
  */
 class BilingualTtsEngine(context: Context) {
     private data class SpeechRequest(
@@ -45,36 +48,47 @@ class BilingualTtsEngine(context: Context) {
         val enqueuedAtElapsedNanos: Long,
         val submittedAtElapsedNanos: Long,
     ) {
-        @Volatile var startedAtElapsedNanos: Long = 0L
+        @Volatile
+        var startedAtElapsedNanos: Long = 0L
     }
 
     private val appContext = context.applicationContext
-    private val ready = CompletableDeferred<Boolean>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val requests = Channel<SpeechRequest>(Channel.UNLIMITED)
     private val utterances = ConcurrentHashMap<String, UtteranceState>()
     private val generation = AtomicLong(0L)
+    private val engineEpoch = AtomicLong(0L)
     private val deduplicator = SpeechDeduplicator()
+    private val engineLock = Any()
 
+    @Volatile
+    private var ready = CompletableDeferred<Boolean>()
+
+    @Volatile
     private var tts: TextToSpeech? = null
 
-    init {
-        val initStarted = SystemClock.elapsedRealtimeNanos()
-        DiagnosticHub.record("TTS_INITIALIZATION_STARTED")
-        tts = TextToSpeech(appContext) { status ->
-            val success = status == TextToSpeech.SUCCESS
-            if (success) configureEngine()
+    @Volatile
+    private var consecutiveTimeouts = 0
+
+    private val requests = Channel<SpeechRequest>(
+        capacity = MAX_PENDING_REQUESTS,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        onUndeliveredElement = { request: SpeechRequest ->
             DiagnosticHub.record(
-                "TTS_INITIALIZATION_COMPLETED",
-                mapOf(
-                    "success" to success,
-                    "status" to status,
-                    "durationMs" to (SystemClock.elapsedRealtimeNanos() - initStarted) / 1_000_000.0,
+                "TTS_REQUEST_DROPPED",
+                request.trace.fieldsOrEmpty(
+                    mapOf(
+                        "reason" to "bounded_queue_drop_oldest",
+                        "text" to request.text,
+                        "requestGeneration" to request.generation,
+                        "queueCapacity" to MAX_PENDING_REQUESTS,
+                    ),
                 ),
             )
-            if (!ready.isCompleted) ready.complete(success)
-        }
+        },
+    )
 
+    init {
+        initializeEngine("initialization")
         scope.launch {
             for (request in requests) {
                 if (request.generation == generation.get()) {
@@ -96,14 +110,67 @@ class BilingualTtsEngine(context: Context) {
         }
     }
 
-    private fun configureEngine() {
-        tts?.setAudioAttributes(
+    private fun initializeEngine(reason: String) {
+        synchronized(engineLock) {
+            val epoch = engineEpoch.incrementAndGet()
+            val initialization = CompletableDeferred<Boolean>()
+            ready = initialization
+            val started = SystemClock.elapsedRealtimeNanos()
+
+            tts?.let { previous ->
+                runCatching { previous.stop() }
+                runCatching { previous.shutdown() }
+            }
+            tts = null
+
+            DiagnosticHub.record(
+                "TTS_INITIALIZATION_STARTED",
+                mapOf("reason" to reason, "engineEpoch" to epoch),
+            )
+
+            val holder = arrayOfNulls<TextToSpeech>(1)
+            val engine = TextToSpeech(appContext) { status ->
+                val created = holder[0]
+                if (epoch != engineEpoch.get()) {
+                    created?.shutdown()
+                    if (!initialization.isCompleted) initialization.complete(false)
+                    return@TextToSpeech
+                }
+
+                val success = status == TextToSpeech.SUCCESS && created != null
+                if (success) {
+                    configureEngine(created!!)
+                    tts = created
+                } else {
+                    created?.shutdown()
+                    tts = null
+                }
+                DiagnosticHub.record(
+                    "TTS_INITIALIZATION_COMPLETED",
+                    mapOf(
+                        "success" to success,
+                        "status" to status,
+                        "reason" to reason,
+                        "engineEpoch" to epoch,
+                        "durationMs" to
+                            (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0,
+                    ),
+                )
+                if (!initialization.isCompleted) initialization.complete(success)
+            }
+            holder[0] = engine
+            tts = engine
+        }
+    }
+
+    private fun configureEngine(engine: TextToSpeech) {
+        engine.setAudioAttributes(
             AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                .build()
+                .build(),
         )
-        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {
                 val id = utteranceId ?: return
                 val state = utterances[id] ?: return
@@ -116,8 +183,10 @@ class BilingualTtsEngine(context: Context) {
                             "text" to state.text,
                             "language" to state.language,
                             "requestGeneration" to state.requestGeneration,
-                            "queueWaitMs" to (state.startedAtElapsedNanos - state.enqueuedAtElapsedNanos) / 1_000_000.0,
-                            "submitToStartMs" to (state.startedAtElapsedNanos - state.submittedAtElapsedNanos) / 1_000_000.0,
+                            "queueWaitMs" to
+                                (state.startedAtElapsedNanos - state.enqueuedAtElapsedNanos) / 1_000_000.0,
+                            "submitToStartMs" to
+                                (state.startedAtElapsedNanos - state.submittedAtElapsedNanos) / 1_000_000.0,
                         ),
                     ),
                 )
@@ -129,11 +198,19 @@ class BilingualTtsEngine(context: Context) {
 
             @Deprecated("Deprecated by Android but still invoked by older engines")
             override fun onError(utteranceId: String?) {
-                completeUtterance(utteranceId, "TTS_UTTERANCE_ERROR", mapOf("errorCode" to "legacy"))
+                completeUtterance(
+                    utteranceId,
+                    "TTS_UTTERANCE_ERROR",
+                    mapOf("errorCode" to "legacy"),
+                )
             }
 
             override fun onError(utteranceId: String?, errorCode: Int) {
-                completeUtterance(utteranceId, "TTS_UTTERANCE_ERROR", mapOf("errorCode" to errorCode))
+                completeUtterance(
+                    utteranceId,
+                    "TTS_UTTERANCE_ERROR",
+                    mapOf("errorCode" to errorCode),
+                )
             }
 
             override fun onStop(utteranceId: String?, interrupted: Boolean) {
@@ -163,8 +240,13 @@ class BilingualTtsEngine(context: Context) {
                     "text" to state.text,
                     "language" to state.language,
                     "requestGeneration" to state.requestGeneration,
-                    "totalQueueToTerminalMs" to (now - state.enqueuedAtElapsedNanos) / 1_000_000.0,
-                    "speechDurationMs" to if (startedAt > 0L) (now - startedAt) / 1_000_000.0 else null,
+                    "totalQueueToTerminalMs" to
+                        (now - state.enqueuedAtElapsedNanos) / 1_000_000.0,
+                    "speechDurationMs" to if (startedAt > 0L) {
+                        (now - startedAt) / 1_000_000.0
+                    } else {
+                        null
+                    },
                 ) + extra,
             ),
         )
@@ -206,15 +288,15 @@ class BilingualTtsEngine(context: Context) {
         trace: DiagnosticTrace?,
     ) {
         val readyStarted = SystemClock.elapsedRealtimeNanos()
-        if (!ready.await()) {
-            val error = IllegalStateException("تعذر تهيئة محرك النطق في الجهاز")
-            DiagnosticHub.failure("TTS_NOT_READY", error, trace.fieldsOrEmpty(mapOf("text" to text)))
-            throw error
-        }
+        if (!ensureEngineReady(trace, text)) return
         val afterReady = SystemClock.elapsedRealtimeNanos()
 
         withContext(Dispatchers.Main.immediate) {
-            val requestGeneration = if (interruptPrevious) interruptInternal("new_interrupting_request") else generation.get()
+            val requestGeneration = if (interruptPrevious) {
+                interruptInternal("new_interrupting_request")
+            } else {
+                generation.get()
+            }
             val enqueuedAt = SystemClock.elapsedRealtimeNanos()
             val request = SpeechRequest(
                 text = text,
@@ -234,11 +316,48 @@ class BilingualTtsEngine(context: Context) {
                         "generation" to requestGeneration,
                         "flushFirst" to interruptPrevious,
                         "accepted" to accepted,
-                        "waitForEngineReadyMs" to (afterReady - readyStarted) / 1_000_000.0,
+                        "queueCapacity" to MAX_PENDING_REQUESTS,
+                        "waitForEngineReadyMs" to
+                            (afterReady - readyStarted) / 1_000_000.0,
                     ),
                 ),
             )
         }
+    }
+
+    private suspend fun ensureEngineReady(trace: DiagnosticTrace?, text: String): Boolean {
+        val firstReady = ready
+        val first = withTimeoutOrNull(ENGINE_READY_TIMEOUT_MS) { firstReady.await() } == true
+        if (first && tts != null) return true
+
+        DiagnosticHub.record(
+            "TTS_ENGINE_RECOVERY",
+            trace.fieldsOrEmpty(
+                mapOf(
+                    "reason" to "engine_ready_timeout_or_failure",
+                    "text" to text,
+                    "timeoutMs" to ENGINE_READY_TIMEOUT_MS,
+                ),
+            ),
+        )
+        withContext(Dispatchers.Main.immediate) {
+            initializeEngine("ready_recovery")
+        }
+        val retryReady = ready
+        val recovered = withTimeoutOrNull(ENGINE_READY_TIMEOUT_MS) { retryReady.await() } == true
+        if (!recovered || tts == null) {
+            DiagnosticHub.record(
+                "TTS_REQUEST_DROPPED",
+                trace.fieldsOrEmpty(
+                    mapOf(
+                        "reason" to "engine_unavailable_after_recovery",
+                        "text" to text,
+                    ),
+                ),
+            )
+            return false
+        }
+        return true
     }
 
     fun onVisualTargetChanged(enabled: Boolean) {
@@ -256,13 +375,8 @@ class BilingualTtsEngine(context: Context) {
     }
 
     private suspend fun speakRequest(request: SpeechRequest) {
-        val engine = tts ?: run {
-            DiagnosticHub.record(
-                "TTS_REQUEST_DROPPED",
-                request.trace.fieldsOrEmpty(mapOf("reason" to "engine_null", "text" to request.text)),
-            )
-            return
-        }
+        if (!ensureEngineReady(request.trace, request.text)) return
+        val engine = tts ?: return
         val segments = SpeechTextTools.segment(request.text)
         DiagnosticHub.record(
             "TTS_SEGMENTATION_COMPLETED",
@@ -270,11 +384,14 @@ class BilingualTtsEngine(context: Context) {
                 mapOf(
                     "originalText" to request.text,
                     "segmentCount" to segments.size,
-                    "segments" to segments.map { mapOf("text" to it.text, "language" to it.language.name) },
+                    "segments" to segments.map {
+                        mapOf("text" to it.text, "language" to it.language.name)
+                    },
                     "generation" to request.generation,
                 ),
             ),
         )
+
         for ((index, segment) in segments.withIndex()) {
             if (request.generation != generation.get()) {
                 DiagnosticHub.record(
@@ -327,7 +444,11 @@ class BilingualTtsEngine(context: Context) {
             )
             val result = engine.speak(
                 segment.text,
-                if (index == 0 && request.flushFirst) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD,
+                if (index == 0 && request.flushFirst) {
+                    TextToSpeech.QUEUE_FLUSH
+                } else {
+                    TextToSpeech.QUEUE_ADD
+                },
                 null,
                 utteranceId,
             )
@@ -338,35 +459,58 @@ class BilingualTtsEngine(context: Context) {
                         "utteranceId" to utteranceId,
                         "result" to result,
                         "success" to (result != TextToSpeech.ERROR),
-                        "submitCallMs" to (SystemClock.elapsedRealtimeNanos() - submittedAt) / 1_000_000.0,
+                        "submitCallMs" to
+                            (SystemClock.elapsedRealtimeNanos() - submittedAt) / 1_000_000.0,
                     ),
                 ),
             )
             if (result == TextToSpeech.ERROR) {
-                val state = utterances.remove(utteranceId)
-                state?.completion?.complete(Unit)
+                utterances.remove(utteranceId)?.completion?.complete(Unit)
+                consecutiveTimeouts++
+                recoverEngineIfNeeded("speak_returned_error", request.trace)
                 continue
             }
 
-            val completed = withTimeoutOrNull(MAX_UTTERANCE_WAIT_MS) {
+            val timeoutMs = utteranceTimeoutMs(segment.text)
+            val completed = withTimeoutOrNull(timeoutMs) {
                 completion.await()
                 true
             } ?: false
             utterances.remove(utteranceId)
             if (!completed) {
+                consecutiveTimeouts++
                 DiagnosticHub.record(
                     "TTS_UTTERANCE_TIMEOUT",
                     request.trace.fieldsOrEmpty(
                         mapOf(
                             "utteranceId" to utteranceId,
                             "text" to segment.text,
-                            "timeoutMs" to MAX_UTTERANCE_WAIT_MS,
+                            "timeoutMs" to timeoutMs,
+                            "consecutiveTimeouts" to consecutiveTimeouts,
                         ),
                     ),
                 )
                 engine.stop()
+                recoverEngineIfNeeded("utterance_timeout", request.trace)
+                return
             }
+            consecutiveTimeouts = 0
         }
+    }
+
+    private fun recoverEngineIfNeeded(reason: String, trace: DiagnosticTrace?) {
+        if (consecutiveTimeouts < TIMEOUTS_BEFORE_ENGINE_RESTART) return
+        consecutiveTimeouts = 0
+        DiagnosticHub.record(
+            "TTS_ENGINE_RECOVERY",
+            trace.fieldsOrEmpty(
+                mapOf(
+                    "reason" to reason,
+                    "action" to "recreate_engine",
+                ),
+            ),
+        )
+        initializeEngine(reason)
     }
 
     /** Invalidates active and queued requests and records every discarded item. */
@@ -423,16 +567,31 @@ class BilingualTtsEngine(context: Context) {
     fun shutdown() {
         interruptInternal("engine_shutdown")
         requests.close()
-        tts?.shutdown()
-        tts = null
+        synchronized(engineLock) {
+            engineEpoch.incrementAndGet()
+            tts?.shutdown()
+            tts = null
+            if (!ready.isCompleted) ready.complete(false)
+        }
         scope.cancel()
         DiagnosticHub.record("TTS_ENGINE_SHUTDOWN")
     }
 
-    private fun DiagnosticTrace?.fieldsOrEmpty(extra: Map<String, Any?> = emptyMap()): Map<String, Any?> =
-        this?.fields(extra) ?: extra
+    private fun utteranceTimeoutMs(text: String): Long =
+        (BASE_UTTERANCE_TIMEOUT_MS + text.length * TIMEOUT_PER_CHARACTER_MS)
+            .coerceIn(MIN_UTTERANCE_TIMEOUT_MS, MAX_UTTERANCE_TIMEOUT_MS)
+
+    private fun DiagnosticTrace?.fieldsOrEmpty(
+        extra: Map<String, Any?> = emptyMap(),
+    ): Map<String, Any?> = this?.fields(extra) ?: extra
 
     private companion object {
-        const val MAX_UTTERANCE_WAIT_MS = 60_000L
+        const val MAX_PENDING_REQUESTS = 8
+        const val ENGINE_READY_TIMEOUT_MS = 8_000L
+        const val TIMEOUTS_BEFORE_ENGINE_RESTART = 2
+        const val BASE_UTTERANCE_TIMEOUT_MS = 8_000L
+        const val TIMEOUT_PER_CHARACTER_MS = 170L
+        const val MIN_UTTERANCE_TIMEOUT_MS = 12_000L
+        const val MAX_UTTERANCE_TIMEOUT_MS = 45_000L
     }
 }
