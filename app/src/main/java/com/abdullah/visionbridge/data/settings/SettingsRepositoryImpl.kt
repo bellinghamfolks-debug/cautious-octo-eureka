@@ -32,6 +32,7 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
             captureProfile = CaptureProfile.fromStored(values[Keys.CAPTURE_PROFILE]),
             interruptSpeechOnVisualChange = values[Keys.INTERRUPT_SPEECH_V2] ?: false,
             sceneDescriptionStyle = SceneDescriptionStyle.fromStored(values[Keys.SCENE_DESCRIPTION_STYLE]),
+            useLocalVlm = values[Keys.USE_LOCAL_VLM] ?: false,
             speechRate = (values[Keys.SPEECH_RATE] ?: 1.0f)
                 .coerceIn(AppSettings.MIN_SPEECH_RATE, AppSettings.MAX_SPEECH_RATE),
         )
@@ -54,6 +55,8 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
     override suspend fun setSceneDescriptionStyle(style: SceneDescriptionStyle) =
         update(Keys.SCENE_DESCRIPTION_STYLE, style.name)
 
+    override suspend fun setUseLocalVlm(enabled: Boolean) = update(Keys.USE_LOCAL_VLM, enabled)
+
     override suspend fun setSpeechRate(rate: Float) =
         update(Keys.SPEECH_RATE, rate.coerceIn(AppSettings.MIN_SPEECH_RATE, AppSettings.MAX_SPEECH_RATE))
 
@@ -71,6 +74,7 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
         val CAPTURE_PROFILE = stringPreferencesKey("capture_profile")
         val INTERRUPT_SPEECH_V2 = booleanPreferencesKey("interrupt_speech_on_visual_change_v2")
         val SCENE_DESCRIPTION_STYLE = stringPreferencesKey("scene_description_style")
+        val USE_LOCAL_VLM = booleanPreferencesKey("use_local_vlm")
         val SPEECH_RATE = floatPreferencesKey("speech_rate")
     }
 }

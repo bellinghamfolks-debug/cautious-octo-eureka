@@ -14,8 +14,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Fast lane. Skips the native VLM build so lint, unit tests and Kotlin
+  # compilation errors surface in minutes rather than after a llama.cpp compile.
+  # The APK it produces is cloud-only and is not the shippable artifact.
   build:
-    name: Lint, tests, and ARM64 debug APK
+    name: Lint, tests, and ARM64 debug APK (cloud engine only)
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -43,7 +46,9 @@ jobs:
         shell: bash
         run: |
           set +e
-          ./gradlew --no-daemon --console=plain lintDebug testDebugUnitTest assembleDebug > build.log 2>&1
+          ./gradlew --no-daemon --console=plain \
+            -Pvisionbridge.enableLocalVlm=false \
+            lintDebug testDebugUnitTest assembleDebug > build.log 2>&1
           status=$?
           cat build.log
           exit "$status"
@@ -57,10 +62,10 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-      - name: Upload ARM64 debug APK
+      - name: Upload ARM64 debug APK (cloud engine only)
         uses: actions/upload-artifact@v4
         with:
-          name: VisionBridge-arm64-debug-apk
+          name: VisionBridge-arm64-debug-apk-cloud-only
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
@@ -72,6 +77,87 @@ jobs:
           name: lint-report
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
+
+  # Shippable lane. Compiles llama.cpp and libmtmd for arm64 and produces the APK
+  # that actually honours the "Use local AI" switch. Runs only after the fast lane
+  # is green, so a Kotlin typo never costs a native rebuild.
+  native:
+    name: ARM64 debug APK with on-device VLM engine
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 35 SDK, NDK and CMake
+        run: |
+          yes | sdkmanager "platforms;android-35" "build-tools;35.0.0" \
+            "ndk;27.0.12077973" "cmake;3.22.1"
+
+      # The llama.cpp clone and its object files dominate this job. Keyed on the
+      # pinned tag so a version bump invalidates the cache and nothing else does.
+      - name: Cache native build
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/.cxx
+            app/build/intermediates/cxx
+          key: native-${{ runner.os }}-${{ hashFiles('app/src/main/cpp/CMakeLists.txt', 'app/src/main/cpp/vlm_bridge.cpp') }}
+          restore-keys: native-${{ runner.os }}-
+
+      - name: Assemble with local VLM engine
+        shell: bash
+        run: |
+          set +e
+          ./gradlew --no-daemon --console=plain assembleDebug > native-build.log 2>&1
+          status=$?
+          tail -n 300 native-build.log
+          exit "$status"
+
+      - name: Confirm the APK carries arm64 only
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          libs=$(unzip -Z1 "$apk" 'lib/*' | cut -d/ -f2 | sort -u)
+          echo "ABIs in APK: ${libs:-none}"
+          if [ -z "$libs" ]; then
+            echo "::error::No native library packaged; the local VLM engine is missing."
+            exit 1
+          fi
+          if [ "$libs" != "arm64-v8a" ]; then
+            echo "::error::Unexpected ABI packaged: $libs"
+            exit 1
+          fi
+
+      - name: Upload native build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-build-log
+          path: native-build.log
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Upload ARM64 debug APK with local VLM
+        uses: actions/upload-artifact@v4
+        with:
+          name: VisionBridge-arm64-debug-apk-with-local-vlm
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
 
   diagnostics:
     name: Concise compiler diagnostics

@@ -10,6 +10,7 @@ data class AppSettings(
     val captureProfile: CaptureProfile = CaptureProfile.STABLE,
     val interruptSpeechOnVisualChange: Boolean = false,
     val sceneDescriptionStyle: SceneDescriptionStyle = SceneDescriptionStyle.COMPREHENSIVE,
+    val useLocalVlm: Boolean = false,
     val speechRate: Float = 1.0f,
     val frameIntervalMs: Long = 700L,
     val cloudOcrIntervalMs: Long = 2_500L,

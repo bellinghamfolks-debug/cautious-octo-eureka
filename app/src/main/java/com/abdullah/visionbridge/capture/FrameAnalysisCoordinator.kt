@@ -201,8 +201,11 @@ class FrameAnalysisCoordinator(
                 ),
             ),
         )
-        val localText = recognizeLocal(bitmap, settings, generationAtCapture, key == null, trace)
-        if (key == null) {
+        // With the on-device engine selected there is nothing to send to the cloud
+        // and no key to require, so ML Kit output stays evidence rather than speech.
+        val speakMlKitResult = key == null && !settings.useLocalVlm
+        val localText = recognizeLocal(bitmap, settings, generationAtCapture, speakMlKitResult, trace)
+        if (key == null && !settings.useLocalVlm) {
             DiagnosticHub.record(
                 "CLOUD_SKIPPED",
                 trace.fieldsOrEmpty(mapOf("reason" to "api_key_missing")),
@@ -215,7 +218,7 @@ class FrameAnalysisCoordinator(
                 bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false),
                 settings = settings,
                 visualGeneration = generationAtCapture,
-                apiKey = key,
+                apiKey = key.orEmpty(),
                 mode = AnalysisMode.TEXT_READING,
                 localEvidence = localText,
                 trace = trace,
@@ -237,7 +240,7 @@ class FrameAnalysisCoordinator(
             "API_KEY_LOOKUP_COMPLETED",
             trace.fieldsOrEmpty(mapOf("hasApiKey" to (key != null))),
         )
-        if (key == null) {
+        if (key == null && !settings.useLocalVlm) {
             recognizeLocal(bitmap, settings, generationAtCapture, true, trace)
             DiagnosticHub.record(
                 "CLOUD_SKIPPED",
@@ -248,13 +251,13 @@ class FrameAnalysisCoordinator(
 
         if (settings.trustGateEnabled) {
             val localText = recognizeLocal(bitmap, settings, generationAtCapture, false, trace)
-            queueFastText(bitmap, settings, generationAtCapture, key, localText, trace)
+            queueFastText(bitmap, settings, generationAtCapture, key.orEmpty(), localText, trace)
         } else {
             DiagnosticHub.record(
                 "FAST_TEXT_PARALLEL_PATH",
                 trace.fieldsOrEmpty(mapOf("cloudQueuedBeforeLocalOcr" to true)),
             )
-            queueFastText(bitmap, settings, generationAtCapture, key, "", trace)
+            queueFastText(bitmap, settings, generationAtCapture, key.orEmpty(), "", trace)
             recognizeLocal(bitmap, settings, generationAtCapture, false, trace)
         }
     }
@@ -290,7 +293,9 @@ class FrameAnalysisCoordinator(
         trace: DiagnosticTrace?,
     ) {
         val key = apiKeyStore.get()
-            ?: throw IllegalStateException("أدخل مفتاح Gemini أولاً لاستخدام وصف المشهد")
+        if (key == null && !settings.useLocalVlm) {
+            throw IllegalStateException("أدخل مفتاح Gemini أولاً لاستخدام وصف المشهد")
+        }
         val minimumInterval = when (settings.sceneDescriptionStyle) {
             SceneDescriptionStyle.BRIEF -> BRIEF_SCENE_INTERVAL_MS
             SceneDescriptionStyle.COMPREHENSIVE -> COMPREHENSIVE_SCENE_INTERVAL_MS
@@ -300,7 +305,7 @@ class FrameAnalysisCoordinator(
                 bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false),
                 settings = settings,
                 visualGeneration = generationAtCapture,
-                apiKey = key,
+                apiKey = key.orEmpty(),
                 mode = AnalysisMode.SCENE_DESCRIPTION,
                 trace = trace,
             ),

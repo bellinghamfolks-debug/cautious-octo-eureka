@@ -22,6 +22,7 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.abdullah.visionbridge.capture.MediaProjectionService
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
+import com.abdullah.visionbridge.data.localvlm.LocalVlmModelStore
 import com.abdullah.visionbridge.ui.theme.VisionBridgeTheme
 import java.io.File
 
@@ -43,6 +44,20 @@ class MainActivity : ComponentActivity() {
         } else {
             DiagnosticHub.record("SCREEN_CAPTURE_PERMISSION_DENIED", mapOf("resultCode" to result.resultCode))
         }
+    }
+
+    // GGUF has no registered MIME type, so the picker stays unfiltered. The file is
+    // validated by magic bytes and size on import rather than by what it is called.
+    private val weightsPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri?.let { viewModel.installLocalModelArtifact(LocalVlmModelStore.Artifact.WEIGHTS, it) }
+    }
+
+    private val projectorPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri?.let { viewModel.installLocalModelArtifact(LocalVlmModelStore.Artifact.PROJECTOR, it) }
     }
 
     private val notificationPermissionLauncher = registerForActivityResult(
@@ -83,6 +98,10 @@ class MainActivity : ComponentActivity() {
                         onInterruptSpeechChange = viewModel::setInterruptSpeechOnVisualChange,
                         onSceneDescriptionStyleChange = viewModel::setSceneDescriptionStyle,
                         onSpeechRateChange = viewModel::setSpeechRate,
+                        onUseLocalVlmChange = viewModel::setUseLocalVlm,
+                        onInstallWeights = { weightsPickerLauncher.launch(arrayOf("*/*")) },
+                        onInstallProjector = { projectorPickerLauncher.launch(arrayOf("*/*")) },
+                        onDeleteLocalModel = viewModel::deleteLocalModel,
                         onExportDiagnostics = {
                             viewModel.exportDiagnostics { file ->
                                 this@MainActivity.shareDiagnosticFile(file)

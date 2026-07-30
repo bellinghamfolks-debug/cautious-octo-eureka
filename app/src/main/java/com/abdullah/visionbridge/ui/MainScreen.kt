@@ -185,7 +185,11 @@ private fun StatusCard(state: MainUiState) {
             state.capture.lastResult?.let {
                 Text("آخر نتيجة", style = MaterialTheme.typography.titleMedium)
                 Text(it.text)
-                Text("المصدر: ${if (it.source.name == "LOCAL_OCR") "OCR محلي" else "Gemini"}")
+                Text("المصدر: " + when (it.source.name) {
+                    "LOCAL_OCR" -> "OCR محلي"
+                    "LOCAL_VLM" -> "ذكاء محلي على الجهاز"
+                    else -> "Gemini سحابي"
+                })
             }
         }
     }

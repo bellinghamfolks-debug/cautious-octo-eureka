@@ -17,5 +17,6 @@ interface SettingsRepository {
     suspend fun setCaptureProfile(profile: CaptureProfile)
     suspend fun setInterruptSpeechOnVisualChange(enabled: Boolean)
     suspend fun setSceneDescriptionStyle(style: SceneDescriptionStyle)
+    suspend fun setUseLocalVlm(enabled: Boolean)
     suspend fun setSpeechRate(rate: Float)
 }

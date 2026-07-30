@@ -72,6 +72,10 @@ fun SettingsScreen(
     onInterruptSpeechChange: (Boolean) -> Unit,
     onSceneDescriptionStyleChange: (SceneDescriptionStyle) -> Unit,
     onSpeechRateChange: (Float) -> Unit,
+    onUseLocalVlmChange: (Boolean) -> Unit,
+    onInstallWeights: () -> Unit,
+    onInstallProjector: () -> Unit,
+    onDeleteLocalModel: () -> Unit,
     onExportDiagnostics: () -> Unit,
     onBack: () -> Unit,
     onMessageConsumed: () -> Unit,
@@ -185,6 +189,67 @@ fun SettingsScreen(
                                 },
                             )
                         }
+                    }
+                }
+
+                SectionTitle("محرك التحليل")
+                AccessibleSwitchRow(
+                    title = "استخدام الذكاء المحلي على الجهاز",
+                    description = if (state.settings.useLocalVlm) {
+                        "القراءة ووصف المشهد يعملان داخل الجهاز بلا إنترنت ولا إرسال للصور."
+                    } else {
+                        "الافتراضي: التحليل عبر Gemini السحابي، وهو أدق وأسرع."
+                    },
+                    checked = state.settings.useLocalVlm,
+                    onCheckedChange = onUseLocalVlmChange,
+                )
+                Text(
+                    text = when {
+                        state.localModel.isReady ->
+                            "النموذج المحلي مثبت: ${state.localModel.weightsMegabytes} و${state.localModel.projectorMegabytes} ميجابايت."
+                        state.settings.useLocalVlm ->
+                            "تنبيه: الذكاء المحلي مفعّل لكن الملفين غير مثبتين، ولن يعمل التحليل حتى تثبتهما."
+                        else -> "لتفعيل الذكاء المحلي ثبّت ملفي النموذج بصيغة GGUF."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                )
+                OutlinedButton(
+                    onClick = onInstallWeights,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .semantics {
+                            contentDescription = if (state.localModel.weightsMegabytes > 0) {
+                                "استبدال ملف النموذج، المثبت حالياً ${state.localModel.weightsMegabytes} ميجابايت"
+                            } else {
+                                "تثبيت ملف النموذج بصيغة جي جي يو إف"
+                            }
+                        },
+                ) { Text("تثبيت ملف النموذج (GGUF)") }
+                OutlinedButton(
+                    onClick = onInstallProjector,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .semantics {
+                            contentDescription = if (state.localModel.projectorMegabytes > 0) {
+                                "استبدال ملف الرؤية، المثبت حالياً ${state.localModel.projectorMegabytes} ميجابايت"
+                            } else {
+                                "تثبيت ملف الرؤية إم إم بروج"
+                            }
+                        },
+                ) { Text("تثبيت ملف الرؤية (mmproj)") }
+                if (state.localModel.weightsMegabytes > 0 || state.localModel.projectorMegabytes > 0) {
+                    OutlinedButton(
+                        onClick = onDeleteLocalModel,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp)
+                            .semantics { contentDescription = "حذف ملفات النموذج المحلي وتحرير المساحة" },
+                    ) {
+                        Icon(Icons.Default.Delete, contentDescription = null)
+                        Text(" حذف النموذج المحلي")
                     }
                 }
 

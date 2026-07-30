@@ -1,10 +1,12 @@
 package com.abdullah.visionbridge.ui
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.abdullah.visionbridge.VisionBridgeApp
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
+import com.abdullah.visionbridge.data.localvlm.LocalVlmModelStore
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
@@ -24,20 +26,75 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val keyState = MutableStateFlow(false)
     private val message = MutableStateFlow<String?>(null)
 
+    private val localModel = MutableStateFlow(LocalModelUiState())
+
     val uiState: StateFlow<MainUiState> = combine(
         container.settingsRepository.settings,
         container.runtime.state,
         keyState,
         message,
-    ) { settings, capture, hasKey, transientMessage ->
-        MainUiState(settings, capture, hasKey, transientMessage)
+        localModel,
+    ) { settings, capture, hasKey, transientMessage, model ->
+        MainUiState(settings, capture, hasKey, transientMessage, model)
     }.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
         MainUiState(),
     )
 
-    init { refreshKeyState() }
+    init {
+        refreshKeyState()
+        refreshLocalModelState()
+    }
+
+    fun setUseLocalVlm(enabled: Boolean) = viewModelScope.launch {
+        container.settingsRepository.setUseLocalVlm(enabled)
+        if (!enabled) container.localVlmEngine.release("user_disabled_local_engine")
+        message.value = if (enabled) {
+            if (container.localVlmModelStore.isReady) {
+                "تم تفعيل الذكاء المحلي. القراءة والوصف سيعملان على الجهاز."
+            } else {
+                "فعّلت الذكاء المحلي، لكن ملفي النموذج غير مثبتين بعد."
+            }
+        } else {
+            "عاد التحليل إلى Gemini السحابي."
+        }
+    }
+
+    fun installLocalModelArtifact(artifact: LocalVlmModelStore.Artifact, source: Uri) =
+        viewModelScope.launch {
+            message.value = "يجري نسخ ملف النموذج، قد يستغرق دقائق"
+            container.localVlmModelStore.install(artifact, source)
+                .onSuccess { file ->
+                    refreshLocalModelState()
+                    val megabytes = file.length() / (1024 * 1024)
+                    message.value = "تم تثبيت ${artifactLabel(artifact)} بحجم $megabytes ميجابايت"
+                }
+                .onFailure { message.value = it.message ?: "تعذر تثبيت ملف النموذج" }
+        }
+
+    fun deleteLocalModel() = viewModelScope.launch {
+        container.localVlmEngine.release("model_deleted")
+        container.localVlmModelStore.deleteAll()
+        refreshLocalModelState()
+        message.value = "تم حذف ملفات النموذج المحلي"
+    }
+
+    private fun artifactLabel(artifact: LocalVlmModelStore.Artifact): String = when (artifact) {
+        LocalVlmModelStore.Artifact.WEIGHTS -> "ملف النموذج"
+        LocalVlmModelStore.Artifact.PROJECTOR -> "ملف الرؤية"
+    }
+
+    private fun refreshLocalModelState() {
+        val store = container.localVlmModelStore
+        val weights = store.fileFor(LocalVlmModelStore.Artifact.WEIGHTS)
+        val projector = store.fileFor(LocalVlmModelStore.Artifact.PROJECTOR)
+        localModel.value = LocalModelUiState(
+            weightsMegabytes = if (weights.isFile) weights.length() / (1024 * 1024) else 0,
+            projectorMegabytes = if (projector.isFile) projector.length() / (1024 * 1024) else 0,
+            isReady = store.isReady,
+        )
+    }
 
     fun saveApiKey(value: String) = viewModelScope.launch {
         runCatching { container.apiKeyStore.save(value) }
@@ -137,4 +194,12 @@ data class MainUiState(
     val capture: CaptureState = CaptureState(),
     val hasApiKey: Boolean = false,
     val message: String? = null,
+    val localModel: LocalModelUiState = LocalModelUiState(),
+)
+
+/** Installation state of the two on-device model files. */
+data class LocalModelUiState(
+    val weightsMegabytes: Long = 0,
+    val projectorMegabytes: Long = 0,
+    val isReady: Boolean = false,
 )

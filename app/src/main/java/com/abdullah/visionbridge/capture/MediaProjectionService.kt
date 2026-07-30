@@ -148,15 +148,34 @@ class MediaProjectionService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /**
+     * The on-device model is the largest allocation this process ever makes. Holding
+     * it after capture ends is what gets a foreground service killed, so it is
+     * unloaded on the way out rather than left for the garbage collector.
+     */
     override fun onDestroy() {
         releaseProjection(stopProjection = true, reason = "service_destroyed")
         settingsJob?.cancel()
         captureThread?.quitSafely()
         captureThread = null
         captureHandler = null
+        runBlocking { container.localVlmEngine.release("capture_service_destroyed") }
         DiagnosticHub.record("CAPTURE_SERVICE_DESTROYED")
         serviceScope.cancel()
         super.onDestroy()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level < TRIM_MEMORY_RUNNING_LOW) return
+        DiagnosticHub.record(
+            "LOCAL_VLM_MEMORY_PRESSURE",
+            mapOf("trimLevel" to level, "engineLoaded" to container.localVlmEngine.isLoaded),
+        )
+        // Drop the weights rather than be killed mid-sentence. The next frame
+        // reloads them from the mmap'd file, which is far cheaper than a restart.
+        container.localVlmEngine.cancel()
+        serviceScope.launch { container.localVlmEngine.release("system_memory_pressure") }
     }
 
     private fun startProjection(resultCode: Int, resultData: Intent) {

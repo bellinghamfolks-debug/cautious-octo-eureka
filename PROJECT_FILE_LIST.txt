@@ -6,6 +6,8 @@ README.md
 app/build.gradle.kts
 app/proguard-rules.pro
 app/src/main/AndroidManifest.xml
+app/src/main/cpp/CMakeLists.txt
+app/src/main/cpp/vlm_bridge.cpp
 app/src/main/java/com/abdullah/visionbridge/VisionBridgeApp.kt
 app/src/main/java/com/abdullah/visionbridge/capture/CaptureRuntime.kt
 app/src/main/java/com/abdullah/visionbridge/capture/FrameAnalysisCoordinator.kt
@@ -22,6 +24,11 @@ app/src/main/java/com/abdullah/visionbridge/data/gemini/GeminiStreamProtocol.kt
 app/src/main/java/com/abdullah/visionbridge/data/gemini/GeminiVisionRepository.kt
 app/src/main/java/com/abdullah/visionbridge/data/gemini/OcrTrustRejectedException.kt
 app/src/main/java/com/abdullah/visionbridge/data/gemini/TextImageEnhancer.kt
+app/src/main/java/com/abdullah/visionbridge/data/localvlm/LocalVlmEngine.kt
+app/src/main/java/com/abdullah/visionbridge/data/localvlm/LocalVlmModelStore.kt
+app/src/main/java/com/abdullah/visionbridge/data/localvlm/LocalVlmPrompts.kt
+app/src/main/java/com/abdullah/visionbridge/data/localvlm/LocalVlmVisionRepository.kt
+app/src/main/java/com/abdullah/visionbridge/data/localvlm/VlmOutputSanitizer.kt
 app/src/main/java/com/abdullah/visionbridge/data/network/CellularNetworkManager.kt
 app/src/main/java/com/abdullah/visionbridge/data/network/DiagnosticNetworkEventListener.kt
 app/src/main/java/com/abdullah/visionbridge/data/ocr/InstantLocalOcrBridge.kt
@@ -35,6 +42,7 @@ app/src/main/java/com/abdullah/visionbridge/data/speech/DocumentSpeechPolicy.kt
 app/src/main/java/com/abdullah/visionbridge/data/speech/ReadingLedger.kt
 app/src/main/java/com/abdullah/visionbridge/data/speech/SpeechDeduplicator.kt
 app/src/main/java/com/abdullah/visionbridge/data/speech/SpeechTextTools.kt
+app/src/main/java/com/abdullah/visionbridge/data/vision/RoutingVisionRepository.kt
 app/src/main/java/com/abdullah/visionbridge/di/AppContainer.kt
 app/src/main/java/com/abdullah/visionbridge/domain/model/AnalysisMode.kt
 app/src/main/java/com/abdullah/visionbridge/domain/model/AnalysisResult.kt
@@ -60,12 +68,14 @@ app/src/main/res/xml/backup_rules.xml
 app/src/main/res/xml/data_extraction_rules.xml
 app/src/main/res/xml/diagnostic_file_paths.xml
 app/src/test/java/com/abdullah/visionbridge/data/gemini/GeminiStreamProtocolTest.kt
+app/src/test/java/com/abdullah/visionbridge/data/localvlm/VlmOutputSanitizerTest.kt
 app/src/test/java/com/abdullah/visionbridge/data/ocr/LocalOcrTextMergerTest.kt
 app/src/test/java/com/abdullah/visionbridge/data/ocr/SameFrameOcrEvidenceFilterTest.kt
 app/src/test/java/com/abdullah/visionbridge/data/speech/DocumentSpeechPolicyTest.kt
 app/src/test/java/com/abdullah/visionbridge/data/speech/ReadingLedgerTest.kt
 app/src/test/java/com/abdullah/visionbridge/data/speech/SpeechTextToolsTest.kt
 build.gradle.kts
+docs/LOCAL_VLM_SETUP.md
 gradle.properties
 gradle/wrapper/gradle-wrapper.jar
 gradle/wrapper/gradle-wrapper.properties

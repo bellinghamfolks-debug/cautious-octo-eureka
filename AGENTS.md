@@ -22,6 +22,9 @@ Run exactly:
 
 A change is not complete until `lintDebug`, `testDebugUnitTest`, and `assembleDebug` all pass.
 
+For Kotlin-only work, `-Pvisionbridge.enableLocalVlm=false` skips the fifteen-minute native
+llama.cpp build. Any change under `app/src/main/cpp/` must be validated with the flag left on.
+
 ## Important files
 - `capture/MediaProjectionService.kt`: foreground capture lifecycle and frame throttling.
 - `capture/FrameAnalysisCoordinator.kt`: hybrid local/cloud analysis policy.
@@ -37,3 +40,11 @@ A change is not complete until `lintDebug`, `testDebugUnitTest`, and `assembleDe
 - `ui/MainScreen.kt`: minimal TalkBack-first surface — status, mode, start/stop.
 - `ui/SettingsScreen.kt`: everything configured once — key, model, capture accuracy, speech,
   diagnostics.
+- `data/vision/RoutingVisionRepository.kt`: cloud vs on-device routing for both Read and Describe.
+  Never add a silent local-to-cloud fallback; choosing the local engine is a choice about where
+  screen content goes.
+- `data/localvlm/`: the optional on-device VLM (llama.cpp + libmtmd through JNI). It implements the
+  same `VisionAiRepository` interface as the cloud path, so the coordinator, reading ledger and
+  speech queue stay engine-agnostic. See `docs/LOCAL_VLM_SETUP.md`.
+- `app/src/main/cpp/`: pinned llama.cpp build and the JNI bridge. Token pieces must only cross into
+  Kotlin on UTF-8 character boundaries — Arabic code points are routinely split across tokens.

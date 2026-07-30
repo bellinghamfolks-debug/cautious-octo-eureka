@@ -5,6 +5,18 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+/**
+ * Builds the on-device VLM engine. Enabled by default because a release APK
+ * without it cannot honour the "Use local AI" switch.
+ *
+ * The first configure clones and compiles llama.cpp, which takes roughly fifteen
+ * minutes. Pass -Pvisionbridge.enableLocalVlm=false for a fast Kotlin-only
+ * iteration or CI lane; the app still builds and runs, and the local engine
+ * simply reports itself unavailable when the switch is turned on.
+ */
+val buildLocalVlm: Boolean =
+    (project.findProperty("visionbridge.enableLocalVlm") as String?)?.toBoolean() ?: true
+
 android {
     namespace = "com.abdullah.visionbridge"
     compileSdk = 35
@@ -13,13 +25,27 @@ android {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 35
-        versionCode = 15
-        versionName = "1.12.0"
+        versionCode = 16
+        versionName = "1.13.0"
 
         // Xiaomi 14T uses a 64-bit ARM processor. Keeping only arm64-v8a removes native binaries
-        // for emulators and legacy 32-bit phones.
+        // for emulators and legacy 32-bit phones. The local VLM raises the stakes: a 32-bit build
+        // could not address the model anyway, and CMakeLists.txt refuses to configure for one.
         ndk {
             abiFilters += "arm64-v8a"
+        }
+
+        if (buildLocalVlm) {
+            externalNativeBuild {
+                cmake {
+                    arguments += listOf(
+                        "-DANDROID_STL=c++_static",
+                        "-DCMAKE_BUILD_TYPE=Release",
+                    )
+                    // Belt and braces: Gradle also refuses to hand CMake another ABI.
+                    abiFilters += "arm64-v8a"
+                }
+            }
         }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -58,6 +84,20 @@ android {
             "META-INF/LICENSE.md",
             "META-INF/LICENSE-notice.md"
         )
+    }
+
+    if (buildLocalVlm) {
+        externalNativeBuild {
+            cmake {
+                path = file("src/main/cpp/CMakeLists.txt")
+                version = "3.22.1"
+            }
+        }
+        // Uncompressed .so pages can be mapped straight from the APK, which keeps
+        // the native library out of the app's private storage a second time.
+        packaging {
+            jniLibs.useLegacyPackaging = false
+        }
     }
 
     lint {
