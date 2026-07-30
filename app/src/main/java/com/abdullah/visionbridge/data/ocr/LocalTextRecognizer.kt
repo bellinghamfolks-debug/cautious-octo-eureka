@@ -22,6 +22,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
 import java.io.File
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.roundToInt
 
 /**
@@ -35,6 +36,7 @@ class LocalTextRecognizer(context: Context) {
     private val latinRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     private val tesseractMutex = Mutex()
     private val warmupScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val requestSequence = AtomicLong(0L)
 
     @Volatile
     private var arabicEngine: TessBaseAPI? = null
@@ -62,42 +64,49 @@ class LocalTextRecognizer(context: Context) {
 
     suspend fun recognize(
         bitmap: Bitmap,
-        onPartial: suspend (text: String, source: String) -> Unit = { _, _ -> },
-    ): String = supervisorScope {
-        val latin = async(Dispatchers.Default) {
-            runCatching { recognizeLatin(bitmap) }
-                .onFailure { error -> DiagnosticHub.failure("MLKIT_PROCESS", error) }
-                .getOrDefault("")
-        }
-        val arabic = async(Dispatchers.Default) {
-            runCatching { recognizeArabic(bitmap) }
-                .onFailure { error -> DiagnosticHub.failure("TESSERACT_PROCESS", error) }
-                .getOrDefault("")
+        onPartial: (suspend (text: String, source: String) -> Unit)? = null,
+    ): String {
+        val requestId = requestSequence.incrementAndGet()
+        val emit: suspend (String, String) -> Unit = onPartial ?: { text, source ->
+            InstantLocalOcrBridge.publish(requestId, text, source)
         }
 
-        var firstText = ""
-        select<Unit> {
-            latin.onAwait { text ->
-                if (text.isNotBlank()) {
-                    firstText = text
-                    onPartial(text, "MLKIT_LATIN")
-                }
+        return supervisorScope {
+            val latin = async(Dispatchers.Default) {
+                runCatching { recognizeLatin(bitmap) }
+                    .onFailure { error -> DiagnosticHub.failure("MLKIT_PROCESS", error) }
+                    .getOrDefault("")
             }
-            arabic.onAwait { text ->
-                if (text.isNotBlank()) {
-                    firstText = text
-                    onPartial(text, "TESSERACT_ARABIC")
-                }
+            val arabic = async(Dispatchers.Default) {
+                runCatching { recognizeArabic(bitmap) }
+                    .onFailure { error -> DiagnosticHub.failure("TESSERACT_PROCESS", error) }
+                    .getOrDefault("")
             }
-        }
 
-        val latinText = latin.await()
-        val arabicText = arabic.await()
-        val merged = LocalOcrTextMerger.merge(arabicText, latinText)
-        if (merged.isNotBlank() && LocalOcrTextMerger.novel(firstText, merged).isNotBlank()) {
-            onPartial(merged, "HYBRID_LOCAL_FINAL")
+            var firstText = ""
+            select<Unit> {
+                latin.onAwait { text ->
+                    if (text.isNotBlank()) {
+                        firstText = text
+                        emit(text, "MLKIT_LATIN")
+                    }
+                }
+                arabic.onAwait { text ->
+                    if (text.isNotBlank()) {
+                        firstText = text
+                        emit(text, "TESSERACT_ARABIC")
+                    }
+                }
+            }
+
+            val latinText = latin.await()
+            val arabicText = arabic.await()
+            val merged = LocalOcrTextMerger.merge(arabicText, latinText)
+            if (merged.isNotBlank() && LocalOcrTextMerger.novel(firstText, merged).isNotBlank()) {
+                emit(merged, "HYBRID_LOCAL_FINAL")
+            }
+            merged
         }
-        merged
     }
 
     private suspend fun recognizeLatin(bitmap: Bitmap): String {
