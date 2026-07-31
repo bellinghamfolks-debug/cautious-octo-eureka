@@ -7,7 +7,6 @@ import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticRecorder
 import com.abdullah.visionbridge.data.gemini.GeminiVisionRepository
 import com.abdullah.visionbridge.data.paddleocr.PaddleOcrEngine
-import com.abdullah.visionbridge.data.paddleocr.PaddleOcrModelStore
 import com.abdullah.visionbridge.data.paddleocr.PaddleOcrVisionRepository
 import com.abdullah.visionbridge.data.network.CellularNetworkManager
 import com.abdullah.visionbridge.data.security.AndroidKeystoreApiKeyStore
@@ -29,9 +28,11 @@ class AppContainer(context: Context) {
     private val networkManager = CellularNetworkManager(appContext)
     private val cloudVisionRepository = GeminiVisionRepository(networkManager)
 
-    /** On-device reader. Nothing is loaded until the user turns it on and a frame arrives. */
-    val localOcrModelStore = PaddleOcrModelStore(appContext)
-    val localOcrEngine = PaddleOcrEngine(localOcrModelStore)
+    /**
+     * On-device reader. The models are packaged in the APK; nothing is loaded into memory until
+     * the user turns local reading on and a frame arrives.
+     */
+    val localOcrEngine = PaddleOcrEngine(appContext)
 
     /**
      * Single entry point for both Read and Describe. The coordinator never learns
@@ -41,7 +42,6 @@ class AppContainer(context: Context) {
         cloud = cloudVisionRepository,
         local = PaddleOcrVisionRepository(localOcrEngine),
         localEngine = localOcrEngine,
-        modelStore = localOcrModelStore,
         settingsRepository = settingsRepository,
     )
     private val tts = BilingualTtsEngine(appContext)

@@ -3,6 +3,7 @@ package com.abdullah.visionbridge.data.paddleocr
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import android.content.Context
 import android.graphics.Bitmap
 import android.os.SystemClock
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
@@ -26,18 +27,19 @@ import java.nio.FloatBuffer
  * cancelled between tokens.
  */
 class PaddleOcrEngine(
-    private val modelStore: PaddleOcrModelStore,
+    private val context: Context,
 ) {
-    class NotInstalledException(missing: List<PaddleOcrModelStore.Artifact>) :
-        IllegalStateException(
-            "ملفات القارئ المحلي غير مكتملة. الناقص: " +
-                missing.joinToString("، ") { it.label } +
-                ". ثبّتها من الإعدادات."
-        )
+    class NotPackagedException : IllegalStateException(
+        "هذه النسخة من التطبيق لا تتضمن ملفات القارئ المحلي. ثبّت نسخة APK كاملة من البناء الرسمي."
+    )
 
     class LoadFailedException(cause: Throwable) : IllegalStateException(
-        "تعذر تحميل ملفات القارئ المحلي. تأكد من أنها ملفات ONNX صالحة وأن القاموس يطابق النموذج.",
+        "تعذر تشغيل القارئ المحلي على هذا الجهاز.",
         cause,
+    )
+
+    class DictionaryMissingException(model: String) : IllegalStateException(
+        "النموذج $model لا يحمل قاموس محارفه بداخله، فلا يمكن فك ترميز مخرجاته."
     )
 
     private class Sessions(
@@ -48,6 +50,12 @@ class PaddleOcrEngine(
         val latin: OrtSession,
         val arabicDictionary: List<String>,
         val latinDictionary: List<String>,
+        /**
+         * Whether the Arabic head can also spell Latin, decided by reading its own dictionary
+         * rather than assumed. The whole line-selection rule rests on this asymmetry, so it is
+         * checked against the model that is actually loaded.
+         */
+        val arabicHeadIsMultilingual: Boolean,
     ) {
         fun close() {
             runCatching { detection.close() }
@@ -59,17 +67,19 @@ class PaddleOcrEngine(
 
     private val lifecycleMutex = Mutex()
     private val inferenceMutex = Mutex()
-    private val mismatchWarned = mutableSetOf<OcrScript>()
 
     @Volatile
     private var sessions: Sessions? = null
 
     val isLoaded: Boolean get() = sessions != null
 
+    val isPackaged: Boolean get() = BundledOcrModels.allPresent(context)
+
     suspend fun ensureLoaded(): Result<Unit> = lifecycleMutex.withLock {
         if (sessions != null) return@withLock Result.success(Unit)
-        val missing = modelStore.missing()
-        if (missing.isNotEmpty()) return@withLock Result.failure(NotInstalledException(missing))
+        if (!BundledOcrModels.allPresent(context)) {
+            return@withLock Result.failure(NotPackagedException())
+        }
 
         withContext(Dispatchers.IO) {
             runCatching {
@@ -82,29 +92,48 @@ class PaddleOcrEngine(
                     setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
                 }
 
-                val loaded = Sessions(
-                    environment = environment,
-                    detection = environment.createSession(
-                        modelStore.fileFor(PaddleOcrModelStore.Artifact.DETECTION).absolutePath,
-                        options,
-                    ),
-                    orientation = environment.createSession(
-                        modelStore.fileFor(PaddleOcrModelStore.Artifact.ORIENTATION).absolutePath,
-                        options,
-                    ),
-                    arabic = environment.createSession(
-                        modelStore.fileFor(PaddleOcrModelStore.Artifact.ARABIC_RECOGNITION).absolutePath,
-                        options,
-                    ),
-                    latin = environment.createSession(
-                        modelStore.fileFor(PaddleOcrModelStore.Artifact.ENGLISH_RECOGNITION).absolutePath,
-                        options,
-                    ),
-                    arabicDictionary =
-                        modelStore.readDictionary(PaddleOcrModelStore.Artifact.ARABIC_DICTIONARY),
-                    latinDictionary =
-                        modelStore.readDictionary(PaddleOcrModelStore.Artifact.ENGLISH_DICTIONARY),
-                )
+                // Sessions are tracked as they open so that a failure part-way through — a
+                // corrupt asset, a model without its dictionary — does not strand the ones already
+                // holding native memory.
+                val opened = mutableListOf<OrtSession>()
+                fun session(name: String): OrtSession =
+                    environment.createSession(BundledOcrModels.read(context, name), options)
+                        .also(opened::add)
+
+                val loaded = try {
+                    val arabic = session(BundledOcrModels.ARABIC_RECOGNITION)
+                    val latin = session(BundledOcrModels.ENGLISH_RECOGNITION)
+                    val arabicDictionary =
+                        dictionaryOf(arabic, BundledOcrModels.ARABIC_RECOGNITION)
+                    val latinDictionary =
+                        dictionaryOf(latin, BundledOcrModels.ENGLISH_RECOGNITION)
+                    val multilingual = containsLatinLetters(arabicDictionary)
+                    if (!multilingual) {
+                        // The bundled models are pinned by checksum, so this cannot happen in a
+                        // build that fetched what it was told to. If it ever does, the
+                        // line-selection rule has lost its footing and that must be visible rather
+                        // than silently absorbed.
+                        DiagnosticHub.record(
+                            "PPOCR_ARABIC_HEAD_NOT_MULTILINGUAL",
+                            mapOf("arabicDictionarySize" to arabicDictionary.size),
+                        )
+                    }
+
+                    Sessions(
+                        environment = environment,
+                        detection = session(BundledOcrModels.DETECTION),
+                        orientation = session(BundledOcrModels.ORIENTATION),
+                        arabic = arabic,
+                        latin = latin,
+                        arabicDictionary = arabicDictionary,
+                        latinDictionary = latinDictionary,
+                        arabicHeadIsMultilingual = multilingual,
+                    )
+                } catch (error: Throwable) {
+                    opened.forEach { runCatching(it::close) }
+                    throw error
+                }
+
                 sessions = loaded
 
                 DiagnosticHub.record(
@@ -113,16 +142,45 @@ class PaddleOcrEngine(
                         "durationMs" to (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0,
                         "arabicDictionarySize" to loaded.arabicDictionary.size,
                         "latinDictionarySize" to loaded.latinDictionary.size,
+                        "arabicHeadIsMultilingual" to loaded.arabicHeadIsMultilingual,
+                        "latinHeadCarriesArabic" to containsArabicLetters(loaded.latinDictionary),
                         "threads" to inferenceThreadCount(),
                     ),
                 )
             }.recoverCatching { error ->
                 DiagnosticHub.failure("PPOCR_LOAD", error)
                 sessions = null
-                throw if (error is NotInstalledException) error else LoadFailedException(error)
+                throw when (error) {
+                    is NotPackagedException, is DictionaryMissingException -> error
+                    else -> LoadFailedException(error)
+                }
             }
         }
     }
+
+    /**
+     * Reads a recognition head's character list out of the model itself.
+     *
+     * RapidOCR's ONNX exports carry the dictionary in the model's metadata under `character`, which
+     * removes the failure this pipeline previously had to defend against: a dictionary from one
+     * model paired with the weights of another decodes to fluent nonsense rather than to an error,
+     * because every class index still maps to some character. A dictionary that travels inside the
+     * model cannot be paired with the wrong one.
+     */
+    private fun dictionaryOf(session: OrtSession, name: String): List<String> {
+        val metadata = runCatching { session.metadata.customMetadata }.getOrNull().orEmpty()
+        val raw = metadata[DICTIONARY_METADATA_KEY] ?: throw DictionaryMissingException(name)
+        // PaddleOCR appends the space class after the dictionary when a model is trained with
+        // use_space_char, which every released mobile recognizer is. Without it every space between
+        // words disappears and a screen is spoken as one run-on word.
+        return raw.split('\n').map { it.trimEnd('\r') } + " "
+    }
+
+    private fun containsLatinLetters(dictionary: List<String>): Boolean =
+        dictionary.any { entry -> entry.any { it in 'a'..'z' || it in 'A'..'Z' } }
+
+    private fun containsArabicLetters(dictionary: List<String>): Boolean =
+        dictionary.any { entry -> entry.any { it in '\u0600'..'\u06FF' } }
 
     suspend fun release(reason: String) = lifecycleMutex.withLock {
         val current = sessions ?: return@withLock
@@ -135,7 +193,7 @@ class PaddleOcrEngine(
 
     /** Reads every text line in [bitmap] and returns the page in visual reading order. */
     suspend fun read(bitmap: Bitmap): PaddleOcrResult = inferenceMutex.withLock {
-        val active = sessions ?: throw NotInstalledException(modelStore.missing())
+        val active = sessions ?: throw NotPackagedException()
 
         withContext(Dispatchers.Default) {
             val started = SystemClock.elapsedRealtimeNanos()
@@ -282,29 +340,9 @@ class PaddleOcrEngine(
         // Recognition heads emit [1, steps, classes].
         val steps = shape[shape.size - 2].toInt()
         val classes = shape[shape.size - 1].toInt()
-        warnOnceIfDictionaryMismatched(script, classes, dictionary.size)
         val decoded = CtcDecoder.decode(output, steps, classes, dictionary)
         if (decoded.text.isBlank()) null
         else LineReading(decoded.text, decoded.confidence, script)
-    }
-
-    /**
-     * A dictionary from a different model than the one installed beside it decodes to plausible-
-     * looking rubbish rather than failing, because every class index still maps to *some* character.
-     * The class count is the one place the mismatch is visible, so it is reported the first time it
-     * is seen instead of being left for the user to discover by listening.
-     */
-    private fun warnOnceIfDictionaryMismatched(script: OcrScript, classes: Int, entries: Int) {
-        if (classes == entries + 1 || !mismatchWarned.add(script)) return
-        DiagnosticHub.record(
-            "PPOCR_DICTIONARY_MISMATCH",
-            mapOf(
-                "script" to script.name,
-                "modelClasses" to classes,
-                "dictionaryEntries" to entries,
-                "expectedEntries" to classes - 1,
-            ),
-        )
     }
 
     /** Runs one session and hands the flattened output plus its shape to [consume]. */
@@ -359,6 +397,9 @@ class PaddleOcrEngine(
         const val ORIENTATION_HEIGHT = 48
         const val ORIENTATION_WIDTH = 192
         const val ORIENTATION_CONFIDENCE = 0.9f
+
+        /** Where RapidOCR's ONNX exports keep the recognizer's character list. */
+        private const val DICTIONARY_METADATA_KEY = "character"
     }
 }
 

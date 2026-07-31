@@ -25,11 +25,11 @@ app/src/main/java/com/abdullah/visionbridge/data/gemini/OcrTrustRejectedExceptio
 app/src/main/java/com/abdullah/visionbridge/data/gemini/TextImageEnhancer.kt
 app/src/main/java/com/abdullah/visionbridge/data/network/CellularNetworkManager.kt
 app/src/main/java/com/abdullah/visionbridge/data/network/DiagnosticNetworkEventListener.kt
+app/src/main/java/com/abdullah/visionbridge/data/paddleocr/BundledOcrModels.kt
 app/src/main/java/com/abdullah/visionbridge/data/paddleocr/CtcDecoder.kt
 app/src/main/java/com/abdullah/visionbridge/data/paddleocr/DbPostProcessor.kt
 app/src/main/java/com/abdullah/visionbridge/data/paddleocr/OcrImagePreprocessor.kt
 app/src/main/java/com/abdullah/visionbridge/data/paddleocr/PaddleOcrEngine.kt
-app/src/main/java/com/abdullah/visionbridge/data/paddleocr/PaddleOcrModelStore.kt
 app/src/main/java/com/abdullah/visionbridge/data/paddleocr/PaddleOcrVisionRepository.kt
 app/src/main/java/com/abdullah/visionbridge/data/paddleocr/RecognizedLine.kt
 app/src/main/java/com/abdullah/visionbridge/data/paddleocr/TextBox.kt
@@ -78,5 +78,6 @@ gradle/wrapper/gradle-wrapper.properties
 gradlew
 gradlew.bat
 scripts/codex-check.sh
+scripts/fetch_ocr_models.py
 scripts/verify_project.py
 settings.gradle.kts

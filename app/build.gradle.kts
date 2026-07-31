@@ -5,6 +5,26 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+/**
+ * Downloads the four PP-OCR ONNX models into `src/main/assets/ppocr` before anything is packaged.
+ *
+ * The models are not committed: ~26 MB of binaries would live in every clone forever, and a pinned
+ * URL plus a pinned SHA-256 is a stronger guarantee of what is in the APK than a file someone
+ * committed once. The checksum decides whether a download is accepted, so a mirror that serves the
+ * wrong bytes fails the build instead of shipping a reader that quietly produces nonsense.
+ */
+val fetchOcrModels by tasks.registering(Exec::class) {
+    group = "build setup"
+    description = "Fetches and checksums the bundled PP-OCR models"
+    workingDir = rootDir
+    commandLine("python3", "scripts/fetch_ocr_models.py")
+    // Re-runs only when the pinned set changes or an asset goes missing.
+    inputs.file(rootProject.file("scripts/fetch_ocr_models.py"))
+    outputs.dir(layout.projectDirectory.dir("src/main/assets/ppocr"))
+}
+
+tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(fetchOcrModels) }
+
 android {
     namespace = "com.abdullah.visionbridge"
     compileSdk = 35
@@ -60,6 +80,12 @@ android {
         )
         // Uncompressed .so pages map straight from the APK instead of being extracted again.
         jniLibs.useLegacyPackaging = false
+        // The models are already compact; deflating them only costs time on every cold start.
+    }
+
+    androidResources {
+        // The models are already compact; deflating them only costs time on every cold start.
+        noCompress += "onnx"
     }
 
     lint {

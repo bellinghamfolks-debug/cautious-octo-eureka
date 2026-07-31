@@ -4,7 +4,6 @@ import android.graphics.Bitmap
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
 import com.abdullah.visionbridge.data.paddleocr.PaddleOcrEngine
-import com.abdullah.visionbridge.data.paddleocr.PaddleOcrModelStore
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AnalysisResult
 import com.abdullah.visionbridge.domain.model.CaptureProfile
@@ -30,7 +29,6 @@ class RoutingVisionRepository(
     private val cloud: VisionAiRepository,
     private val local: VisionAiRepository,
     private val localEngine: PaddleOcrEngine,
-    private val modelStore: PaddleOcrModelStore,
     private val settingsRepository: SettingsRepository,
 ) : VisionAiRepository {
 
@@ -56,7 +54,7 @@ class RoutingVisionRepository(
                     "engine" to if (useLocalEngine) "LOCAL_PPOCR" else "GEMINI_CLOUD",
                     "mode" to mode.name,
                     "localReadingEnabled" to useLocalReading,
-                    "localModelInstalled" to modelStore.isReady,
+                    "localModelPackaged" to localEngine.isPackaged,
                     "localModelLoaded" to localEngine.isLoaded,
                 ),
             ),
@@ -75,8 +73,6 @@ class RoutingVisionRepository(
                 onSpeechChunk = onSpeechChunk,
             )
         }
-
-        if (!modelStore.isReady) throw PaddleOcrEngine.NotInstalledException(modelStore.missing())
 
         return local.analyzeStreaming(
             bitmap = bitmap,

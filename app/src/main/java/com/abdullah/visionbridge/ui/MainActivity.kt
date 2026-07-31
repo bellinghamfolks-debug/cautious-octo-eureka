@@ -22,7 +22,6 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.abdullah.visionbridge.capture.MediaProjectionService
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
-import com.abdullah.visionbridge.data.paddleocr.PaddleOcrModelStore
 import com.abdullah.visionbridge.ui.theme.VisionBridgeTheme
 import java.io.File
 
@@ -43,23 +42,6 @@ class MainActivity : ComponentActivity() {
             )
         } else {
             DiagnosticHub.record("SCREEN_CAPTURE_PERMISSION_DENIED", mapOf("resultCode" to result.resultCode))
-        }
-    }
-
-    /**
-     * Which of the six PP-OCR files the open picker is filling. ONNX and plain-text dictionaries
-     * have no reliable MIME type, so the picker stays unfiltered and the file is validated by its
-     * magic bytes and size on import instead of by what it is called.
-     */
-    private var pendingArtifact: PaddleOcrModelStore.Artifact? = null
-
-    private val artifactPickerLauncher = registerForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        val artifact = pendingArtifact
-        pendingArtifact = null
-        if (uri != null && artifact != null) {
-            viewModel.installLocalModelArtifact(artifact, uri)
         }
     }
 
@@ -101,11 +83,6 @@ class MainActivity : ComponentActivity() {
                         onSceneDescriptionStyleChange = viewModel::setSceneDescriptionStyle,
                         onSpeechRateChange = viewModel::setSpeechRate,
                         onUseLocalOcrChange = viewModel::setUseLocalOcr,
-                        onInstallArtifact = { artifact ->
-                            pendingArtifact = artifact
-                            artifactPickerLauncher.launch(arrayOf("*/*"))
-                        },
-                        onDeleteLocalModel = viewModel::deleteLocalModel,
                         onExportDiagnostics = {
                             viewModel.exportDiagnostics { file ->
                                 this@MainActivity.shareDiagnosticFile(file)

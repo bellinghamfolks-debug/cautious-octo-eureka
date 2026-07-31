@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pathlib
 import re
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
@@ -16,6 +17,8 @@ REQUIRED = [
     "app/src/main/java/com/abdullah/visionbridge/capture/MediaProjectionService.kt",
     "app/src/main/java/com/abdullah/visionbridge/data/gemini/GeminiVisionRepository.kt",
     ".github/workflows/android-ci.yml",
+    "scripts/fetch_ocr_models.py",
+    "app/src/main/java/com/abdullah/visionbridge/data/paddleocr/PaddleOcrEngine.kt",
     "AGENTS.md",
 ]
 
@@ -52,6 +55,17 @@ for file in ROOT.rglob("*"):
         continue
     if key_pattern.search(text):
         errors.append(f"Possible committed Google API key in {file.relative_to(ROOT)}")
+
+for asset in (ROOT / "app/src/main/assets/ppocr").glob("*.onnx"):
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", str(asset.relative_to(ROOT))],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    if tracked.returncode == 0:
+        errors.append(
+            f"Fetched model committed to the repository: {asset.relative_to(ROOT)}. "
+            "These are downloaded by scripts/fetch_ocr_models.py and must stay untracked."
+        )
 
 if errors:
     print("Repository verification failed:", file=sys.stderr)

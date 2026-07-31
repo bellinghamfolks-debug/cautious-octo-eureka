@@ -212,9 +212,9 @@ private fun StatusCard(state: MainUiState) {
  * screen they are not currently on, so it is stated on the main surface and read out with the
  * status.
  */
-private fun engineSummary(state: MainUiState): String = when {
-    !state.settings.useLocalOcr -> "المحرك: Gemini سحابي للقراءة والوصف"
-    !state.localModel.isReady ->
-        "المحرك: القراءة المحلية مفعّلة لكن ملفاتها ناقصة. افتح الإعدادات وأكملها"
-    else -> "المحرك: قراءة النص على الجهاز، ووصف المشهد عبر Gemini السحابي"
-}
+private fun engineSummary(state: MainUiState): String =
+    if (state.settings.useLocalOcr) {
+        "المحرك: قراءة النص على الجهاز، ووصف المشهد عبر Gemini السحابي"
+    } else {
+        "المحرك: Gemini سحابي للقراءة والوصف"
+    }

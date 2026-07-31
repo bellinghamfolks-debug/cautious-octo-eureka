@@ -46,7 +46,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import com.abdullah.visionbridge.data.paddleocr.PaddleOcrModelStore
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
@@ -73,8 +72,6 @@ fun SettingsScreen(
     onSceneDescriptionStyleChange: (SceneDescriptionStyle) -> Unit,
     onSpeechRateChange: (Float) -> Unit,
     onUseLocalOcrChange: (Boolean) -> Unit,
-    onInstallArtifact: (PaddleOcrModelStore.Artifact) -> Unit,
-    onDeleteLocalModel: () -> Unit,
     onExportDiagnostics: () -> Unit,
     onBack: () -> Unit,
     onMessageConsumed: () -> Unit,
@@ -207,43 +204,10 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
-                    text = if (state.localModel.isReady) {
-                        "القارئ المحلي جاهز. الملفات الستة مثبتة بحجم ${state.localModel.totalKilobytes} كيلوبايت."
-                    } else {
-                        "ينقص لتشغيل القراءة المحلية: " +
-                            state.localModel.missing.joinToString("، ") { it.label }
-                    },
+                    text = "نماذج القراءة المحلية مضمّنة داخل التطبيق. لا يوجد ما تنزّله أو تثبّته.",
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                 )
-                PaddleOcrModelStore.Artifact.entries.forEach { artifact ->
-                    val installed = artifact in state.localModel.installed
-                    OutlinedButton(
-                        onClick = { onInstallArtifact(artifact) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp)
-                            .semantics {
-                                contentDescription = if (installed) {
-                                    "${artifact.label}، مثبت. اضغط للاستبدال"
-                                } else {
-                                    "${artifact.label}، غير مثبت. اضغط للتثبيت"
-                                }
-                            },
-                    ) { Text(if (installed) "✓ ${artifact.label}" else "تثبيت ${artifact.label}") }
-                }
-                if (state.localModel.installed.isNotEmpty()) {
-                    OutlinedButton(
-                        onClick = onDeleteLocalModel,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp)
-                            .semantics { contentDescription = "حذف كل ملفات القارئ المحلي وتحرير المساحة" },
-                    ) {
-                        Icon(Icons.Default.Delete, contentDescription = null)
-                        Text(" حذف ملفات القارئ المحلي")
-                    }
-                }
 
                 if (state.settings.mode == AnalysisMode.TEXT_READING) {
                     SectionTitle("طريقة التقاط النص")

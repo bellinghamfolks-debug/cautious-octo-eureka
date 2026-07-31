@@ -26,6 +26,11 @@ There are no build flags and no native compilation step. The project is Kotlin o
 reader is PP-OCRv5 driven through the prebuilt ONNX Runtime Android AAR, so a full build is minutes,
 not the hour a llama.cpp compile used to take.
 
+The four PP-OCR models are not committed. `scripts/fetch_ocr_models.py` fetches them into
+`app/src/main/assets/ppocr/` against pinned SHA-256 digests, and Gradle's `preBuild` depends on it,
+so the first build of a fresh clone needs network access. Never commit the fetched assets, and never
+relax the checksum check — it is what stops a mirror serving a model that reads plausible nonsense.
+
 ## Important files
 - `capture/MediaProjectionService.kt`: foreground capture lifecycle and frame throttling.
 - `capture/FrameAnalysisCoordinator.kt`: hybrid local/cloud analysis policy.

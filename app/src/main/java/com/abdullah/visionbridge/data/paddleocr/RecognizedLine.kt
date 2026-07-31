@@ -36,6 +36,13 @@ object BilingualLineSelector {
     /** Share of letters that must belong to a script before the line is called that script. */
     private const val SCRIPT_MAJORITY = 0.5f
 
+    /**
+     * The Arabic head being multilingual is a precondition, not a mode. The engine verifies it
+     * against the loaded model's own dictionary and reports a build fault if it does not hold —
+     * there is deliberately no second ranking for that case, because with two single-script heads
+     * no sound discriminator exists and any fallback would just be the confidence comparison that
+     * produced the original bug, wearing a different name.
+     */
     fun select(arabic: LineReading?, latin: LineReading?): LineReading? {
         val arabicReading = arabic?.takeIf(::isUsable)
         val latinReading = latin?.takeIf(::isUsable)
