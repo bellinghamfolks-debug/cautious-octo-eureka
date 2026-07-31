@@ -205,6 +205,11 @@ fun SettingsScreen(
                 )
                 Text(
                     text = when {
+                        // Stated first and unconditionally: no amount of installing
+                        // model files can help a build with no engine in it.
+                        !state.localModel.engineAvailableInBuild ->
+                            "تنبيه: هذه النسخة من التطبيق لا تتضمن المحرك المحلي، ولن يعمل مهما ثبّتّ من ملفات. " +
+                                "ثبّت نسخة APK التي تحتوي المحرك المحلي."
                         state.localModel.isReady ->
                             "النموذج المحلي مثبت: ${state.localModel.weightsMegabytes} و${state.localModel.projectorMegabytes} ميجابايت."
                         state.settings.useLocalVlm ->

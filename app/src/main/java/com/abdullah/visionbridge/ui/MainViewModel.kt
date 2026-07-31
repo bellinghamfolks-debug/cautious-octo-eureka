@@ -50,14 +50,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setUseLocalVlm(enabled: Boolean) = viewModelScope.launch {
         container.settingsRepository.setUseLocalVlm(enabled)
         if (!enabled) container.localVlmEngine.release("user_disabled_local_engine")
-        message.value = if (enabled) {
-            if (container.localVlmModelStore.isReady) {
-                "تم تفعيل الذكاء المحلي. القراءة والوصف سيعملان على الجهاز."
-            } else {
+        refreshLocalModelState()
+        message.value = when {
+            !enabled -> "عاد التحليل إلى Gemini السحابي."
+            // Checked before the model files, because a build without the engine
+            // cannot be fixed by installing anything.
+            !container.localVlmEngine.isEngineAvailableInBuild() ->
+                "هذه النسخة من التطبيق لا تتضمن المحرك المحلي. ثبّت نسخة APK التي تحتوي المحرك المحلي."
+            !container.localVlmModelStore.isReady ->
                 "فعّلت الذكاء المحلي، لكن ملفي النموذج غير مثبتين بعد."
-            }
-        } else {
-            "عاد التحليل إلى Gemini السحابي."
+            else -> "تم تفعيل الذكاء المحلي. القراءة والوصف سيعملان على الجهاز."
         }
     }
 
@@ -93,6 +95,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             weightsMegabytes = if (weights.isFile) weights.length() / (1024 * 1024) else 0,
             projectorMegabytes = if (projector.isFile) projector.length() / (1024 * 1024) else 0,
             isReady = store.isReady,
+            engineAvailableInBuild = container.localVlmEngine.isEngineAvailableInBuild(),
         )
     }
 
@@ -202,4 +205,6 @@ data class LocalModelUiState(
     val weightsMegabytes: Long = 0,
     val projectorMegabytes: Long = 0,
     val isReady: Boolean = false,
+    /** False when the installed APK was built without the native engine. */
+    val engineAvailableInBuild: Boolean = true,
 )

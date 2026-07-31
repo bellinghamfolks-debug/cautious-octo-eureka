@@ -62,7 +62,40 @@ class LocalVlmEngine(
     @Volatile
     private var handle: Long = 0L
 
+    @Volatile
+    private var nativeLibraryAvailable: Boolean? = null
+
     val isLoaded: Boolean get() = handle != 0L
+
+    /**
+     * True when this build actually contains the native engine.
+     *
+     * Separate from [ensureLoaded] on purpose: it needs no model files and costs
+     * nothing after the first call, so the UI can answer "will this work at all"
+     * the moment the user turns the switch on, rather than letting them install
+     * gigabytes of weights and only discover the truth at the first frame. That
+     * is exactly what happened when a build published an APK carrying the whole
+     * local-engine interface but no libvisionbridge_vlm.so.
+     */
+    fun isEngineAvailableInBuild(): Boolean {
+        nativeLibraryAvailable?.let { return it }
+        val available = try {
+            System.loadLibrary(NATIVE_LIBRARY)
+            true
+        } catch (missing: UnsatisfiedLinkError) {
+            DiagnosticHub.record(
+                "LOCAL_VLM_NATIVE_LIBRARY_MISSING",
+                mapOf(
+                    "library" to NATIVE_LIBRARY,
+                    "platformMessage" to missing.message,
+                    "cause" to "apk_built_without_local_vlm_engine",
+                ),
+            )
+            false
+        }
+        nativeLibraryAvailable = available
+        return available
+    }
 
     /**
      * Loads the model on an IO thread if it is not already resident.
@@ -76,19 +109,7 @@ class LocalVlmEngine(
 
         withContext(Dispatchers.IO) {
             runCatching {
-                try {
-                    System.loadLibrary(NATIVE_LIBRARY)
-                } catch (missing: UnsatisfiedLinkError) {
-                    DiagnosticHub.record(
-                        "LOCAL_VLM_NATIVE_LIBRARY_MISSING",
-                        mapOf(
-                            "library" to NATIVE_LIBRARY,
-                            "platformMessage" to missing.message,
-                            "cause" to "apk_built_without_local_vlm_engine",
-                        ),
-                    )
-                    throw EngineMissingFromBuildException()
-                }
+                if (!isEngineAvailableInBuild()) throw EngineMissingFromBuildException()
 
                 val threads = inferenceThreadCount()
                 val started = SystemClock.elapsedRealtimeNanos()
