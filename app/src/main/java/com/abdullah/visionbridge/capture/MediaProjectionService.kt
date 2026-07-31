@@ -79,6 +79,10 @@ class MediaProjectionService : Service() {
     private var diagnosticSessionOpen = false
     private var unavailableFeedSince = 0L
     private var lastUnavailableFeedNoticeAt = 0L
+    private var appliedCaptureWidth = 0
+    private var appliedCaptureHeight = 0
+    private var lastResizeAtElapsedMs = 0L
+    private var lastSurfaceRecoveryAtElapsedMs = 0L
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -209,6 +213,8 @@ class MediaProjectionService : Service() {
                 captureHandler,
             ) ?: error("تعذر إنشاء شاشة افتراضية للالتقاط")
 
+            appliedCaptureWidth = width
+            appliedCaptureHeight = height
             resetFrameState()
             container.coordinator.reset()
             container.runtime.started()
@@ -431,15 +437,15 @@ class MediaProjectionService : Service() {
         ) return
 
         lastUnavailableFeedNoticeAt = now
-        // MediaProjection mirrors the display. A sleeping display mirrors as pure black, which is
-        // indistinguishable from a stopped video feed by looking at pixels alone, so the display
-        // state is recorded here and the message names both causes. A device log shows exactly this
-        // shape: a good feed for ten seconds, sixty seconds of frames at mean luminance 1.8, then a
-        // good feed again — while text reading in other sessions, where the phone is being held and
-        // touched, never went black at all.
+        // Recorded together because they are what separates the possible causes. Diagnostics from a
+        // real session show the black period beginning within 0.3 s of a rotation and ending within
+        // 0.4 s of the next one, twice, with every black frame in landscape and none in portrait —
+        // a pattern no screen timeout produces. The display state and the capture geometry are kept
+        // so the next bundle can tell a blank mirror from a genuinely dark scene without guessing.
         val interactive = runCatching {
             getSystemService(PowerManager::class.java)?.isInteractive
         }.getOrNull()
+        val elapsed = SystemClock.elapsedRealtime()
         DiagnosticHub.record(
             "VISUAL_FEED_UNAVAILABLE_NOTICE_TRIGGERED",
             trace.fields(
@@ -447,14 +453,28 @@ class MediaProjectionService : Service() {
                     "decisionReason" to decision.reason,
                     "unavailableForMs" to unavailableForMs,
                     "displayInteractive" to interactive,
-                    "guidance" to "screen_may_be_off_or_esight_view_not_visible",
+                    "captureWidth" to appliedCaptureWidth,
+                    "captureHeight" to appliedCaptureHeight,
+                    "landscapeCapture" to (appliedCaptureWidth > appliedCaptureHeight),
+                    "sinceLastResizeMs" to
+                        if (lastResizeAtElapsedMs > 0L) elapsed - lastResizeAtElapsedMs else null,
                 ),
             ),
         )
-        val message = if (interactive == false) {
-            SCREEN_OFF_MESSAGE
-        } else {
-            VISUAL_FEED_UNAVAILABLE_MESSAGE
+
+        // Try to repair the capture before blaming anything the user can act on. A blank mirror and
+        // a dark room look identical in pixels, but only one of them is fixable from here.
+        val mayRecover = interactive != false &&
+            elapsed - lastSurfaceRecoveryAtElapsedMs >= SURFACE_RECOVERY_COOLDOWN_MS
+        if (mayRecover) {
+            lastSurfaceRecoveryAtElapsedMs = elapsed
+            captureHandler?.post { recreateVirtualDisplayAfterBlackFeed() }
+        }
+
+        val message = when {
+            interactive == false -> SCREEN_OFF_MESSAGE
+            mayRecover -> VISUAL_FEED_RECOVERING_MESSAGE
+            else -> VISUAL_FEED_UNAVAILABLE_MESSAGE
         }
         serviceScope.launch {
             InstantLocalOcrBridge.publishSystemNotice(
@@ -545,8 +565,24 @@ class MediaProjectionService : Service() {
         }
     }
 
+    /**
+     * Re-points the capture at a new content size.
+     *
+     * The system reports the same size two and three times in a row when the shared app rotates,
+     * and each report used to tear down the ImageReader and re-attach the virtual display surface.
+     * A device log shows three of these inside 200 ms, immediately followed by sixty seconds of
+     * pure black frames. Repeating the work cannot help and can only race the capture thread, so a
+     * report that does not actually change the size is now ignored.
+     */
     private fun resizeCapture(width: Int, height: Int) {
         val display = virtualDisplay ?: return
+        if (width == appliedCaptureWidth && height == appliedCaptureHeight) {
+            DiagnosticHub.record(
+                "CAPTURE_RESIZE_SKIPPED",
+                mapOf("reason" to "size_unchanged", "width" to width, "height" to height),
+            )
+            return
+        }
         val oldReader = imageReader
         val newReader = createImageReader(width, height)
         imageReader = newReader
@@ -554,8 +590,55 @@ class MediaProjectionService : Service() {
         display.setSurface(newReader.surface)
         oldReader?.setOnImageAvailableListener(null, null)
         oldReader?.close()
+        appliedCaptureWidth = width
+        appliedCaptureHeight = height
+        lastResizeAtElapsedMs = SystemClock.elapsedRealtime()
         resetFrameState()
         DiagnosticHub.record("CAPTURE_RESIZE_APPLIED", mapOf("width" to width, "height" to height))
+    }
+
+    /**
+     * Rebuilds the virtual display when the capture has been black for too long.
+     *
+     * Whatever leaves the mirror blank — a surface that did not survive a rotation, or a
+     * single-app capture whose window stopped rendering — sitting black for a minute is never the
+     * right outcome for someone waiting to be told what is in front of them. Diagnostics show the
+     * black period starting within 0.3 s of a rotation and ending within 0.4 s of the next one, so
+     * a fresh surface at the current size is the natural thing to try, and it costs one frame.
+     */
+    private fun recreateVirtualDisplayAfterBlackFeed() {
+        val projection = mediaProjection ?: return
+        val width = appliedCaptureWidth
+        val height = appliedCaptureHeight
+        if (width <= 0 || height <= 0) return
+
+        DiagnosticHub.record(
+            "CAPTURE_SURFACE_RECOVERY_STARTED",
+            mapOf("width" to width, "height" to height),
+        )
+        runCatching {
+            val oldReader = imageReader
+            val oldDisplay = virtualDisplay
+            val reader = createImageReader(width, height)
+            imageReader = reader
+            virtualDisplay = projection.createVirtualDisplay(
+                "VisionBridgeCapture",
+                width,
+                height,
+                resources.displayMetrics.densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                reader.surface,
+                null,
+                captureHandler,
+            ) ?: error("تعذر إعادة إنشاء شاشة الالتقاط")
+            oldDisplay?.release()
+            oldReader?.setOnImageAvailableListener(null, null)
+            oldReader?.close()
+            resetFrameState()
+            DiagnosticHub.record("CAPTURE_SURFACE_RECOVERY_COMPLETED", mapOf("width" to width, "height" to height))
+        }.onFailure { error ->
+            DiagnosticHub.failure("CAPTURE_SURFACE_RECOVERY", error)
+        }
     }
 
     private fun releaseProjection(stopProjection: Boolean, reason: String) {
@@ -728,6 +811,12 @@ class MediaProjectionService : Service() {
          * as a black frame. This is the common case in scene mode, where the user is looking through
          * the glasses and not touching the phone, and the screen times out.
          */
+        /** Cooldown between capture-surface rebuilds, so a genuinely dark room is not thrashed. */
+        private const val SURFACE_RECOVERY_COOLDOWN_MS = 20_000L
+
+        private const val VISUAL_FEED_RECOVERING_MESSAGE =
+            "الصورة الواردة سوداء. أعيد تجهيز الالتقاط الآن. إن استمرت، أعد الضغط على شير يور فيو."
+
         private const val SCREEN_OFF_MESSAGE =
             "شاشة الهاتف مطفأة، ولذلك لا تصل صورة. أضئ الشاشة، ويفضل إطالة مهلة إطفاء الشاشة من إعدادات الهاتف."
 
