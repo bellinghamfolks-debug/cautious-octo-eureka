@@ -39,16 +39,22 @@ class ReadingLedger(
 
         removeExpired(now)
 
-        // Three ways a recognition can belong to a page the user already knows: it looks the same,
-        // it extends what they heard, or it is a shorter re-read of it. The last case matters
-        // because the model does not always return the same amount of a page twice, and treating a
-        // short re-read as a new document read most of the page aloud a second time.
-        val match = entries.lastOrNull { entry ->
-            DocumentSpeechPolicy.sameDocument(entry.spokenText, candidate) ||
-                DocumentSpeechPolicy.covers(container = candidate, contained = entry.spokenText) ||
-                DocumentSpeechPolicy.covers(container = entry.spokenText, contained = candidate)
+        // Pick the entry that has already covered the most of this recognition, and treat it as a
+        // re-read when enough of it is familiar. Coverage is the deciding measure rather than
+        // document identity: on a real device the same page came back with different line splits
+        // and slightly different extents each time, every variant failed a symmetric identity test,
+        // and each one was therefore read out again in full while the user had not moved at all.
+        val best = entries
+            .map { entry -> entry to DocumentSpeechPolicy.coverageOf(entry.spokenText, candidate) }
+            .maxByOrNull { (_, coverage) -> coverage }
+
+        val matched = best?.takeIf { (entry, coverage) ->
+            coverage >= RE_READ_COVERAGE ||
+                DocumentSpeechPolicy.sameDocument(entry.spokenText, candidate) ||
+                DocumentSpeechPolicy.covers(container = candidate, contained = entry.spokenText)
         } ?: return Decision.Speak(candidate, document = candidate, continuation = false)
 
+        val (match, coverage) = matched
         match.lastSeenAtMs = now
         val addition = DocumentSpeechPolicy.newContent(
             alreadySpoken = match.spokenText,
@@ -57,10 +63,15 @@ class ReadingLedger(
         return when {
             addition.isBlank() -> Decision.Skip("already_read_completely")
 
-            // A handful of characters appearing between two reads of a static page is recognition
-            // noise: a changed clock digit, a notification badge, a line break that moved. Speaking
-            // it on its own is the stray fragment users hear between full readings.
-            addition.length < MIN_CONTINUATION_CHARACTERS ->
+            // A few characters appearing between two reads of an otherwise familiar page is
+            // recognition noise: a changed clock digit, a notification badge, a line break that
+            // moved. Speaking it alone is the stray fragment users hear between full readings.
+            //
+            // The coverage condition matters as much as the length. A short addition to a page the
+            // user has almost entirely heard is noise; the same short addition to a page that is
+            // half new is the point of reading it, and must not be swallowed.
+            addition.length < ALWAYS_NOISE_CHARACTERS ||
+                (addition.length < MIN_CONTINUATION_CHARACTERS && coverage >= NOISE_FLOOR_COVERAGE) ->
                 Decision.Skip("continuation_below_noise_floor")
 
             else -> Decision.Speak(addition, document = candidate, continuation = true)
@@ -106,5 +117,24 @@ class ReadingLedger(
 
         /** Shortest addition worth interrupting a page for. Below this it is recognition noise. */
         const val MIN_CONTINUATION_CHARACTERS = 24
+
+        /**
+         * How much of a recognition must already be familiar for it to count as the same page.
+         *
+         * At 0.5 a page whose lines were re-split, or which came back a little shorter or longer,
+         * is still recognized as the page the user is looking at, so only the genuinely new lines
+         * are read. Below half, the content really has changed and deserves a full reading.
+         */
+        const val RE_READ_COVERAGE = 0.5
+
+        /** A short addition only counts as noise on a page this thoroughly heard already. */
+        const val NOISE_FLOOR_COVERAGE = 0.8
+
+        /**
+         * An addition this short is never worth interrupting for, whatever the coverage. A word or
+         * two appearing between two reads of a label is a recognition difference, not new content:
+         * a device log shows "BLEU / CHANEL" becoming "BLEU / DE / CHANEL" on the same bottle.
+         */
+        const val ALWAYS_NOISE_CHARACTERS = 12
     }
 }

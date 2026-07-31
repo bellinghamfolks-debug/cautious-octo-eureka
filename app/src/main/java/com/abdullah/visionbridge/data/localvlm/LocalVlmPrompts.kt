@@ -108,7 +108,11 @@ object LocalVlmPrompts {
      */
     fun maxTokens(mode: AnalysisMode, sceneDescriptionStyle: SceneDescriptionStyle): Int =
         when (mode) {
-            AnalysisMode.TEXT_READING -> 1_536
+            // Sized for what a phone CPU can actually decode, not for what a page might contain.
+            // A device log shows a 1,536-token budget producing nothing at all in fifty-six
+            // seconds: at the few tokens per second a 3B model manages on ARM, that budget is
+            // several minutes of decoding, so the reading never arrived and the user gave up.
+            AnalysisMode.TEXT_READING -> 640
             AnalysisMode.SCENE_DESCRIPTION -> when (sceneDescriptionStyle) {
                 SceneDescriptionStyle.COMPREHENSIVE -> 220
                 SceneDescriptionStyle.BRIEF -> 80

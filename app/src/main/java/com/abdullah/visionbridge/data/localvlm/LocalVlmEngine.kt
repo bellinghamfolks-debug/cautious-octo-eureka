@@ -338,8 +338,15 @@ class LocalVlmEngine(
 
         private const val MIN_EDGE_PIXELS = 28
 
-        /** Long-edge caps, chosen against prefill cost rather than image quality. */
-        const val READ_LONG_EDGE_PIXELS = 1_024
-        const val DESCRIBE_LONG_EDGE_PIXELS = 672
+        /**
+         * Long-edge caps, chosen against prefill cost rather than image quality.
+         *
+         * Qwen-VL tokenizes at native resolution, so image tokens grow with the area: the 461x1024
+         * frame a device actually sent became roughly six hundred image tokens, and encoding them
+         * was still unfinished after fifty-six seconds. Two thirds of the long edge is a bit over
+         * half the area and therefore a bit over half the prefill.
+         */
+        const val READ_LONG_EDGE_PIXELS = 672
+        const val DESCRIBE_LONG_EDGE_PIXELS = 512
     }
 }

@@ -70,6 +70,65 @@ class ReadingLedgerTest {
         assertTrue(ledger.evaluate(page, now = 12_000L) is ReadingLedger.Decision.Skip)
     }
 
+    /**
+     * From a device log: a perfume label came back as "BLEU / CHANEL", then as
+     * "BLEU / DE / CHANEL". Symmetric identity rejected the pair because one token in three
+     * differed, so the label was read out from the top a second time.
+     */
+    @Test
+    fun `a short label re-split by OCR is not read again`() {
+        val ledger = ReadingLedger()
+        ledger.recordSpoken("BLEU\nCHANEL", now = 0L)
+
+        val decision = ledger.evaluate("BLEU\nDE\nCHANEL", now = 3_000L)
+        assertTrue(decision is ReadingLedger.Decision.Skip)
+        assertEquals(
+            "continuation_below_noise_floor",
+            (decision as ReadingLedger.Decision.Skip).reason,
+        )
+    }
+
+    /**
+     * Also from the log: the same notes screen returned twice with different extents and line
+     * breaks, and both readings were spoken in full.
+     */
+    @Test
+    fun `a page returning with different line splits speaks only what is new`() {
+        val ledger = ReadingLedger()
+        val first = """
+            نص إنجليزي قراه بسرعة وبدون
+            أخطاء
+            فجاة جالس يخربط في ارقام
+        """.trimIndent()
+        ledger.recordSpoken(first, now = 0L)
+
+        val second = """
+            نص إنجليزي قراه بسرعة وبدون
+            أخطاء
+            فجاة جالس يخربط في ارقام
+            وهنا سطر جديد تماما لم يسمعه المستخدم من قبل
+        """.trimIndent()
+        val decision = ledger.evaluate(second, now = 4_000L)
+        assertTrue(decision is ReadingLedger.Decision.Speak)
+        decision as ReadingLedger.Decision.Speak
+        assertTrue(decision.continuation)
+        assertFalse(decision.text.contains("نص إنجليزي قراه"))
+        assertTrue(decision.text.contains("سطر جديد تماما"))
+    }
+
+    @Test
+    fun `half a page in common is still the same page`() {
+        val ledger = ReadingLedger()
+        ledger.recordSpoken("سطر واحد\nسطر اثنان\nسطر ثلاثة\nسطر اربعة", now = 0L)
+        val coverage = com.abdullah.visionbridge.data.speech.DocumentSpeechPolicy.coverageOf(
+            alreadySpoken = "سطر واحد\nسطر اثنان\nسطر ثلاثة\nسطر اربعة",
+            current = "سطر ثلاثة\nسطر اربعة\nسطر خمسة\nسطر ستة",
+        )
+        assertEquals(0.5, coverage, 0.001)
+        assertTrue(ledger.evaluate("سطر ثلاثة\nسطر اربعة\nسطر خمسة\nسطر ستة", now = 2_000L)
+            is ReadingLedger.Decision.Speak)
+    }
+
     @Test
     fun `a different page interrupts and is read in full`() {
         val ledger = ReadingLedger()

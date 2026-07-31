@@ -19,6 +19,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.PowerManager
 import android.os.SystemClock
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
@@ -430,19 +431,34 @@ class MediaProjectionService : Service() {
         ) return
 
         lastUnavailableFeedNoticeAt = now
+        // MediaProjection mirrors the display. A sleeping display mirrors as pure black, which is
+        // indistinguishable from a stopped video feed by looking at pixels alone, so the display
+        // state is recorded here and the message names both causes. A device log shows exactly this
+        // shape: a good feed for ten seconds, sixty seconds of frames at mean luminance 1.8, then a
+        // good feed again — while text reading in other sessions, where the phone is being held and
+        // touched, never went black at all.
+        val interactive = runCatching {
+            getSystemService(PowerManager::class.java)?.isInteractive
+        }.getOrNull()
         DiagnosticHub.record(
             "VISUAL_FEED_UNAVAILABLE_NOTICE_TRIGGERED",
             trace.fields(
                 mapOf(
                     "decisionReason" to decision.reason,
                     "unavailableForMs" to unavailableForMs,
-                    "guidance" to "open_esight_share_your_view_and_keep_live_view_visible",
+                    "displayInteractive" to interactive,
+                    "guidance" to "screen_may_be_off_or_esight_view_not_visible",
                 ),
             ),
         )
+        val message = if (interactive == false) {
+            SCREEN_OFF_MESSAGE
+        } else {
+            VISUAL_FEED_UNAVAILABLE_MESSAGE
+        }
         serviceScope.launch {
             InstantLocalOcrBridge.publishSystemNotice(
-                text = VISUAL_FEED_UNAVAILABLE_MESSAGE,
+                text = message,
                 code = "VISUAL_FEED_UNAVAILABLE",
             )
         }
@@ -704,7 +720,16 @@ class MediaProjectionService : Service() {
         private const val UNAVAILABLE_FEED_NOTICE_AFTER_MS = 1_500L
         private const val UNAVAILABLE_FEED_NOTICE_REPEAT_MS = 30_000L
         private const val VISUAL_FEED_UNAVAILABLE_MESSAGE =
-            "لا تصل صورة قابلة للتحليل. افتح تطبيق إي سايت واضغط شير يور فيو، وتأكد أن منظر النظارة ظاهر على شاشة الهاتف."
+            "لا تصل صورة قابلة للتحليل. تأكد أن شاشة الهاتف مضاءة، وأن منظر النظارة ظاهر عليها. " +
+                "إن كنت في تطبيق إي سايت فاضغط شير يور فيو."
+
+        /**
+         * Screen capture mirrors the phone display, so a display that has gone to sleep is captured
+         * as a black frame. This is the common case in scene mode, where the user is looking through
+         * the glasses and not touching the phone, and the screen times out.
+         */
+        private const val SCREEN_OFF_MESSAGE =
+            "شاشة الهاتف مطفأة، ولذلك لا تصل صورة. أضئ الشاشة، ويفضل إطالة مهلة إطفاء الشاشة من إعدادات الهاتف."
 
         fun startIntent(context: Context, resultCode: Int, resultData: Intent) =
             Intent(context, MediaProjectionService::class.java).apply {

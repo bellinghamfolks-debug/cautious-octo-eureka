@@ -65,6 +65,8 @@ class LocalVlmVisionRepository(
         }
         val pendingBlocks = mutableListOf<String>()
         var loopDetected = false
+        val requestStartedNanos = android.os.SystemClock.elapsedRealtimeNanos()
+        var firstTokenReported = false
 
         val raw = engine.generate(
             bitmap = bitmap,
@@ -77,6 +79,23 @@ class LocalVlmVisionRepository(
                 LocalVlmEngine.DESCRIBE_LONG_EDGE_PIXELS
             },
         ) { fragment ->
+            // The first fragment marks the end of image encoding and prompt prefill, which is the
+            // part that cannot be interrupted and the part that made a device wait fifty-six
+            // seconds for nothing. Separating it from decoding is the only way to tell whether a
+            // slow reading is the image being too large or simply too many tokens to generate.
+            if (!firstTokenReported) {
+                firstTokenReported = true
+                DiagnosticHub.record(
+                    "LOCAL_VLM_FIRST_TOKEN",
+                    trace.fieldsOrEmpty(
+                        mapOf(
+                            "prefillMs" to
+                                (android.os.SystemClock.elapsedRealtimeNanos() - requestStartedNanos) / 1_000_000.0,
+                            "mode" to mode.name,
+                        ),
+                    ),
+                )
+            }
             accumulated.append(fragment)
             speechBuffer?.append(fragment, urgent = false)?.let(pendingBlocks::addAll)
 

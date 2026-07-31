@@ -63,6 +63,24 @@ object DocumentSpeechPolicy {
         return newContent(alreadySpoken = container, current = contained).isBlank()
     }
 
+    /**
+     * Fraction of [current]'s readable lines the user has already heard in [alreadySpoken].
+     *
+     * This is the measure that actually decides whether something is a re-read, and it replaced
+     * document identity for that purpose. Identity asks "are these the same page", which is the
+     * wrong question and a brittle one: a device log showed a page recognized once as three lines
+     * and again as four, and again with slightly different line breaks. Each variant failed the
+     * symmetric containment test, so each was treated as a brand new page and read out in full even
+     * though the user had not moved. Coverage asks the question that matters — how much of this is
+     * new — and answers it the same way regardless of how the lines were split.
+     */
+    fun coverageOf(alreadySpoken: String, current: String): Double {
+        val currentLines = readableLines(current)
+        if (currentLines.isEmpty()) return 1.0
+        val remaining = readableLines(newContent(alreadySpoken = alreadySpoken, current = current))
+        return 1.0 - (remaining.size.toDouble() / currentLines.size)
+    }
+
     /** Speech-worthy lines: trimmed, non-blank, and containing at least one letter or digit. */
     fun readableLines(value: String): List<String> = value
         .replace("\r\n", "\n")
