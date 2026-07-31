@@ -84,9 +84,37 @@ engine produced the text.**
 3. CI — the native job unzips the APK and fails if any ABI other than
    `arm64-v8a` appears under `lib/`.
 
-Only what the engine needs is compiled: tests, examples, the server, cURL and
-OpenMP are all off, everything is statically linked into one `.so`, and the
-linker drops unused sections.
+Only what the engine needs is compiled. Tests, examples, the server, cURL and
+OpenMP are off; everything is statically linked into one `.so`; and the linker
+drops unused sections.
+
+`LLAMA_BUILD_COMMON` and `LLAMA_BUILD_TOOLS` must both stay **on**, because
+llama.cpp gates `add_subdirectory(tools)` on both and `libmtmd` lives there.
+That subdirectory also defines `llama-cli`, `llama-bench`, `llama-mtmd-cli` and
+a dozen other executables. They are never compiled: Gradle restricts the build
+to a single target.
+
+```kotlin
+externalNativeBuild { cmake { targets += "visionbridge_vlm" } }
+```
+
+Without that line AGP builds every target CMake defines, which is both the bloat
+this project is meant to avoid and the difference between a two-minute and a
+twenty-minute build.
+
+### Two compiler settings that must not be changed back
+
+- **Do not put `-fno-rtti` in the global `CMAKE_CXX_FLAGS`.** Flags set at the
+  top level are inherited by the llama.cpp subproject, and `llama-context.cpp`
+  uses `dynamic_cast` on the KV cache. Visibility and section flags belong on
+  the `visionbridge_vlm` target via `target_compile_options`, never globally.
+- **Do not set `GGML_CPU_ARM_ARCH`.** Forcing an `-mcpu` value made ggml's ARM
+  feature probe fail with "Failed to get ARM features", because the probe
+  compiles a test with the host compiler, which rejects an AArch64 CPU name.
+  Left alone, ggml detects dot-product and fp16 support for the
+  `aarch64-linux-android` target itself and compiles its ARM quantization and
+  repack kernels. This also means there is **no** Armv8.2 hardware floor: any
+  arm64-v8a device is supported, subject only to having enough RAM.
 
 ### Build flag
 
@@ -103,10 +131,8 @@ reports the engine unavailable.
 ### Toolchain
 
 - Android NDK 27 (`ndk;27.0.12077973`) and CMake 3.22.1 via `sdkmanager`.
-- `GGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16`. This roughly doubles quantized
-  matmul throughput and **narrows supported hardware** to Armv8.2+ (2017 and
-  later). Every device with enough RAM to hold the model qualifies; drop it to
-  `armv8-a` if you need to support older 64-bit chips.
+- ARM CPU features are detected by ggml for the target, not forced. See the two
+  compiler settings above that must not be changed back.
 
 ---
 

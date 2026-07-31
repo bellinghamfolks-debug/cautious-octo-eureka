@@ -22,11 +22,15 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Size matters more than the last few percent of speed for a shipped assistive
-# app, and -O3 on ggml kernels is where the throughput actually comes from.
-set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG -fvisibility=hidden -ffunction-sections -fdata-sections")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -fvisibility=hidden -fvisibility-inlines-hidden -ffunction-sections -fdata-sections -fno-rtti")
-set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} -Wl,--gc-sections -Wl,--exclude-libs,ALL -Wl,-z,max-page-size=16384")
+# -O3 on the ggml kernels is where throughput actually comes from.
+#
+# Only optimization level belongs in the global flags. Anything stronger is
+# inherited by the llama.cpp subproject and breaks it: -fno-rtti here made
+# llama-context.cpp fail to compile because it uses dynamic_cast on the KV
+# cache. Visibility, section splitting and RTTI choices are applied to this
+# project's own target further down instead.
+set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 
 include(FetchContent)
 
@@ -44,8 +48,12 @@ set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
 set(LLAMA_CURL           OFF CACHE BOOL "" FORCE)
+# libmtmd (vision projector + image tokenization) lives under tools/, and
+# llama.cpp gates `add_subdirectory(tools)` on BOTH of these being ON. Neither
+# can be turned off without losing the mtmd target. The CLI executables they
+# also define are never compiled, because Gradle restricts the build to the
+# visionbridge_vlm target.
 set(LLAMA_BUILD_COMMON   ON  CACHE BOOL "" FORCE)
-# libmtmd (vision projector + image tokenization) lives under tools/.
 set(LLAMA_BUILD_TOOLS    ON  CACHE BOOL "" FORCE)
 
 set(GGML_OPENMP          OFF CACHE BOOL "" FORCE)  # NDK has no libomp by default
@@ -54,11 +62,14 @@ set(GGML_NATIVE          OFF CACHE BOOL "" FORCE)  # cross-compiling
 set(GGML_BACKEND_DL      OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS    OFF CACHE BOOL "" FORCE)  # static-link into one .so
 
-# Armv8.2 dot-product and fp16 arithmetic roughly double quantized matmul
-# throughput. Every arm64 SoC that can realistically hold a VLM in RAM has
-# them; the minSdk 26 floor does not guarantee it, so this is a deliberate
-# narrowing of supported hardware, documented in the setup manual.
-set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod+fp16" CACHE STRING "" FORCE)
+# GGML_CPU_ARM_ARCH is deliberately NOT set.
+#
+# Forcing "armv8.2-a+dotprod+fp16" made ggml's ARM feature probe fail: the probe
+# compiles a test with the host compiler, which rejected an AArch64 -mcpu value
+# outright, and ggml then reported "Failed to get ARM features". Left alone,
+# ggml detects dot-product and fp16 support for the aarch64-linux-android
+# target itself and compiles its ARM quantization and repack kernels, which is
+# what the build log confirms it does. Do not re-add this override.
 
 FetchContent_Declare(
     llama_cpp
@@ -77,12 +88,32 @@ target_include_directories(visionbridge_vlm PRIVATE
     ${llama_cpp_SOURCE_DIR}/tools/mtmd
 )
 
+# Applied to this target only, never to the llama.cpp subproject. The JNI entry
+# points carry JNIEXPORT, which is explicit default visibility, so they survive
+# -fvisibility=hidden while everything else stays internal.
+target_compile_options(visionbridge_vlm PRIVATE
+    -fvisibility=hidden
+    -fvisibility-inlines-hidden
+    -ffunction-sections
+    -fdata-sections
+)
+
+# max-page-size keeps the library loadable on Android 15 devices that use
+# 16 KB memory pages.
+target_link_options(visionbridge_vlm PRIVATE
+    -Wl,--gc-sections
+    -Wl,--exclude-libs,ALL
+    -Wl,-z,max-page-size=16384
+)
+
 find_library(ANDROID_LOG_LIB log)
 
+# mtmd links ggml and llama publicly and needs nothing from `common`, so `common`
+# is deliberately absent here: naming it would make ninja compile a static
+# library this app never calls.
 target_link_libraries(visionbridge_vlm PRIVATE
     mtmd
     llama
-    common
     ggml
     ${ANDROID_LOG_LIB}
 )

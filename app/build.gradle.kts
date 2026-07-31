@@ -44,6 +44,14 @@ android {
                     )
                     // Belt and braces: Gradle also refuses to hand CMake another ABI.
                     abiFilters += "arm64-v8a"
+
+                    // Zero bloat, and the difference between a two-minute and a
+                    // twenty-minute build. Enabling LLAMA_BUILD_TOOLS is required to
+                    // get libmtmd, but it also defines llama-cli, llama-bench,
+                    // llama-tts and a dozen other executables that AGP would
+                    // otherwise compile and then discard. Naming the target builds
+                    // only it and the static libraries it actually links.
+                    targets += "visionbridge_vlm"
                 }
             }
         }
