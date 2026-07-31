@@ -1,3 +1,4 @@
+.github/gradle-retry.sh
 .github/workflows/android-ci.yml
 .gitignore
 AGENTS.md

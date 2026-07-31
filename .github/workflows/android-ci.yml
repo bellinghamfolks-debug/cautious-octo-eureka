@@ -45,11 +45,13 @@ jobs:
       - name: Lint, unit tests, and assemble
         shell: bash
         run: |
-          set +e
-          ./gradlew --no-daemon --console=plain \
+          source .github/gradle-retry.sh
+          # `|| status=$?` keeps the step alive under `set -e` so the log is
+          # always printed before the exit status is propagated.
+          status=0
+          gradle_with_network_retry build.log \
             -Pvisionbridge.enableLocalVlm=false \
-            lintDebug testDebugUnitTest assembleDebug > build.log 2>&1
-          status=$?
+            lintDebug testDebugUnitTest assembleDebug || status=$?
           cat build.log
           exit "$status"
 
@@ -120,9 +122,9 @@ jobs:
       - name: Assemble with local VLM engine
         shell: bash
         run: |
-          set +e
-          ./gradlew --no-daemon --console=plain assembleDebug > native-build.log 2>&1
-          status=$?
+          source .github/gradle-retry.sh
+          status=0
+          gradle_with_network_retry native-build.log assembleDebug || status=$?
           tail -n 300 native-build.log
           exit "$status"
 
