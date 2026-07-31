@@ -28,7 +28,6 @@ import com.abdullah.visionbridge.R
 import com.abdullah.visionbridge.VisionBridgeApp
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
-import com.abdullah.visionbridge.data.ocr.InstantLocalOcrBridge
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
@@ -164,7 +163,7 @@ class MediaProjectionService : Service() {
         captureThread?.quitSafely()
         captureThread = null
         captureHandler = null
-        runBlocking { container.localVlmEngine.release("capture_service_destroyed") }
+        runBlocking { container.localOcrEngine.release("capture_service_destroyed") }
         DiagnosticHub.record("CAPTURE_SERVICE_DESTROYED")
         serviceScope.cancel()
         super.onDestroy()
@@ -174,13 +173,12 @@ class MediaProjectionService : Service() {
         super.onTrimMemory(level)
         if (level < TRIM_MEMORY_RUNNING_LOW) return
         DiagnosticHub.record(
-            "LOCAL_VLM_MEMORY_PRESSURE",
-            mapOf("trimLevel" to level, "engineLoaded" to container.localVlmEngine.isLoaded),
+            "PPOCR_MEMORY_PRESSURE",
+            mapOf("trimLevel" to level, "engineLoaded" to container.localOcrEngine.isLoaded),
         )
-        // Drop the weights rather than be killed mid-sentence. The next frame
-        // reloads them from the mmap'd file, which is far cheaper than a restart.
-        container.localVlmEngine.cancel()
-        serviceScope.launch { container.localVlmEngine.release("system_memory_pressure") }
+        // Release the sessions rather than be killed mid-sentence. The next frame reloads them,
+        // which for four small models is a fraction of a second.
+        serviceScope.launch { container.localOcrEngine.release("system_memory_pressure") }
     }
 
     private fun startProjection(resultCode: Int, resultData: Intent) {
@@ -476,12 +474,12 @@ class MediaProjectionService : Service() {
             mayRecover -> VISUAL_FEED_RECOVERING_MESSAGE
             else -> VISUAL_FEED_UNAVAILABLE_MESSAGE
         }
-        serviceScope.launch {
-            InstantLocalOcrBridge.publishSystemNotice(
-                text = message,
-                code = "VISUAL_FEED_UNAVAILABLE",
-            )
-        }
+        DiagnosticHub.record(
+            "SYSTEM_NOTICE_PUBLISHED",
+            mapOf("code" to "VISUAL_FEED_UNAVAILABLE", "text" to message),
+        )
+        container.runtime.notice(message)
+        serviceScope.launch { container.coordinator.speakNotice(message) }
     }
 
     private fun recordDroppedFrame(
@@ -705,7 +703,7 @@ class MediaProjectionService : Service() {
         "model" to settings.model,
         "forceCellular" to settings.forceCellular,
         "speechEnabled" to settings.speechEnabled,
-        "localOcrEnabled" to settings.localOcrEnabled,
+        "useLocalOcr" to settings.useLocalOcr,
         "trustGateEnabled" to settings.trustGateEnabled,
         "captureProfile" to settings.captureProfile.name,
         "interruptSpeechOnVisualChange" to settings.interruptSpeechOnVisualChange,

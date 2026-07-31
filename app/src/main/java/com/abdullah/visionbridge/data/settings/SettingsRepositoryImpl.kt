@@ -25,14 +25,13 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
             model = storedModel?.takeIf { it in AppSettings.SUPPORTED_MODELS } ?: AppSettings.DEFAULT_MODEL,
             forceCellular = values[Keys.FORCE_CELLULAR] ?: false,
             speechEnabled = values[Keys.SPEECH] ?: true,
-            localOcrEnabled = values[Keys.LOCAL_OCR] ?: true,
             // Versioned keys intentionally stop older aggressive defaults from surviving an upgrade.
             // Users can still re-enable either option explicitly from the accessible settings screen.
             trustGateEnabled = values[Keys.TRUST_GATE_V2] ?: false,
             captureProfile = CaptureProfile.fromStored(values[Keys.CAPTURE_PROFILE]),
             interruptSpeechOnVisualChange = values[Keys.INTERRUPT_SPEECH_V2] ?: false,
             sceneDescriptionStyle = SceneDescriptionStyle.fromStored(values[Keys.SCENE_DESCRIPTION_STYLE]),
-            useLocalVlm = values[Keys.USE_LOCAL_VLM] ?: false,
+            useLocalOcr = values[Keys.USE_LOCAL_OCR] ?: false,
             speechRate = (values[Keys.SPEECH_RATE] ?: 1.0f)
                 .coerceIn(AppSettings.MIN_SPEECH_RATE, AppSettings.MAX_SPEECH_RATE),
         )
@@ -47,7 +46,6 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
 
     override suspend fun setForceCellular(enabled: Boolean) = update(Keys.FORCE_CELLULAR, enabled)
     override suspend fun setSpeechEnabled(enabled: Boolean) = update(Keys.SPEECH, enabled)
-    override suspend fun setLocalOcrEnabled(enabled: Boolean) = update(Keys.LOCAL_OCR, enabled)
     override suspend fun setTrustGateEnabled(enabled: Boolean) = update(Keys.TRUST_GATE_V2, enabled)
     override suspend fun setCaptureProfile(profile: CaptureProfile) = update(Keys.CAPTURE_PROFILE, profile.name)
     override suspend fun setInterruptSpeechOnVisualChange(enabled: Boolean) =
@@ -55,7 +53,7 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
     override suspend fun setSceneDescriptionStyle(style: SceneDescriptionStyle) =
         update(Keys.SCENE_DESCRIPTION_STYLE, style.name)
 
-    override suspend fun setUseLocalVlm(enabled: Boolean) = update(Keys.USE_LOCAL_VLM, enabled)
+    override suspend fun setUseLocalOcr(enabled: Boolean) = update(Keys.USE_LOCAL_OCR, enabled)
 
     override suspend fun setSpeechRate(rate: Float) =
         update(Keys.SPEECH_RATE, rate.coerceIn(AppSettings.MIN_SPEECH_RATE, AppSettings.MAX_SPEECH_RATE))
@@ -69,12 +67,11 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
         val MODEL = stringPreferencesKey("model")
         val FORCE_CELLULAR = booleanPreferencesKey("force_cellular")
         val SPEECH = booleanPreferencesKey("speech")
-        val LOCAL_OCR = booleanPreferencesKey("local_ocr")
         val TRUST_GATE_V2 = booleanPreferencesKey("ocr_trust_gate_v2")
         val CAPTURE_PROFILE = stringPreferencesKey("capture_profile")
         val INTERRUPT_SPEECH_V2 = booleanPreferencesKey("interrupt_speech_on_visual_change_v2")
         val SCENE_DESCRIPTION_STYLE = stringPreferencesKey("scene_description_style")
-        val USE_LOCAL_VLM = booleanPreferencesKey("use_local_vlm")
+        val USE_LOCAL_OCR = booleanPreferencesKey("use_local_ocr")
         val SPEECH_RATE = floatPreferencesKey("speech_rate")
     }
 }

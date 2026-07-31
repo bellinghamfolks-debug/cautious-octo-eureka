@@ -22,8 +22,9 @@ Run exactly:
 
 A change is not complete until `lintDebug`, `testDebugUnitTest`, and `assembleDebug` all pass.
 
-For Kotlin-only work, `-Pvisionbridge.enableLocalVlm=false` skips the fifteen-minute native
-llama.cpp build. Any change under `app/src/main/cpp/` must be validated with the flag left on.
+There are no build flags and no native compilation step. The project is Kotlin only: the on-device
+reader is PP-OCRv5 driven through the prebuilt ONNX Runtime Android AAR, so a full build is minutes,
+not the hour a llama.cpp compile used to take.
 
 ## Important files
 - `capture/MediaProjectionService.kt`: foreground capture lifecycle and frame throttling.
@@ -43,8 +44,10 @@ llama.cpp build. Any change under `app/src/main/cpp/` must be validated with the
 - `data/vision/RoutingVisionRepository.kt`: cloud vs on-device routing for both Read and Describe.
   Never add a silent local-to-cloud fallback; choosing the local engine is a choice about where
   screen content goes.
-- `data/localvlm/`: the optional on-device VLM (llama.cpp + libmtmd through JNI). It implements the
+- `data/paddleocr/`: the optional on-device reader — PP-OCRv5 detection, orientation and the Arabic
+  and English recognition heads, run through ONNX Runtime. `PaddleOcrVisionRepository` implements the
   same `VisionAiRepository` interface as the cloud path, so the coordinator, reading ledger and
-  speech queue stay engine-agnostic. See `docs/LOCAL_VLM_SETUP.md`.
-- `app/src/main/cpp/`: pinned llama.cpp build and the JNI bridge. Token pieces must only cross into
-  Kotlin on UTF-8 character boundaries — Arabic code points are routinely split across tokens.
+  speech queue stay engine-agnostic. It reads text only and refuses scene description by design; do
+  not paper over that with a stub description. See `docs/LOCAL_OCR_SETUP.md`.
+- `data/paddleocr/RecognizedLine.kt`: the rule that picks between the two recognizers' readings of
+  the same crop. The two confidences are not comparable — read the comment there before changing it.

@@ -12,11 +12,10 @@ interface SettingsRepository {
     suspend fun setModel(model: String)
     suspend fun setForceCellular(enabled: Boolean)
     suspend fun setSpeechEnabled(enabled: Boolean)
-    suspend fun setLocalOcrEnabled(enabled: Boolean)
     suspend fun setTrustGateEnabled(enabled: Boolean)
     suspend fun setCaptureProfile(profile: CaptureProfile)
     suspend fun setInterruptSpeechOnVisualChange(enabled: Boolean)
     suspend fun setSceneDescriptionStyle(style: SceneDescriptionStyle)
-    suspend fun setUseLocalVlm(enabled: Boolean)
+    suspend fun setUseLocalOcr(enabled: Boolean)
     suspend fun setSpeechRate(rate: Float)
 }

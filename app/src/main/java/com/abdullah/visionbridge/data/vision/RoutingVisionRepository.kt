@@ -3,8 +3,8 @@ package com.abdullah.visionbridge.data.vision
 import android.graphics.Bitmap
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
-import com.abdullah.visionbridge.data.localvlm.LocalVlmEngine
-import com.abdullah.visionbridge.data.localvlm.LocalVlmModelStore
+import com.abdullah.visionbridge.data.paddleocr.PaddleOcrEngine
+import com.abdullah.visionbridge.data.paddleocr.PaddleOcrModelStore
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AnalysisResult
 import com.abdullah.visionbridge.domain.model.CaptureProfile
@@ -15,22 +15,22 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.first
 
 /**
- * Sends both Read and Describe to whichever engine the user has selected.
+ * Sends text reading to whichever engine the user has selected, and scene description to the cloud.
  *
- * The switch is read per request rather than cached, so toggling it takes effect
- * on the next captured frame without restarting capture.
+ * The switch is read per request, so turning it on or off takes effect on the next captured frame
+ * without restarting capture.
  *
- * There is deliberately no silent fallback from local to cloud. Choosing the
- * on-device engine is frequently a choice about where screen content goes, and
- * quietly uploading a frame because a model file was missing would break that
- * expectation without the user ever being told. A missing or unloadable model
- * raises an actionable error instead, which the coordinator speaks.
+ * Scene description has no on-device implementation: the local engine is a text recognizer. Rather
+ * than fail, describing falls through to the cloud, and the settings screen states that plainly so
+ * the split is never a surprise. Text reading keeps the stricter rule — it never silently leaves
+ * the device once local reading is on, because that choice is frequently a choice about where
+ * screen content goes.
  */
 class RoutingVisionRepository(
     private val cloud: VisionAiRepository,
     private val local: VisionAiRepository,
-    private val localEngine: LocalVlmEngine,
-    private val modelStore: LocalVlmModelStore,
+    private val localEngine: PaddleOcrEngine,
+    private val modelStore: PaddleOcrModelStore,
     private val settingsRepository: SettingsRepository,
 ) : VisionAiRepository {
 
@@ -46,21 +46,23 @@ class RoutingVisionRepository(
         onSpeechChunk: suspend (text: String, urgent: Boolean) -> Unit,
     ): AnalysisResult {
         val trace = currentCoroutineContext()[DiagnosticTrace]
-        val useLocal = settingsRepository.settings.first().useLocalVlm
+        val useLocalReading = settingsRepository.settings.first().useLocalOcr
+        val useLocalEngine = useLocalReading && mode == AnalysisMode.TEXT_READING
 
         DiagnosticHub.record(
             "VISION_ENGINE_SELECTED",
             trace.fieldsOrEmpty(
                 mapOf(
-                    "engine" to if (useLocal) "LOCAL_VLM" else "GEMINI_CLOUD",
+                    "engine" to if (useLocalEngine) "LOCAL_PPOCR" else "GEMINI_CLOUD",
                     "mode" to mode.name,
+                    "localReadingEnabled" to useLocalReading,
                     "localModelInstalled" to modelStore.isReady,
                     "localModelLoaded" to localEngine.isLoaded,
                 ),
             ),
         )
 
-        if (!useLocal) {
+        if (!useLocalEngine) {
             return cloud.analyzeStreaming(
                 bitmap = bitmap,
                 mode = mode,
@@ -74,7 +76,7 @@ class RoutingVisionRepository(
             )
         }
 
-        if (!modelStore.isReady) throw LocalVlmEngine.NotInstalledException()
+        if (!modelStore.isReady) throw PaddleOcrEngine.NotInstalledException(modelStore.missing())
 
         return local.analyzeStreaming(
             bitmap = bitmap,
@@ -84,9 +86,8 @@ class RoutingVisionRepository(
             forceCellular = forceCellular,
             sceneDescriptionStyle = sceneDescriptionStyle,
             captureProfile = captureProfile,
-            // The trust gate compares Gemini's Latin tokens against ML Kit output
-            // from the same frame. It is a cloud-specific check and does not apply
-            // to a local transcription, which never leaves the device.
+            // The trust gate compares Gemini's own output against a second opinion. On-device
+            // reading is the second opinion, so there is nothing here for it to check.
             trustGateEnabled = false,
             onSpeechChunk = onSpeechChunk,
         )

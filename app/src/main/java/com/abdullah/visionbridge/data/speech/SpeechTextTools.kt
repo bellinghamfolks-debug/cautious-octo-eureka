@@ -99,29 +99,4 @@ object SpeechTextTools {
     fun tokensForComparison(text: String): List<String> =
         normalizeForComparison(text).split(' ').filter { it.isNotBlank() }
 
-    /**
-     * Local ML Kit OCR is Latin-only. When Gemini later returns a bilingual result for the same
-     * frame, speak Arabic segments and only genuinely new English segments instead of reading the
-     * already-spoken local OCR again.
-     */
-    fun cloudDeltaAgainstLocal(cloudText: String, localText: String): String {
-        if (localText.isBlank()) return cloudText.trim()
-        val localTokens = tokensForComparison(localText).toSet()
-        if (localTokens.isEmpty()) return cloudText.trim()
-
-        return segment(cloudText)
-            .filter { speechSegment ->
-                speechSegment.language == SpeechLanguage.ARABIC ||
-                    !isCoveredByLocalText(speechSegment.text, localTokens)
-            }
-            .joinToString(" ") { it.text.trim() }
-            .trim()
-    }
-
-    private fun isCoveredByLocalText(segment: String, localTokens: Set<String>): Boolean {
-        val segmentTokens = tokensForComparison(segment).toSet()
-        if (segmentTokens.isEmpty()) return true
-        val overlap = segmentTokens.count { it in localTokens }.toDouble() / segmentTokens.size
-        return overlap >= 0.75
-    }
 }

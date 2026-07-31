@@ -6,7 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.abdullah.visionbridge.VisionBridgeApp
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
-import com.abdullah.visionbridge.data.localvlm.LocalVlmModelStore
+import com.abdullah.visionbridge.data.paddleocr.PaddleOcrModelStore
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
@@ -47,55 +47,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshLocalModelState()
     }
 
-    fun setUseLocalVlm(enabled: Boolean) = viewModelScope.launch {
-        container.settingsRepository.setUseLocalVlm(enabled)
-        if (!enabled) container.localVlmEngine.release("user_disabled_local_engine")
+    fun setUseLocalOcr(enabled: Boolean) = viewModelScope.launch {
+        container.settingsRepository.setUseLocalOcr(enabled)
+        if (!enabled) container.localOcrEngine.release("user_disabled_local_reader")
         refreshLocalModelState()
+        val missing = container.localOcrModelStore.missing()
         message.value = when {
-            !enabled -> "عاد التحليل إلى Gemini السحابي."
-            // Checked before the model files, because a build without the engine
-            // cannot be fixed by installing anything.
-            !container.localVlmEngine.isEngineAvailableInBuild() ->
-                "هذه النسخة من التطبيق لا تتضمن المحرك المحلي. ثبّت نسخة APK التي تحتوي المحرك المحلي."
-            !container.localVlmModelStore.isReady ->
-                "فعّلت الذكاء المحلي، لكن ملفي النموذج غير مثبتين بعد."
-            else -> "تم تفعيل الذكاء المحلي. القراءة والوصف سيعملان على الجهاز."
+            !enabled -> "عادت قراءة النص إلى Gemini السحابي."
+            missing.isEmpty() -> "تم تفعيل القراءة المحلية. قراءة النص تعمل على الجهاز، ووصف المشهد يبقى سحابياً."
+            else -> "فعّلت القراءة المحلية، لكن ينقص: " + missing.joinToString("، ") { it.label }
         }
     }
 
-    fun installLocalModelArtifact(artifact: LocalVlmModelStore.Artifact, source: Uri) =
+    fun installLocalModelArtifact(artifact: PaddleOcrModelStore.Artifact, source: Uri) =
         viewModelScope.launch {
-            message.value = "يجري نسخ ملف النموذج، قد يستغرق دقائق"
-            container.localVlmModelStore.install(artifact, source)
+            message.value = "يجري نسخ ${artifact.label}"
+            container.localOcrModelStore.install(artifact, source)
                 .onSuccess { file ->
                     refreshLocalModelState()
-                    val megabytes = file.length() / (1024 * 1024)
-                    message.value = "تم تثبيت ${artifactLabel(artifact)} بحجم $megabytes ميجابايت"
+                    val kilobytes = file.length() / 1024
+                    message.value = "تم تثبيت ${artifact.label}، الحجم $kilobytes كيلوبايت"
                 }
-                .onFailure { message.value = it.message ?: "تعذر تثبيت ملف النموذج" }
+                .onFailure { message.value = it.message ?: "تعذر تثبيت الملف" }
         }
 
     fun deleteLocalModel() = viewModelScope.launch {
-        container.localVlmEngine.release("model_deleted")
-        container.localVlmModelStore.deleteAll()
+        container.localOcrEngine.release("model_deleted")
+        container.localOcrModelStore.deleteAll()
         refreshLocalModelState()
-        message.value = "تم حذف ملفات النموذج المحلي"
-    }
-
-    private fun artifactLabel(artifact: LocalVlmModelStore.Artifact): String = when (artifact) {
-        LocalVlmModelStore.Artifact.WEIGHTS -> "ملف النموذج"
-        LocalVlmModelStore.Artifact.PROJECTOR -> "ملف الرؤية"
+        message.value = "تم حذف ملفات القارئ المحلي"
     }
 
     private fun refreshLocalModelState() {
-        val store = container.localVlmModelStore
-        val weights = store.fileFor(LocalVlmModelStore.Artifact.WEIGHTS)
-        val projector = store.fileFor(LocalVlmModelStore.Artifact.PROJECTOR)
+        val store = container.localOcrModelStore
         localModel.value = LocalModelUiState(
-            weightsMegabytes = if (weights.isFile) weights.length() / (1024 * 1024) else 0,
-            projectorMegabytes = if (projector.isFile) projector.length() / (1024 * 1024) else 0,
-            isReady = store.isReady,
-            engineAvailableInBuild = container.localVlmEngine.isEngineAvailableInBuild(),
+            installed = PaddleOcrModelStore.Artifact.entries.filter(store::isInstalled),
+            missing = store.missing(),
+            totalKilobytes = PaddleOcrModelStore.Artifact.entries
+                .sumOf { store.installedBytes(it) } / 1024,
         )
     }
 
@@ -128,10 +117,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setSpeechEnabled(enabled: Boolean) = viewModelScope.launch {
         container.settingsRepository.setSpeechEnabled(enabled)
-    }
-
-    fun setLocalOcrEnabled(enabled: Boolean) = viewModelScope.launch {
-        container.settingsRepository.setLocalOcrEnabled(enabled)
     }
 
     fun setTrustGateEnabled(enabled: Boolean) = viewModelScope.launch {
@@ -202,9 +187,9 @@ data class MainUiState(
 
 /** Installation state of the two on-device model files. */
 data class LocalModelUiState(
-    val weightsMegabytes: Long = 0,
-    val projectorMegabytes: Long = 0,
-    val isReady: Boolean = false,
-    /** False when the installed APK was built without the native engine. */
-    val engineAvailableInBuild: Boolean = true,
-)
+    val installed: List<PaddleOcrModelStore.Artifact> = emptyList(),
+    val missing: List<PaddleOcrModelStore.Artifact> = PaddleOcrModelStore.Artifact.entries.toList(),
+    val totalKilobytes: Long = 0,
+) {
+    val isReady: Boolean get() = missing.isEmpty()
+}

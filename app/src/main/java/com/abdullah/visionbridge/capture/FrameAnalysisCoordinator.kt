@@ -6,13 +6,10 @@ import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
 import com.abdullah.visionbridge.data.gemini.OcrTrustRejectedException
 import com.abdullah.visionbridge.data.gemini.StreamingSpeechBuffer
-import com.abdullah.visionbridge.data.ocr.LocalTextRecognizer
-import com.abdullah.visionbridge.data.ocr.SameFrameOcrEvidenceFilter
 import com.abdullah.visionbridge.data.speech.BilingualTtsEngine
 import com.abdullah.visionbridge.data.speech.ReadingLedger
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AnalysisResult
-import com.abdullah.visionbridge.domain.model.AnalysisSource
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
 import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
@@ -39,16 +36,16 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.EmptyCoroutineContext
 
 /**
- * Coordinates local OCR, the single Gemini lane, result freshness and speech.
+ * Coordinates the single analysis lane, result freshness and speech.
  *
- * The cloud lane deliberately owns at most one active request and one latest pending frame. A visual
- * target change marks an active result stale but never cancels a healthy HTTP/SSE request. Repeated
- * target changes therefore cannot starve Gemini by cancelling every request before its first token.
+ * The lane deliberately owns at most one active request and one latest pending frame, whichever
+ * engine serves it. A visual target change marks an active result stale but never cancels a healthy
+ * request, so repeated target changes cannot starve the analysis by cancelling every request before
+ * it produces anything.
  */
 class FrameAnalysisCoordinator(
     private val settingsRepository: SettingsRepository,
     private val apiKeyStore: ApiKeyStore,
-    private val localTextRecognizer: LocalTextRecognizer,
     private val analyzeFrame: AnalyzeFrameUseCase,
     private val tts: BilingualTtsEngine,
     private val runtime: CaptureRuntime,
@@ -59,7 +56,6 @@ class FrameAnalysisCoordinator(
         val visualGeneration: Long,
         val apiKey: String,
         val mode: AnalysisMode,
-        val localEvidence: String = "",
         val trace: DiagnosticTrace? = null,
         val queuedAtElapsedMs: Long = SystemClock.elapsedRealtime(),
     )
@@ -74,7 +70,6 @@ class FrameAnalysisCoordinator(
     private val cloudQueueLock = Any()
     private val visualGeneration = AtomicLong(0L)
     private val lastTrustFeedbackGeneration = AtomicLong(Long.MIN_VALUE)
-    private val evidenceFilter = SameFrameOcrEvidenceFilter()
     private val readingLedger = ReadingLedger()
 
     /** Visual generation that the reading currently being spoken belongs to. */
@@ -125,7 +120,7 @@ class FrameAnalysisCoordinator(
                     "mode" to settings.mode.name,
                     "captureProfile" to settings.captureProfile.name,
                     "trustGateEnabled" to settings.trustGateEnabled,
-                    "localOcrEnabled" to settings.localOcrEnabled,
+                    "useLocalOcr" to settings.useLocalOcr,
                 ),
             ),
         )
@@ -201,11 +196,7 @@ class FrameAnalysisCoordinator(
                 ),
             ),
         )
-        // With the on-device engine selected there is nothing to send to the cloud
-        // and no key to require, so ML Kit output stays evidence rather than speech.
-        val speakMlKitResult = key == null && !settings.useLocalVlm
-        val localText = recognizeLocal(bitmap, settings, generationAtCapture, speakMlKitResult, trace)
-        if (key == null && !settings.useLocalVlm) {
+        if (key == null && !settings.useLocalOcr) {
             DiagnosticHub.record(
                 "CLOUD_SKIPPED",
                 trace.fieldsOrEmpty(mapOf("reason" to "api_key_missing")),
@@ -220,11 +211,10 @@ class FrameAnalysisCoordinator(
                 visualGeneration = generationAtCapture,
                 apiKey = key.orEmpty(),
                 mode = AnalysisMode.TEXT_READING,
-                localEvidence = localText,
                 trace = trace,
             ),
             now = System.currentTimeMillis(),
-            minimumLaunchIntervalMs = if (localText.isBlank()) 600L else 850L,
+            minimumLaunchIntervalMs = STABLE_LAUNCH_INTERVAL_MS,
             pendingSnapshotIntervalMs = STABLE_PENDING_SNAPSHOT_INTERVAL_MS,
         )
     }
@@ -240,26 +230,14 @@ class FrameAnalysisCoordinator(
             "API_KEY_LOOKUP_COMPLETED",
             trace.fieldsOrEmpty(mapOf("hasApiKey" to (key != null))),
         )
-        if (key == null && !settings.useLocalVlm) {
-            recognizeLocal(bitmap, settings, generationAtCapture, true, trace)
+        if (key == null && !settings.useLocalOcr) {
             DiagnosticHub.record(
                 "CLOUD_SKIPPED",
                 trace.fieldsOrEmpty(mapOf("reason" to "api_key_missing")),
             )
             return
         }
-
-        if (settings.trustGateEnabled) {
-            val localText = recognizeLocal(bitmap, settings, generationAtCapture, false, trace)
-            queueFastText(bitmap, settings, generationAtCapture, key.orEmpty(), localText, trace)
-        } else {
-            DiagnosticHub.record(
-                "FAST_TEXT_PARALLEL_PATH",
-                trace.fieldsOrEmpty(mapOf("cloudQueuedBeforeLocalOcr" to true)),
-            )
-            queueFastText(bitmap, settings, generationAtCapture, key.orEmpty(), "", trace)
-            recognizeLocal(bitmap, settings, generationAtCapture, false, trace)
-        }
+        queueFastText(bitmap, settings, generationAtCapture, key.orEmpty(), trace)
     }
 
     private fun queueFastText(
@@ -267,7 +245,6 @@ class FrameAnalysisCoordinator(
         settings: AppSettings,
         generationAtCapture: Long,
         key: String,
-        localEvidence: String,
         trace: DiagnosticTrace?,
     ) {
         queueCloudFrame(
@@ -277,11 +254,10 @@ class FrameAnalysisCoordinator(
                 visualGeneration = generationAtCapture,
                 apiKey = key,
                 mode = AnalysisMode.TEXT_READING,
-                localEvidence = localEvidence,
                 trace = trace,
             ),
             now = System.currentTimeMillis(),
-            minimumLaunchIntervalMs = if (localEvidence.isBlank()) 450L else 650L,
+            minimumLaunchIntervalMs = FAST_LAUNCH_INTERVAL_MS,
             pendingSnapshotIntervalMs = FAST_PENDING_SNAPSHOT_INTERVAL_MS,
         )
     }
@@ -293,7 +269,7 @@ class FrameAnalysisCoordinator(
         trace: DiagnosticTrace?,
     ) {
         val key = apiKeyStore.get()
-        if (key == null && !settings.useLocalVlm) {
+        if (key == null && !settings.useLocalOcr) {
             throw IllegalStateException("أدخل مفتاح Gemini أولاً لاستخدام وصف المشهد")
         }
         val minimumInterval = when (settings.sceneDescriptionStyle) {
@@ -350,30 +326,12 @@ class FrameAnalysisCoordinator(
                 }
                 lastCloudSnapshotAt = now
 
-                val old = pendingCloudFrame
-                if (old != null && shouldKeepRicherPendingText(old, frame)) {
-                    DiagnosticHub.record(
-                        "CLOUD_FRAME_DROPPED",
-                        frame.trace.fieldsOrEmpty(
-                            mapOf(
-                                "reason" to "lower_text_evidence_than_pending",
-                                "pendingFrameId" to old.trace?.frameId,
-                                "pendingEvidenceScore" to textEvidenceScore(old.localEvidence),
-                                "incomingEvidenceScore" to textEvidenceScore(frame.localEvidence),
-                            ),
-                        ),
-                    )
-                    frame.bitmap.recycle()
-                    return
-                }
-
                 replacePendingLocked(frame, "replaced_by_newer_cloud_frame")
                 DiagnosticHub.record(
                     "CLOUD_FRAME_QUEUED_AS_LATEST",
                     frame.trace.fieldsOrEmpty(
                         mapOf(
                             "mode" to frame.mode.name,
-                            "localEvidenceScore" to textEvidenceScore(frame.localEvidence),
                             "activeFrameId" to activeCloudFrameId,
                         ),
                     ),
@@ -454,27 +412,6 @@ class FrameAnalysisCoordinator(
         launchCloud(next)
     }
 
-    /** A readable pending text frame is not evicted by a weaker frame from the same visual target. */
-    private fun shouldKeepRicherPendingText(
-        pending: PendingCloudFrame,
-        incoming: PendingCloudFrame,
-    ): Boolean {
-        if (pending.mode != AnalysisMode.TEXT_READING || incoming.mode != AnalysisMode.TEXT_READING) {
-            return false
-        }
-        if (pending.visualGeneration != incoming.visualGeneration) return false
-        val pendingScore = textEvidenceScore(pending.localEvidence)
-        val incomingScore = textEvidenceScore(incoming.localEvidence)
-        return pendingScore >= incomingScore + MIN_EVIDENCE_SCORE_ADVANTAGE
-    }
-
-    private fun textEvidenceScore(text: String): Int = text
-        .lineSequence()
-        .map(String::trim)
-        .filter(String::isNotBlank)
-        .filterNot { CAMERA_CHROME_TOKEN.matches(it) }
-        .sumOf { line -> line.length + EVIDENCE_LINE_BONUS }
-
     private fun launchCloud(frame: PendingCloudFrame) {
         val launched = cloudScope.launch(start = CoroutineStart.LAZY) {
             val thisJob = currentCoroutineContext()[Job]
@@ -488,7 +425,6 @@ class FrameAnalysisCoordinator(
                             settings = frame.settings,
                             apiKey = frame.apiKey,
                             generationAtCapture = frame.visualGeneration,
-                            localEvidence = frame.localEvidence,
                             trace = frame.trace,
                         )
                     }
@@ -635,111 +571,12 @@ class FrameAnalysisCoordinator(
         if (mode == AnalysisMode.TEXT_READING) lastCloudOcrAt = 0L else lastSceneAt = 0L
     }
 
-    private suspend fun recognizeLocal(
-        bitmap: Bitmap,
-        settings: AppSettings,
-        generationAtCapture: Long,
-        speakLocally: Boolean,
-        trace: DiagnosticTrace?,
-    ): String {
-        if (!settings.localOcrEnabled) {
-            DiagnosticHub.record(
-                "LOCAL_OCR_SKIPPED",
-                trace.fieldsOrEmpty(mapOf("reason" to "disabled")),
-            )
-            return ""
-        }
-        // ML Kit's recognizer is Latin-only. Pointed at an Arabic screen it does
-        // not fall silent, it invents Latin words from Arabic glyphs and states
-        // them confidently: a real device produced "SIM 2 ¿ lay eSIM Jluis" and
-        // "Library phone not font" from an ordinary Arabic settings page, which
-        // was then displayed and spoken as a result.
-        //
-        // The on-device VLM reads both scripts, so when it is the selected
-        // engine ML Kit contributes nothing and can only mislead.
-        if (settings.useLocalVlm) {
-            DiagnosticHub.record(
-                "LOCAL_OCR_SKIPPED",
-                trace.fieldsOrEmpty(
-                    mapOf("reason" to "local_vlm_engine_reads_both_scripts"),
-                ),
-            )
-            return ""
-        }
-        val started = SystemClock.elapsedRealtimeNanos()
-        DiagnosticHub.record("LOCAL_OCR_STARTED", trace.fieldsOrEmpty())
-        val outcome = runCatching { localTextRecognizer.recognize(bitmap) }
-        val localText = outcome.getOrElse { error ->
-            DiagnosticHub.failure("LOCAL_OCR", error, trace.fieldsOrEmpty())
-            ""
-        }
-        DiagnosticHub.record(
-            "LOCAL_OCR_COMPLETED",
-            trace.fieldsOrEmpty(
-                mapOf(
-                    "durationMs" to
-                        (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0,
-                    "text" to localText,
-                    "textLength" to localText.length,
-                    "blank" to localText.isBlank(),
-                    "speakLocally" to speakLocally,
-                ),
-            ),
-        )
-        if (localText.isNotBlank() && generationAtCapture == visualGeneration.get()) {
-            val result = AnalysisResult(
-                text = localText,
-                source = AnalysisSource.LOCAL_OCR,
-                language = if (localText.any { it in '\u0600'..'\u06FF' }) "mixed" else "en",
-            )
-            runtime.result(result)
-            DiagnosticHub.record(
-                "TEXT_DISPLAYED",
-                trace.fieldsOrEmpty(
-                    mapOf(
-                        "text" to localText,
-                        "source" to AnalysisSource.LOCAL_OCR.name,
-                        "language" to result.language,
-                    ),
-                ),
-            )
-            if (speakLocally && settings.speechEnabled) {
-                DiagnosticHub.record(
-                    "TTS_REQUESTED",
-                    trace.fieldsOrEmpty(
-                        mapOf(
-                            "text" to localText,
-                            "source" to "LOCAL_OCR",
-                            "rate" to settings.speechRate,
-                            "interruptPrevious" to false,
-                        ),
-                    ),
-                )
-                tts.speak(localText, false, settings.speechRate, false)
-            }
-        } else if (localText.isNotBlank()) {
-            DiagnosticHub.record(
-                "LOCAL_OCR_RESULT_SUPPRESSED",
-                trace.fieldsOrEmpty(
-                    mapOf(
-                        "reason" to "stale_visual_generation",
-                        "text" to localText,
-                        "capturedGeneration" to generationAtCapture,
-                        "currentGeneration" to visualGeneration.get(),
-                    ),
-                ),
-            )
-        }
-        return localText
-    }
-
     private suspend fun streamAnalysis(
         bitmap: Bitmap,
         mode: AnalysisMode,
         settings: AppSettings,
         apiKey: String,
         generationAtCapture: Long,
-        localEvidence: String,
         trace: DiagnosticTrace?,
     ): AnalysisResult {
         var firstSpeechBlock = true
@@ -753,8 +590,6 @@ class FrameAnalysisCoordinator(
                     "sceneDescriptionStyle" to settings.sceneDescriptionStyle.name,
                     "captureProfile" to settings.captureProfile.name,
                     "trustGateEnabled" to settings.trustGateEnabled,
-                    "localEvidence" to localEvidence,
-                    "localEvidenceLength" to localEvidence.length,
                     "bitmapWidth" to bitmap.width,
                     "bitmapHeight" to bitmap.height,
                 ),
@@ -793,29 +628,21 @@ class FrameAnalysisCoordinator(
                     return@speechChunk
                 }
 
-                val safeText = if (mode == AnalysisMode.TEXT_READING && settings.trustGateEnabled) {
-                    evidenceFilter.filter(streamedText, localEvidence)
-                } else {
-                    streamedText
-                }
                 DiagnosticHub.record(
                     "MODEL_TEXT_CHUNK_EMITTED",
                     trace.fieldsOrEmpty(
                         mapOf(
-                            "rawText" to streamedText,
-                            "text" to safeText,
+                            "text" to streamedText,
                             "urgent" to urgent,
-                            "removedByEvidenceFilter" to
-                                (streamedText.isNotBlank() && safeText.isBlank()),
                         ),
                     ),
                 )
-                if (settings.speechEnabled && safeText.isNotBlank()) {
+                if (settings.speechEnabled && streamedText.isNotBlank()) {
                     DiagnosticHub.record(
                         "TTS_REQUESTED",
                         trace.fieldsOrEmpty(
                             mapOf(
-                                "text" to safeText,
+                                "text" to streamedText,
                                 "source" to "GEMINI_STREAM",
                                 "rate" to settings.speechRate,
                                 "urgent" to urgent,
@@ -824,7 +651,7 @@ class FrameAnalysisCoordinator(
                         ),
                     )
                     tts.speak(
-                        text = safeText,
+                        text = streamedText,
                         urgent = urgent,
                         rate = settings.speechRate,
                         interruptPrevious = urgent && firstSpeechBlock,
@@ -846,26 +673,7 @@ class FrameAnalysisCoordinator(
             ),
         )
 
-        if (mode != AnalysisMode.TEXT_READING || !settings.trustGateEnabled) return rawResult
-        // An empty result means the frame simply had no text. It is not an untrustworthy reading,
-        // so it must not be reported as one.
-        if (rawResult.text.isBlank()) return rawResult
-        val safeFullText = evidenceFilter.filter(rawResult.text, localEvidence)
-        DiagnosticHub.record(
-            "EVIDENCE_FILTER_COMPLETED",
-            trace.fieldsOrEmpty(
-                mapOf(
-                    "rawText" to rawResult.text,
-                    "text" to safeFullText,
-                    "localEvidence" to localEvidence,
-                    "accepted" to safeFullText.isNotBlank(),
-                ),
-            ),
-        )
-        if (safeFullText.isBlank()) {
-            throw OcrTrustRejectedException("النص غير واضح بعد التحقق. قرّب الصورة أو ثبّت النظرة.")
-        }
-        return rawResult.copy(text = safeFullText)
+        return rawResult
     }
 
     private suspend fun notifyTrustRejection(
@@ -1206,6 +1014,13 @@ class FrameAnalysisCoordinator(
         if (orphanedPending) promotePendingIfIdle("watchdog_orphan_recovery")
     }
 
+    /** Speaks an operational notice that is not recognized content, such as a blank capture. */
+    suspend fun speakNotice(message: String) {
+        val settings = settingsRepository.settings.first()
+        if (!settings.speechEnabled) return
+        tts.speakFeedback(text = message, rate = settings.speechRate, interruptPrevious = true)
+    }
+
     fun stopSpeech() {
         DiagnosticHub.record("TTS_STOP_REQUESTED", mapOf("reason" to "capture_stopped"))
         tts.stop()
@@ -1259,8 +1074,8 @@ class FrameAnalysisCoordinator(
         const val SCENE_PENDING_SNAPSHOT_INTERVAL_MS = 500L
         const val BRIEF_SCENE_INTERVAL_MS = 650L
         const val COMPREHENSIVE_SCENE_INTERVAL_MS = 900L
-        const val MIN_EVIDENCE_SCORE_ADVANTAGE = 24
-        const val EVIDENCE_LINE_BONUS = 8
+        const val STABLE_LAUNCH_INTERVAL_MS = 850L
+        const val FAST_LAUNCH_INTERVAL_MS = 650L
 
         /**
          * Floor between two analyses of a visually identical page. It only applies while nothing has
@@ -1274,9 +1089,5 @@ class FrameAnalysisCoordinator(
         const val HEALTH_SNAPSHOT_INTERVAL_MS = 30_000L
         const val SPEECH_INTERRUPT_COOLDOWN_MS = 1_200L
 
-        val CAMERA_CHROME_TOKEN = Regex(
-            "^(?:LEICA|VIBR?|[0-9]+(?:\\.[0-9]+)?x?|lx)$",
-            RegexOption.IGNORE_CASE,
-        )
     }
 }

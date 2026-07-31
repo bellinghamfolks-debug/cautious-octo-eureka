@@ -22,7 +22,7 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.abdullah.visionbridge.capture.MediaProjectionService
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
-import com.abdullah.visionbridge.data.localvlm.LocalVlmModelStore
+import com.abdullah.visionbridge.data.paddleocr.PaddleOcrModelStore
 import com.abdullah.visionbridge.ui.theme.VisionBridgeTheme
 import java.io.File
 
@@ -46,18 +46,21 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // GGUF has no registered MIME type, so the picker stays unfiltered. The file is
-    // validated by magic bytes and size on import rather than by what it is called.
-    private val weightsPickerLauncher = registerForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        uri?.let { viewModel.installLocalModelArtifact(LocalVlmModelStore.Artifact.WEIGHTS, it) }
-    }
+    /**
+     * Which of the six PP-OCR files the open picker is filling. ONNX and plain-text dictionaries
+     * have no reliable MIME type, so the picker stays unfiltered and the file is validated by its
+     * magic bytes and size on import instead of by what it is called.
+     */
+    private var pendingArtifact: PaddleOcrModelStore.Artifact? = null
 
-    private val projectorPickerLauncher = registerForActivityResult(
+    private val artifactPickerLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
-        uri?.let { viewModel.installLocalModelArtifact(LocalVlmModelStore.Artifact.PROJECTOR, it) }
+        val artifact = pendingArtifact
+        pendingArtifact = null
+        if (uri != null && artifact != null) {
+            viewModel.installLocalModelArtifact(artifact, uri)
+        }
     }
 
     private val notificationPermissionLauncher = registerForActivityResult(
@@ -92,15 +95,16 @@ class MainActivity : ComponentActivity() {
                         onModelChange = viewModel::setModel,
                         onForceCellularChange = viewModel::setForceCellular,
                         onSpeechChange = viewModel::setSpeechEnabled,
-                        onLocalOcrChange = viewModel::setLocalOcrEnabled,
                         onTrustGateChange = viewModel::setTrustGateEnabled,
                         onCaptureProfileChange = viewModel::setCaptureProfile,
                         onInterruptSpeechChange = viewModel::setInterruptSpeechOnVisualChange,
                         onSceneDescriptionStyleChange = viewModel::setSceneDescriptionStyle,
                         onSpeechRateChange = viewModel::setSpeechRate,
-                        onUseLocalVlmChange = viewModel::setUseLocalVlm,
-                        onInstallWeights = { weightsPickerLauncher.launch(arrayOf("*/*")) },
-                        onInstallProjector = { projectorPickerLauncher.launch(arrayOf("*/*")) },
+                        onUseLocalOcrChange = viewModel::setUseLocalOcr,
+                        onInstallArtifact = { artifact ->
+                            pendingArtifact = artifact
+                            artifactPickerLauncher.launch(arrayOf("*/*"))
+                        },
                         onDeleteLocalModel = viewModel::deleteLocalModel,
                         onExportDiagnostics = {
                             viewModel.exportDiagnostics { file ->

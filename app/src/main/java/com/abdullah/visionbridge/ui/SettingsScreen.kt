@@ -46,6 +46,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import com.abdullah.visionbridge.data.paddleocr.PaddleOcrModelStore
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
@@ -66,15 +67,13 @@ fun SettingsScreen(
     onModelChange: (String) -> Unit,
     onForceCellularChange: (Boolean) -> Unit,
     onSpeechChange: (Boolean) -> Unit,
-    onLocalOcrChange: (Boolean) -> Unit,
     onTrustGateChange: (Boolean) -> Unit,
     onCaptureProfileChange: (CaptureProfile) -> Unit,
     onInterruptSpeechChange: (Boolean) -> Unit,
     onSceneDescriptionStyleChange: (SceneDescriptionStyle) -> Unit,
     onSpeechRateChange: (Float) -> Unit,
-    onUseLocalVlmChange: (Boolean) -> Unit,
-    onInstallWeights: () -> Unit,
-    onInstallProjector: () -> Unit,
+    onUseLocalOcrChange: (Boolean) -> Unit,
+    onInstallArtifact: (PaddleOcrModelStore.Artifact) -> Unit,
     onDeleteLocalModel: () -> Unit,
     onExportDiagnostics: () -> Unit,
     onBack: () -> Unit,
@@ -192,69 +191,57 @@ fun SettingsScreen(
                     }
                 }
 
-                SectionTitle("محرك التحليل")
+                SectionTitle("قراءة النص على الجهاز")
                 AccessibleSwitchRow(
-                    title = "استخدام الذكاء المحلي على الجهاز",
-                    description = if (state.settings.useLocalVlm) {
-                        "القراءة ووصف المشهد يعملان داخل الجهاز بلا إنترنت ولا إرسال للصور."
+                    title = "القراءة المحلية بلا إنترنت",
+                    description = if (state.settings.useLocalOcr) {
+                        "قراءة النص تعمل داخل الجهاز بالعربية والإنجليزية، بلا إرسال أي صورة."
                     } else {
-                        "الافتراضي: التحليل عبر Gemini السحابي، وهو أدق وأسرع."
+                        "الافتراضي: قراءة النص عبر Gemini السحابي، وهو أدق للنصوص الصعبة."
                     },
-                    checked = state.settings.useLocalVlm,
-                    onCheckedChange = onUseLocalVlmChange,
+                    checked = state.settings.useLocalOcr,
+                    onCheckedChange = onUseLocalOcrChange,
                 )
                 Text(
-                    text = when {
-                        // Stated first and unconditionally: no amount of installing
-                        // model files can help a build with no engine in it.
-                        !state.localModel.engineAvailableInBuild ->
-                            "تنبيه: هذه النسخة من التطبيق لا تتضمن المحرك المحلي، ولن يعمل مهما ثبّتّ من ملفات. " +
-                                "ثبّت نسخة APK التي تحتوي المحرك المحلي."
-                        state.localModel.isReady ->
-                            "النموذج المحلي مثبت: ${state.localModel.weightsMegabytes} و${state.localModel.projectorMegabytes} ميجابايت."
-                        state.settings.useLocalVlm ->
-                            "تنبيه: الذكاء المحلي مفعّل لكن الملفين غير مثبتين، ولن يعمل التحليل حتى تثبتهما."
-                        else -> "لتفعيل الذكاء المحلي ثبّت ملفي النموذج بصيغة GGUF."
+                    text = "وصف المشهد يعمل عبر Gemini السحابي دائماً. القارئ المحلي يقرأ النص فقط ولا يصف الصور.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    text = if (state.localModel.isReady) {
+                        "القارئ المحلي جاهز. الملفات الستة مثبتة بحجم ${state.localModel.totalKilobytes} كيلوبايت."
+                    } else {
+                        "ينقص لتشغيل القراءة المحلية: " +
+                            state.localModel.missing.joinToString("، ") { it.label }
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                 )
-                OutlinedButton(
-                    onClick = onInstallWeights,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp)
-                        .semantics {
-                            contentDescription = if (state.localModel.weightsMegabytes > 0) {
-                                "استبدال ملف النموذج، المثبت حالياً ${state.localModel.weightsMegabytes} ميجابايت"
-                            } else {
-                                "تثبيت ملف النموذج بصيغة جي جي يو إف"
-                            }
-                        },
-                ) { Text("تثبيت ملف النموذج (GGUF)") }
-                OutlinedButton(
-                    onClick = onInstallProjector,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp)
-                        .semantics {
-                            contentDescription = if (state.localModel.projectorMegabytes > 0) {
-                                "استبدال ملف الرؤية، المثبت حالياً ${state.localModel.projectorMegabytes} ميجابايت"
-                            } else {
-                                "تثبيت ملف الرؤية إم إم بروج"
-                            }
-                        },
-                ) { Text("تثبيت ملف الرؤية (mmproj)") }
-                if (state.localModel.weightsMegabytes > 0 || state.localModel.projectorMegabytes > 0) {
+                PaddleOcrModelStore.Artifact.entries.forEach { artifact ->
+                    val installed = artifact in state.localModel.installed
+                    OutlinedButton(
+                        onClick = { onInstallArtifact(artifact) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp)
+                            .semantics {
+                                contentDescription = if (installed) {
+                                    "${artifact.label}، مثبت. اضغط للاستبدال"
+                                } else {
+                                    "${artifact.label}، غير مثبت. اضغط للتثبيت"
+                                }
+                            },
+                    ) { Text(if (installed) "✓ ${artifact.label}" else "تثبيت ${artifact.label}") }
+                }
+                if (state.localModel.installed.isNotEmpty()) {
                     OutlinedButton(
                         onClick = onDeleteLocalModel,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(56.dp)
-                            .semantics { contentDescription = "حذف ملفات النموذج المحلي وتحرير المساحة" },
+                            .semantics { contentDescription = "حذف كل ملفات القارئ المحلي وتحرير المساحة" },
                     ) {
                         Icon(Icons.Default.Delete, contentDescription = null)
-                        Text(" حذف النموذج المحلي")
+                        Text(" حذف ملفات القارئ المحلي")
                     }
                 }
 
@@ -304,17 +291,6 @@ fun SettingsScreen(
                         },
                         checked = state.settings.trustGateEnabled,
                         onCheckedChange = onTrustGateChange,
-                    )
-                    AccessibleSwitchRow(
-                        title = "OCR محلي سريع للإنجليزية",
-                        description = if (state.settings.useLocalVlm) {
-                            "معطّل الآن لأن الذكاء المحلي مفعّل، وهو يقرأ العربية والإنجليزية معاً. " +
-                                "هذا المحرك لاتيني فقط وكان ينطق حروفاً مخترعة أمام النص العربي."
-                        } else {
-                            "يقرأ النص اللاتيني على الجهاز فوراً، ويستعين بـGemini للعربية والنص المختلط."
-                        },
-                        checked = state.settings.localOcrEnabled && !state.settings.useLocalVlm,
-                        onCheckedChange = onLocalOcrChange,
                     )
                 }
 

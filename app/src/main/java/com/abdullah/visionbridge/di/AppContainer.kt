@@ -6,12 +6,10 @@ import com.abdullah.visionbridge.capture.FrameAnalysisCoordinator
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticRecorder
 import com.abdullah.visionbridge.data.gemini.GeminiVisionRepository
-import com.abdullah.visionbridge.data.localvlm.LocalVlmEngine
-import com.abdullah.visionbridge.data.localvlm.LocalVlmModelStore
-import com.abdullah.visionbridge.data.localvlm.LocalVlmVisionRepository
+import com.abdullah.visionbridge.data.paddleocr.PaddleOcrEngine
+import com.abdullah.visionbridge.data.paddleocr.PaddleOcrModelStore
+import com.abdullah.visionbridge.data.paddleocr.PaddleOcrVisionRepository
 import com.abdullah.visionbridge.data.network.CellularNetworkManager
-import com.abdullah.visionbridge.data.ocr.InstantLocalOcrBridge
-import com.abdullah.visionbridge.data.ocr.LocalTextRecognizer
 import com.abdullah.visionbridge.data.security.AndroidKeystoreApiKeyStore
 import com.abdullah.visionbridge.data.settings.SettingsRepositoryImpl
 import com.abdullah.visionbridge.data.speech.BilingualTtsEngine
@@ -31,9 +29,9 @@ class AppContainer(context: Context) {
     private val networkManager = CellularNetworkManager(appContext)
     private val cloudVisionRepository = GeminiVisionRepository(networkManager)
 
-    /** On-device engine. Nothing is loaded until the user turns it on and a frame arrives. */
-    val localVlmModelStore = LocalVlmModelStore(appContext)
-    val localVlmEngine = LocalVlmEngine(appContext, localVlmModelStore)
+    /** On-device reader. Nothing is loaded until the user turns it on and a frame arrives. */
+    val localOcrModelStore = PaddleOcrModelStore(appContext)
+    val localOcrEngine = PaddleOcrEngine(localOcrModelStore)
 
     /**
      * Single entry point for both Read and Describe. The coordinator never learns
@@ -41,27 +39,16 @@ class AppContainer(context: Context) {
      */
     private val visionRepository: VisionAiRepository = RoutingVisionRepository(
         cloud = cloudVisionRepository,
-        local = LocalVlmVisionRepository(localVlmEngine),
-        localEngine = localVlmEngine,
-        modelStore = localVlmModelStore,
+        local = PaddleOcrVisionRepository(localOcrEngine),
+        localEngine = localOcrEngine,
+        modelStore = localOcrModelStore,
         settingsRepository = settingsRepository,
     )
     private val tts = BilingualTtsEngine(appContext)
 
-    init {
-        InstantLocalOcrBridge.initialize(
-            settingsRepository = settingsRepository,
-            runtime = runtime,
-            tts = tts,
-        )
-    }
-
-    private val localOcr = LocalTextRecognizer(appContext)
-
     val coordinator = FrameAnalysisCoordinator(
         settingsRepository = settingsRepository,
         apiKeyStore = apiKeyStore,
-        localTextRecognizer = localOcr,
         analyzeFrame = AnalyzeFrameUseCase(visionRepository),
         tts = tts,
         runtime = runtime,

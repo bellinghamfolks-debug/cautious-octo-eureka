@@ -14,11 +14,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Fast lane. Skips the native VLM build so lint, unit tests and Kotlin
-  # compilation errors surface in minutes rather than after a llama.cpp compile.
-  # The APK it produces is cloud-only and is not the shippable artifact.
+  # One lane, one APK. The on-device reader is PP-OCRv5 running on the
+  # ONNX Runtime Android AAR, so there is no C++ in this project any more and
+  # nothing to compile beyond Kotlin. The two-lane split existed only because
+  # llama.cpp took an hour to build; with that gone, the lane that runs the
+  # tests is also the lane that produces the shippable artifact, which removes
+  # the trap where two jobs each published a file called app-debug.apk and the
+  # wrong one got installed.
   build:
-    name: Lint, tests, and ARM64 debug APK (cloud engine only)
+    name: Lint, tests, and ARM64 debug APK
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -50,83 +54,8 @@ jobs:
           # always printed before the exit status is propagated.
           status=0
           gradle_with_network_retry build.log \
-            -Pvisionbridge.enableLocalVlm=false \
             lintDebug testDebugUnitTest assembleDebug || status=$?
           cat build.log
-          exit "$status"
-
-      - name: Upload build diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: build.log
-          if-no-files-found: error
-          retention-days: 3
-
-      # This lane deliberately publishes no APK. It builds one only as a
-      # compile check, and that APK has no libvisionbridge_vlm.so in it.
-      #
-      # It used to be uploaded, and because both lanes produce a file called
-      # app-debug.apk, the one without the engine was installed by mistake and
-      # the local model failed at runtime with "dlopen failed: library
-      # libvisionbridge_vlm.so not found". There is now exactly one installable
-      # artifact in the whole workflow, and its filename says what it is.
-
-      - name: Upload lint report on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: lint-report
-          path: app/build/reports/lint-results-debug.html
-          if-no-files-found: ignore
-
-  # Shippable lane. Compiles llama.cpp and libmtmd for arm64 and produces the APK
-  # that actually honours the "Use local AI" switch. Runs only after the fast lane
-  # is green, so a Kotlin typo never costs a native rebuild.
-  native:
-    name: ARM64 debug APK with on-device VLM engine
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-          cache: gradle
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android 35 SDK, NDK and CMake
-        run: |
-          yes | sdkmanager "platforms;android-35" "build-tools;35.0.0" \
-            "ndk;27.0.12077973" "cmake;3.22.1"
-
-      # The llama.cpp clone and its object files dominate this job. Keyed on the
-      # pinned tag so a version bump invalidates the cache and nothing else does.
-      - name: Cache native build
-        uses: actions/cache@v4
-        with:
-          path: |
-            app/.cxx
-            app/build/intermediates/cxx
-          key: native-${{ runner.os }}-${{ hashFiles('app/src/main/cpp/CMakeLists.txt', 'app/src/main/cpp/vlm_bridge.cpp') }}
-          restore-keys: native-${{ runner.os }}-
-
-      - name: Assemble with local VLM engine
-        shell: bash
-        run: |
-          source .github/gradle-retry.sh
-          status=0
-          gradle_with_network_retry native-build.log assembleDebug || status=$?
-          tail -n 300 native-build.log
           exit "$status"
 
       - name: Confirm the APK carries arm64 only
@@ -137,7 +66,7 @@ jobs:
           libs=$(unzip -Z1 "$apk" 'lib/*' | cut -d/ -f2 | sort -u)
           echo "ABIs in APK: ${libs:-none}"
           if [ -z "$libs" ]; then
-            echo "::error::No native library packaged; the local VLM engine is missing."
+            echo "::error::No native library packaged; ONNX Runtime is missing from the APK."
             exit 1
           fi
           if [ "$libs" != "arm64-v8a" ]; then
@@ -145,24 +74,15 @@ jobs:
             exit 1
           fi
 
-      - name: Upload native build log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-build-log
-          path: native-build.log
-          if-no-files-found: ignore
-          retention-days: 3
-
       # Named so the file itself is self-identifying once downloaded, rather
       # than being another anonymous app-debug.apk in a Downloads folder.
-      - name: Name the APK after the version and engine
+      - name: Name the APK after the version
         id: apk
         shell: bash
         run: |
           set -euo pipefail
           version=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n1)
-          name="VisionBridge-${version}-arm64-local-vlm.apk"
+          name="VisionBridge-${version}-arm64.apk"
           cp app/build/outputs/apk/debug/app-debug.apk "$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "Installable APK: $name ($(stat -c%s "$name") bytes)"
@@ -170,10 +90,27 @@ jobs:
       - name: Upload the installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: VisionBridge-arm64-debug-apk-with-local-vlm
+          name: VisionBridge-arm64-debug-apk
           path: ${{ steps.apk.outputs.name }}
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload lint report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
 
   diagnostics:
     name: Concise compiler diagnostics

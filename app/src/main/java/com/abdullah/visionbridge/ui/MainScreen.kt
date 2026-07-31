@@ -37,6 +37,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.abdullah.visionbridge.domain.model.AnalysisMode
+import com.abdullah.visionbridge.domain.model.AnalysisSource
 
 /**
  * The minimal operating surface: what the app is doing, what it should look for, and start or stop.
@@ -118,17 +119,20 @@ fun MainScreen(
                         Text(" إيقاف")
                     }
                 } else {
-                    // Deliberately enabled without a key: on-device Latin OCR still works offline.
+                    // Deliberately enabled without a key: the on-device reader works offline, so a
+                    // user who has installed it should not be blocked by a missing cloud key.
                     Button(
                         onClick = onStartCapture,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(72.dp)
                             .semantics {
-                                contentDescription = if (state.hasApiKey) {
-                                    "بدء مشاركة الشاشة والتحليل"
-                                } else {
-                                    "بدء مشاركة الشاشة، بدون مفتاح Gemini سيعمل OCR المحلي للإنجليزية فقط"
+                                contentDescription = when {
+                                    state.hasApiKey -> "بدء مشاركة الشاشة والتحليل"
+                                    state.settings.useLocalOcr ->
+                                        "بدء مشاركة الشاشة، القراءة تعمل على الجهاز بلا مفتاح"
+                                    else ->
+                                        "بدء مشاركة الشاشة، لا يوجد مفتاح Gemini ولا قارئ محلي مفعّل"
                                 }
                             },
                     ) {
@@ -170,7 +174,11 @@ private fun StatusCard(state: MainUiState) {
                 liveRegion = LiveRegionMode.Polite
                 contentDescription = buildString {
                     append("حالة التطبيق: ${state.capture.status}. ")
-                    if (!state.hasApiKey) append("لا يوجد مفتاح Gemini محفوظ. ")
+                    append(engineSummary(state))
+                    append(". ")
+                    if (!state.hasApiKey && !state.settings.useLocalOcr) {
+                        append("لا يوجد مفتاح Gemini محفوظ. ")
+                    }
                     state.capture.error?.let { append("الخطأ: $it. ") }
                     state.capture.lastResult?.text?.let { append("آخر نتيجة: $it") }
                 }
@@ -179,18 +187,34 @@ private fun StatusCard(state: MainUiState) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("الحالة", style = MaterialTheme.typography.titleLarge)
             Text(state.capture.status)
+            Text(engineSummary(state))
             if (state.capture.isProcessing) Text("يجري تحليل إطار جديد")
-            if (!state.hasApiKey) Text("لا يوجد مفتاح Gemini محفوظ. افتح الإعدادات لحفظه.")
+            if (!state.hasApiKey && !state.settings.useLocalOcr) {
+                Text("لا يوجد مفتاح Gemini محفوظ. افتح الإعدادات لحفظه.")
+            }
             state.capture.error?.let { Text("خطأ: $it", color = MaterialTheme.colorScheme.error) }
             state.capture.lastResult?.let {
                 Text("آخر نتيجة", style = MaterialTheme.typography.titleMedium)
                 Text(it.text)
-                Text("المصدر: " + when (it.source.name) {
-                    "LOCAL_OCR" -> "OCR محلي"
-                    "LOCAL_VLM" -> "ذكاء محلي على الجهاز"
-                    else -> "Gemini سحابي"
+                Text("المصدر: " + when (it.source) {
+                    AnalysisSource.LOCAL_OCR -> "قارئ محلي على الجهاز"
+                    AnalysisSource.GEMINI -> "Gemini سحابي"
                 })
             }
         }
     }
+}
+
+/**
+ * One line naming the engine each mode will actually use.
+ *
+ * Where screen content goes is not a detail a blind user should have to infer from a settings
+ * screen they are not currently on, so it is stated on the main surface and read out with the
+ * status.
+ */
+private fun engineSummary(state: MainUiState): String = when {
+    !state.settings.useLocalOcr -> "المحرك: Gemini سحابي للقراءة والوصف"
+    !state.localModel.isReady ->
+        "المحرك: القراءة المحلية مفعّلة لكن ملفاتها ناقصة. افتح الإعدادات وأكملها"
+    else -> "المحرك: قراءة النص على الجهاز، ووصف المشهد عبر Gemini السحابي"
 }
