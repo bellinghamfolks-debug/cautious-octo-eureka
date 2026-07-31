@@ -64,13 +64,14 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-      - name: Upload ARM64 debug APK (cloud engine only)
-        uses: actions/upload-artifact@v4
-        with:
-          name: VisionBridge-arm64-debug-apk-cloud-only
-          path: app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
-          retention-days: 14
+      # This lane deliberately publishes no APK. It builds one only as a
+      # compile check, and that APK has no libvisionbridge_vlm.so in it.
+      #
+      # It used to be uploaded, and because both lanes produce a file called
+      # app-debug.apk, the one without the engine was installed by mistake and
+      # the local model failed at runtime with "dlopen failed: library
+      # libvisionbridge_vlm.so not found". There is now exactly one installable
+      # artifact in the whole workflow, and its filename says what it is.
 
       - name: Upload lint report on failure
         if: failure()
@@ -153,11 +154,24 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
-      - name: Upload ARM64 debug APK with local VLM
+      # Named so the file itself is self-identifying once downloaded, rather
+      # than being another anonymous app-debug.apk in a Downloads folder.
+      - name: Name the APK after the version and engine
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n1)
+          name="VisionBridge-${version}-arm64-local-vlm.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "Installable APK: $name ($(stat -c%s "$name") bytes)"
+
+      - name: Upload the installable APK
         uses: actions/upload-artifact@v4
         with:
           name: VisionBridge-arm64-debug-apk-with-local-vlm
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ steps.apk.outputs.name }}
           if-no-files-found: error
           retention-days: 14
 

@@ -649,6 +649,23 @@ class FrameAnalysisCoordinator(
             )
             return ""
         }
+        // ML Kit's recognizer is Latin-only. Pointed at an Arabic screen it does
+        // not fall silent, it invents Latin words from Arabic glyphs and states
+        // them confidently: a real device produced "SIM 2 ¿ lay eSIM Jluis" and
+        // "Library phone not font" from an ordinary Arabic settings page, which
+        // was then displayed and spoken as a result.
+        //
+        // The on-device VLM reads both scripts, so when it is the selected
+        // engine ML Kit contributes nothing and can only mislead.
+        if (settings.useLocalVlm) {
+            DiagnosticHub.record(
+                "LOCAL_OCR_SKIPPED",
+                trace.fieldsOrEmpty(
+                    mapOf("reason" to "local_vlm_engine_reads_both_scripts"),
+                ),
+            )
+            return ""
+        }
         val started = SystemClock.elapsedRealtimeNanos()
         DiagnosticHub.record("LOCAL_OCR_STARTED", trace.fieldsOrEmpty())
         val outcome = runCatching { localTextRecognizer.recognize(bitmap) }

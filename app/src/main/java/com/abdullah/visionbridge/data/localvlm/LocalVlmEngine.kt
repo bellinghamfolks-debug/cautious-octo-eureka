@@ -42,6 +42,19 @@ class LocalVlmEngine(
         "تعذر تحميل النموذج المحلي. تأكد من صحة الملفين ومن توفر ذاكرة كافية."
     )
 
+    /**
+     * The APK was built without the native engine.
+     *
+     * The raw platform message for this is "dlopen failed: library
+     * libvisionbridge_vlm.so not found", which tells a blind user nothing they
+     * can act on. It is replaced with the actual remedy: install the build that
+     * contains the engine.
+     */
+    class EngineMissingFromBuildException : IllegalStateException(
+        "هذه النسخة من التطبيق لا تتضمن المحرك المحلي. ثبّت نسخة APK التي تحتوي المحرك المحلي، " +
+            "أو أوقف مفتاح الذكاء المحلي لتعود إلى Gemini السحابي."
+    )
+
     private val appContext = context.applicationContext
     private val lifecycleMutex = Mutex()
     private val inferenceMutex = Mutex()
@@ -63,7 +76,19 @@ class LocalVlmEngine(
 
         withContext(Dispatchers.IO) {
             runCatching {
-                System.loadLibrary(NATIVE_LIBRARY)
+                try {
+                    System.loadLibrary(NATIVE_LIBRARY)
+                } catch (missing: UnsatisfiedLinkError) {
+                    DiagnosticHub.record(
+                        "LOCAL_VLM_NATIVE_LIBRARY_MISSING",
+                        mapOf(
+                            "library" to NATIVE_LIBRARY,
+                            "platformMessage" to missing.message,
+                            "cause" to "apk_built_without_local_vlm_engine",
+                        ),
+                    )
+                    throw EngineMissingFromBuildException()
+                }
 
                 val threads = inferenceThreadCount()
                 val started = SystemClock.elapsedRealtimeNanos()

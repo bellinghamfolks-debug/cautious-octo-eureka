@@ -302,8 +302,13 @@ fun SettingsScreen(
                     )
                     AccessibleSwitchRow(
                         title = "OCR محلي سريع للإنجليزية",
-                        description = "يقرأ النص اللاتيني على الجهاز فوراً، ويستعين بـGemini للعربية والنص المختلط.",
-                        checked = state.settings.localOcrEnabled,
+                        description = if (state.settings.useLocalVlm) {
+                            "معطّل الآن لأن الذكاء المحلي مفعّل، وهو يقرأ العربية والإنجليزية معاً. " +
+                                "هذا المحرك لاتيني فقط وكان ينطق حروفاً مخترعة أمام النص العربي."
+                        } else {
+                            "يقرأ النص اللاتيني على الجهاز فوراً، ويستعين بـGemini للعربية والنص المختلط."
+                        },
+                        checked = state.settings.localOcrEnabled && !state.settings.useLocalVlm,
                         onCheckedChange = onLocalOcrChange,
                     )
                 }
