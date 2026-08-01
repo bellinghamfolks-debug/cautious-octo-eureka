@@ -65,13 +65,19 @@ object BidiTextOrder {
         }
     }
 
+    /**
+     * Ranges are written as escapes rather than as literal characters on purpose. The top of the
+     * Arabic Presentation Forms-B block is U+FEFF, which is also the byte-order mark: writing it
+     * literally puts a real BOM in the middle of this file. The range stops at U+FEFC, the last
+     * assigned presentation form, so the BOM is not treated as a letter either way.
+     */
     private fun isRightToLeftLetter(value: Char): Boolean =
-        value in '֐'..'׿' || // Hebrew
-            value in '؀'..'ۿ' || // Arabic
-            value in 'ݐ'..'ݿ' || // Arabic Supplement
-            value in 'ࢠ'..'ࣿ' || // Arabic Extended-A
-            value in 'ﭐ'..'﷿' || // Arabic Presentation Forms-A
-            value in 'ﹰ'..'﻿' // Arabic Presentation Forms-B
+        value in '\u0590'..'\u05FF' || // Hebrew
+            value in '\u0600'..'\u06FF' || // Arabic
+            value in '\u0750'..'\u077F' || // Arabic Supplement
+            value in '\u08A0'..'\u08FF' || // Arabic Extended-A
+            value in '\uFB50'..'\uFDFF' || // Arabic Presentation Forms-A
+            value in '\uFE70'..'\uFEFC' // Arabic Presentation Forms-B
 
     /**
      * Arabic-Indic digits are excluded deliberately: they belong to the Arabic block but are written
