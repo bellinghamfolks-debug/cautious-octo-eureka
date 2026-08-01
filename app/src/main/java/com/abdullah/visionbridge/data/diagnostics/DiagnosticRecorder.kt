@@ -860,6 +860,10 @@ class DiagnosticRecorder(context: Context) {
             "below_fast_change_thresholds",
             "below_stable_change_thresholds",
             "waiting_for_target_settling",
+            // Not analysing an unchanged screen is the single biggest thing keeping a page from
+            // being re-read. Reporting it as an anomaly buried one real session under 468 warnings
+            // about the pipeline working exactly as designed.
+            "change_detector_rejected",
         )
         val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "heic", "bmp", "gif")
 

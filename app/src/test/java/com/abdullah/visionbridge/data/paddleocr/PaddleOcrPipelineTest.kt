@@ -298,3 +298,84 @@ class PageAssemblerTest {
         assertEquals("نص", page)
     }
 }
+
+/**
+ * Every case here is a string the recognizer actually produced on a real phone, paired with what
+ * the screen actually said.
+ */
+class BidiTextOrderTest {
+
+    @Test
+    fun `an arabic line comes back in logical order`() {
+        assertEquals(
+            "نقطة الاتصال المحمولة",
+            BidiTextOrder.toLogicalOrder("ةلومحملا لاصتالا ةطقن"),
+        )
+        assertEquals("الإعدادات", BidiTextOrder.toLogicalOrder("تادادعإلا"))
+        assertEquals("إضافة شبكة", BidiTextOrder.toLogicalOrder("ةكبش ةفاضإ"))
+        assertEquals(
+            "مزيد من خيارات الاتصال",
+            BidiTextOrder.toLogicalOrder("لاصتالا تارايخ نم ديزم"),
+        )
+    }
+
+    /** Reversing the whole string would turn Wi-Fi into iF-iW. */
+    @Test
+    fun `a latin run inside an arabic line keeps its own direction`() {
+        assertEquals("شبكة Wi-Fi", BidiTextOrder.toLogicalOrder("Wi-Fi ةكبش"))
+        assertEquals("مشغل Bluetooth", BidiTextOrder.toLogicalOrder("Bluetooth لغشم"))
+    }
+
+    @Test
+    fun `digits inside an arabic line stay in reading order`() {
+        assertEquals("الإصدار 2.0.0", BidiTextOrder.toLogicalOrder("2.0.0 رادصإلا"))
+        assertEquals("جهاز 1", BidiTextOrder.toLogicalOrder("1 زاهج"))
+    }
+
+    /** A line with no right-to-left script was never reversed, so it must not be touched. */
+    @Test
+    fun `a latin only line is returned unchanged`() {
+        assertEquals("Battery Health", BidiTextOrder.toLogicalOrder("Battery Health"))
+        assertEquals("Xiaomi HyperAI", BidiTextOrder.toLogicalOrder("Xiaomi HyperAI"))
+        assertEquals("", BidiTextOrder.toLogicalOrder(""))
+    }
+
+    @Test
+    fun `brackets are mirrored so a span still opens before it closes`() {
+        assertEquals("(شبكة)", BidiTextOrder.toLogicalOrder("(ةكبش)"))
+    }
+}
+
+class RecognitionDictionaryTest {
+
+    /**
+     * The metadata ends with a newline. Keeping the empty entry it produces added a phantom class
+     * before the space, so the model's space index landed on the phantom and every space decoded as
+     * "" — a whole screen arrived as one run-on word while every other character was correct.
+     */
+    @Test
+    fun `a trailing newline does not add a phantom class`() {
+        val parsed = RecognitionDictionary.parse("a\nb\nc\n")
+        assertEquals(listOf("a", "b", "c", " "), parsed)
+    }
+
+    @Test
+    fun `the space class is the last entry so the model index reaches it`() {
+        // Real proportions: the Arabic head reports 749 classes for 747 characters plus blank plus
+        // space. Class index 748 must resolve to a space, which is dictionary[747] after the blank.
+        val raw = (1..747).joinToString("\n") { "c$it" } + "\n"
+        val parsed = RecognitionDictionary.parse(raw)
+        assertEquals(748, parsed.size)
+        assertEquals(" ", parsed[747])
+    }
+
+    @Test
+    fun `windows line endings are stripped`() {
+        assertEquals(listOf("a", "b", " "), RecognitionDictionary.parse("a\r\nb\r\n"))
+    }
+
+    @Test
+    fun `a file without a trailing newline keeps every character`() {
+        assertEquals(listOf("a", "b", " "), RecognitionDictionary.parse("a\nb"))
+    }
+}

@@ -170,10 +170,7 @@ class PaddleOcrEngine(
     private fun dictionaryOf(session: OrtSession, name: String): List<String> {
         val metadata = runCatching { session.metadata.customMetadata }.getOrNull().orEmpty()
         val raw = metadata[DICTIONARY_METADATA_KEY] ?: throw DictionaryMissingException(name)
-        // PaddleOCR appends the space class after the dictionary when a model is trained with
-        // use_space_char, which every released mobile recognizer is. Without it every space between
-        // words disappears and a screen is spoken as one run-on word.
-        return raw.split('\n').map { it.trimEnd('\r') } + " "
+        return RecognitionDictionary.parse(raw)
     }
 
     private fun containsLatinLetters(dictionary: List<String>): Boolean =
@@ -341,8 +338,10 @@ class PaddleOcrEngine(
         val steps = shape[shape.size - 2].toInt()
         val classes = shape[shape.size - 1].toInt()
         val decoded = CtcDecoder.decode(output, steps, classes, dictionary)
-        if (decoded.text.isBlank()) null
-        else LineReading(decoded.text, decoded.confidence, script)
+        // The decoder emits image-column order. Arabic reads the other way, so this is where a
+        // correct recognition stops being backwards.
+        val text = BidiTextOrder.toLogicalOrder(decoded.text)
+        if (text.isBlank()) null else LineReading(text, decoded.confidence, script)
     }
 
     /** Runs one session and hands the flattened output plus its shape to [consume]. */

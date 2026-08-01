@@ -25,12 +25,14 @@ app/src/main/java/com/abdullah/visionbridge/data/gemini/OcrTrustRejectedExceptio
 app/src/main/java/com/abdullah/visionbridge/data/gemini/TextImageEnhancer.kt
 app/src/main/java/com/abdullah/visionbridge/data/network/CellularNetworkManager.kt
 app/src/main/java/com/abdullah/visionbridge/data/network/DiagnosticNetworkEventListener.kt
+app/src/main/java/com/abdullah/visionbridge/data/paddleocr/BidiTextOrder.kt
 app/src/main/java/com/abdullah/visionbridge/data/paddleocr/BundledOcrModels.kt
 app/src/main/java/com/abdullah/visionbridge/data/paddleocr/CtcDecoder.kt
 app/src/main/java/com/abdullah/visionbridge/data/paddleocr/DbPostProcessor.kt
 app/src/main/java/com/abdullah/visionbridge/data/paddleocr/OcrImagePreprocessor.kt
 app/src/main/java/com/abdullah/visionbridge/data/paddleocr/PaddleOcrEngine.kt
 app/src/main/java/com/abdullah/visionbridge/data/paddleocr/PaddleOcrVisionRepository.kt
+app/src/main/java/com/abdullah/visionbridge/data/paddleocr/RecognitionDictionary.kt
 app/src/main/java/com/abdullah/visionbridge/data/paddleocr/RecognizedLine.kt
 app/src/main/java/com/abdullah/visionbridge/data/paddleocr/TextBox.kt
 app/src/main/java/com/abdullah/visionbridge/data/security/AndroidKeystoreApiKeyStore.kt
