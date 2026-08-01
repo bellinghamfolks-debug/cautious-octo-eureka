@@ -10,6 +10,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
+import com.abdullah.visionbridge.domain.model.LocalReadingQuality
 import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
 import com.abdullah.visionbridge.domain.repository.SettingsRepository
 import kotlinx.coroutines.flow.Flow
@@ -32,6 +33,8 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
             interruptSpeechOnVisualChange = values[Keys.INTERRUPT_SPEECH_V2] ?: false,
             sceneDescriptionStyle = SceneDescriptionStyle.fromStored(values[Keys.SCENE_DESCRIPTION_STYLE]),
             useLocalOcr = values[Keys.USE_LOCAL_OCR] ?: false,
+            localReadingQuality =
+                LocalReadingQuality.fromStored(values[Keys.LOCAL_READING_QUALITY]),
             speechRate = (values[Keys.SPEECH_RATE] ?: 1.0f)
                 .coerceIn(AppSettings.MIN_SPEECH_RATE, AppSettings.MAX_SPEECH_RATE),
         )
@@ -55,6 +58,9 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
 
     override suspend fun setUseLocalOcr(enabled: Boolean) = update(Keys.USE_LOCAL_OCR, enabled)
 
+    override suspend fun setLocalReadingQuality(quality: LocalReadingQuality) =
+        update(Keys.LOCAL_READING_QUALITY, quality.name)
+
     override suspend fun setSpeechRate(rate: Float) =
         update(Keys.SPEECH_RATE, rate.coerceIn(AppSettings.MIN_SPEECH_RATE, AppSettings.MAX_SPEECH_RATE))
 
@@ -72,6 +78,7 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
         val INTERRUPT_SPEECH_V2 = booleanPreferencesKey("interrupt_speech_on_visual_change_v2")
         val SCENE_DESCRIPTION_STYLE = stringPreferencesKey("scene_description_style")
         val USE_LOCAL_OCR = booleanPreferencesKey("use_local_ocr")
+        val LOCAL_READING_QUALITY = stringPreferencesKey("local_reading_quality")
         val SPEECH_RATE = floatPreferencesKey("speech_rate")
     }
 }

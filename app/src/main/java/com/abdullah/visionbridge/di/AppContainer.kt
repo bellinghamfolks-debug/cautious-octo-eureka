@@ -40,7 +40,7 @@ class AppContainer(context: Context) {
      */
     private val visionRepository: VisionAiRepository = RoutingVisionRepository(
         cloud = cloudVisionRepository,
-        local = PaddleOcrVisionRepository(localOcrEngine),
+        local = PaddleOcrVisionRepository(localOcrEngine, settingsRepository),
         localEngine = localOcrEngine,
         settingsRepository = settingsRepository,
     )

@@ -49,6 +49,7 @@ app/src/main/java/com/abdullah/visionbridge/domain/model/AnalysisResult.kt
 app/src/main/java/com/abdullah/visionbridge/domain/model/AppSettings.kt
 app/src/main/java/com/abdullah/visionbridge/domain/model/CaptureProfile.kt
 app/src/main/java/com/abdullah/visionbridge/domain/model/CaptureState.kt
+app/src/main/java/com/abdullah/visionbridge/domain/model/LocalReadingQuality.kt
 app/src/main/java/com/abdullah/visionbridge/domain/model/SceneDescriptionStyle.kt
 app/src/main/java/com/abdullah/visionbridge/domain/repository/ApiKeyStore.kt
 app/src/main/java/com/abdullah/visionbridge/domain/repository/SettingsRepository.kt
@@ -72,6 +73,7 @@ app/src/test/java/com/abdullah/visionbridge/data/paddleocr/PaddleOcrPipelineTest
 app/src/test/java/com/abdullah/visionbridge/data/speech/DocumentSpeechPolicyTest.kt
 app/src/test/java/com/abdullah/visionbridge/data/speech/ReadingLedgerTest.kt
 app/src/test/java/com/abdullah/visionbridge/data/speech/SpeechTextToolsTest.kt
+app/src/test/java/com/abdullah/visionbridge/domain/model/LocalReadingQualityTest.kt
 build.gradle.kts
 docs/LOCAL_OCR_SETUP.md
 gradle.properties

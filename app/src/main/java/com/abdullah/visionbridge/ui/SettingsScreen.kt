@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
+import com.abdullah.visionbridge.domain.model.LocalReadingQuality
 import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
 import kotlin.math.roundToInt
 
@@ -72,6 +73,7 @@ fun SettingsScreen(
     onSceneDescriptionStyleChange: (SceneDescriptionStyle) -> Unit,
     onSpeechRateChange: (Float) -> Unit,
     onUseLocalOcrChange: (Boolean) -> Unit,
+    onLocalReadingQualityChange: (LocalReadingQuality) -> Unit,
     onExportDiagnostics: () -> Unit,
     onBack: () -> Unit,
     onMessageConsumed: () -> Unit,
@@ -208,6 +210,47 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                 )
+
+                if (state.settings.useLocalOcr) {
+                    Text(
+                        text = "دقة القراءة المحلية",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        text = "كلما ارتفعت الدقة رأى المحرك تفاصيل أدق في الخط الصغير والبعيد، " +
+                            "وزاد زمن قراءة الصفحة. الافتراضي متوازن.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    LocalReadingQuality.entries.forEach { quality ->
+                        val selected = state.settings.localReadingQuality == quality
+                        val label = when (quality) {
+                            LocalReadingQuality.FAST -> "سريع"
+                            LocalReadingQuality.BALANCED -> "متوازن"
+                            LocalReadingQuality.MAXIMUM -> "أقصى دقة"
+                        }
+                        val detail = when (quality) {
+                            LocalReadingQuality.FAST ->
+                                "الأسرع. للنص الكبير والمتحرك والترجمات."
+                            LocalReadingQuality.BALANCED ->
+                                "يرى ضعف تفاصيل السريع تقريباً. مناسب لأغلب الشاشات."
+                            LocalReadingQuality.MAXIMUM ->
+                                "يستخدم كل تفاصيل اللقطة. للخط الدقيق واللافتات البعيدة والمستندات الكثيفة، وهو الأبطأ."
+                        }
+                        OutlinedButton(
+                            onClick = { onLocalReadingQualityChange(quality) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp)
+                                .semantics {
+                                    contentDescription = if (selected) {
+                                        "$label، مختار حالياً. $detail"
+                                    } else {
+                                        "$label. $detail"
+                                    }
+                                },
+                        ) { Text(if (selected) "\u2713 $label" else label) }
+                    }
+                }
 
                 if (state.settings.mode == AnalysisMode.TEXT_READING) {
                     SectionTitle("طريقة التقاط النص")

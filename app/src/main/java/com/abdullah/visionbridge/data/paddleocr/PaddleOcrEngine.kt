@@ -7,6 +7,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.SystemClock
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
+import com.abdullah.visionbridge.domain.model.LocalReadingQuality
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -65,6 +66,9 @@ class PaddleOcrEngine(
         }
     }
 
+    @Volatile
+    private var xnnpackEnabled = false
+
     private val lifecycleMutex = Mutex()
     private val inferenceMutex = Mutex()
 
@@ -90,6 +94,12 @@ class PaddleOcrEngine(
                     // did: starving them is what makes an assistive app feel broken.
                     setIntraOpNumThreads(inferenceThreadCount())
                     setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                    // XNNPACK ships inside the onnxruntime-android AAR but is not used unless it is
+                    // registered. It is ARM-optimised for exactly these convolutions, and the time
+                    // it saves is what pays for letting the user raise the detector's resolution.
+                    // Registration is best-effort: a device where it will not initialise must fall
+                    // back to the default CPU path rather than lose on-device reading entirely.
+                    xnnpackEnabled = runCatching { addXnnpack(emptyMap()) }.isSuccess
                 }
 
                 // Sessions are tracked as they open so that a failure part-way through — a
@@ -145,6 +155,7 @@ class PaddleOcrEngine(
                         "arabicHeadIsMultilingual" to loaded.arabicHeadIsMultilingual,
                         "latinHeadCarriesArabic" to containsArabicLetters(loaded.latinDictionary),
                         "threads" to inferenceThreadCount(),
+                        "xnnpack" to xnnpackEnabled,
                     ),
                 )
             }.recoverCatching { error ->
@@ -189,12 +200,15 @@ class PaddleOcrEngine(
     }
 
     /** Reads every text line in [bitmap] and returns the page in visual reading order. */
-    suspend fun read(bitmap: Bitmap): PaddleOcrResult = inferenceMutex.withLock {
+    suspend fun read(
+        bitmap: Bitmap,
+        quality: LocalReadingQuality = LocalReadingQuality.BALANCED,
+    ): PaddleOcrResult = inferenceMutex.withLock {
         val active = sessions ?: throw NotPackagedException()
 
         withContext(Dispatchers.Default) {
             val started = SystemClock.elapsedRealtimeNanos()
-            val boxes = detect(active, bitmap)
+            val boxes = detect(active, bitmap, quality)
             val detectMs = (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0
             DiagnosticHub.record(
                 "PPOCR_DETECTION_COMPLETED",
@@ -203,13 +217,16 @@ class PaddleOcrEngine(
                     "boxCount" to boxes.size,
                     "sourceWidth" to bitmap.width,
                     "sourceHeight" to bitmap.height,
+                    "quality" to quality.name,
+                    "detectionLongEdge" to quality.detectionLongEdge,
+                    "xnnpack" to xnnpackEnabled,
                 ),
             )
             if (boxes.isEmpty()) return@withContext PaddleOcrResult("", 0f, 0)
 
             val recognitionStarted = SystemClock.elapsedRealtimeNanos()
             val lines = TextLineOrdering.groupIntoLines(boxes).mapNotNull { line ->
-                readLine(active, bitmap, line)
+                readLine(active, bitmap, line, quality)
             }
             val text = PageAssembler.assemble(lines)
             DiagnosticHub.record(
@@ -226,8 +243,12 @@ class PaddleOcrEngine(
         }
     }
 
-    private fun detect(active: Sessions, bitmap: Bitmap): List<TextBox> {
-        val input = OcrImagePreprocessor.prepareForDetection(bitmap, DETECTION_LONG_EDGE)
+    private fun detect(
+        active: Sessions,
+        bitmap: Bitmap,
+        quality: LocalReadingQuality,
+    ): List<TextBox> {
+        val input = OcrImagePreprocessor.prepareForDetection(bitmap, quality.detectionLongEdge)
         val tensor = input.tensor
         return runTensor(
             active.environment,
@@ -255,11 +276,12 @@ class PaddleOcrEngine(
         active: Sessions,
         bitmap: Bitmap,
         line: List<TextBox>,
+        quality: LocalReadingQuality,
     ): List<LineReading>? {
         // Box and reading stay paired. Recognition drops boxes it cannot read, so ordering the boxes
         // separately and matching them back up by position would shift every word after the first
         // failure onto the wrong box.
-        val read = line.mapNotNull { box -> readBox(active, bitmap, box)?.let { box to it } }
+        val read = line.mapNotNull { box -> readBox(active, bitmap, box, quality)?.let { box to it } }
         if (read.isEmpty()) return null
 
         val joined = read.joinToString(" ") { it.second.text }
@@ -267,13 +289,18 @@ class PaddleOcrEngine(
         return TextLineOrdering.orderWithinLineBy(read, direction) { it.first }.map { it.second }
     }
 
-    private fun readBox(active: Sessions, bitmap: Bitmap, box: TextBox): LineReading? {
+    private fun readBox(
+        active: Sessions,
+        bitmap: Bitmap,
+        box: TextBox,
+        quality: LocalReadingQuality,
+    ): LineReading? {
         val padded = box.expanded(BOX_PADDING_PIXELS, bitmap.width, bitmap.height)
         val cropped = OcrImagePreprocessor.cropLine(
             source = bitmap,
             box = padded,
             targetHeight = RECOGNITION_HEIGHT,
-            maxWidth = RECOGNITION_MAX_WIDTH,
+            maxWidth = quality.recognitionMaxWidth,
         ) ?: return null
 
         val upright = uprightCrop(active, cropped)
@@ -416,16 +443,8 @@ class PaddleOcrEngine(
         (Runtime.getRuntime().availableProcessors() - 1).coerceIn(2, 6)
 
     companion object {
-        /**
-         * Detector input cap. PP-OCR detects small text well at this size, and unlike the previous
-         * engine the cost here is one convolutional pass rather than hundreds of decoding steps, so
-         * a larger image costs milliseconds instead of minutes.
-         */
-        const val DETECTION_LONG_EDGE = 960
-
         /** PP-OCRv5 recognizers take a fixed 48-pixel input height. */
         const val RECOGNITION_HEIGHT = 48
-        const val RECOGNITION_MAX_WIDTH = 640
         const val BOX_PADDING_PIXELS = 3
 
         /** The orientation classifier's fixed input, and PaddleOCR's own 0.9 decision threshold. */

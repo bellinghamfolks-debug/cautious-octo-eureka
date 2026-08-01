@@ -83,6 +83,7 @@ class MainActivity : ComponentActivity() {
                         onSceneDescriptionStyleChange = viewModel::setSceneDescriptionStyle,
                         onSpeechRateChange = viewModel::setSpeechRate,
                         onUseLocalOcrChange = viewModel::setUseLocalOcr,
+                        onLocalReadingQualityChange = viewModel::setLocalReadingQuality,
                         onExportDiagnostics = {
                             viewModel.exportDiagnostics { file ->
                                 this@MainActivity.shareDiagnosticFile(file)

@@ -11,6 +11,8 @@ data class AppSettings(
     val sceneDescriptionStyle: SceneDescriptionStyle = SceneDescriptionStyle.COMPREHENSIVE,
     /** Read text with the on-device PP-OCR engine instead of Gemini. Describing stays cloud-only. */
     val useLocalOcr: Boolean = false,
+    /** How much of the captured image the on-device reader uses. Speed against fine print. */
+    val localReadingQuality: LocalReadingQuality = LocalReadingQuality.BALANCED,
     val speechRate: Float = 1.0f,
     val frameIntervalMs: Long = 700L,
     val cloudOcrIntervalMs: Long = 2_500L,

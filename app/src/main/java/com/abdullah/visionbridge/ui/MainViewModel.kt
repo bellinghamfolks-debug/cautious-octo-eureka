@@ -8,6 +8,7 @@ import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
+import com.abdullah.visionbridge.domain.model.LocalReadingQuality
 import com.abdullah.visionbridge.domain.model.CaptureState
 import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -48,6 +49,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "تم تفعيل القراءة المحلية. قراءة النص تعمل على الجهاز، ووصف المشهد يبقى سحابياً."
         } else {
             "عادت قراءة النص إلى Gemini السحابي."
+        }
+    }
+
+    fun setLocalReadingQuality(quality: LocalReadingQuality) = viewModelScope.launch {
+        container.settingsRepository.setLocalReadingQuality(quality)
+        message.value = when (quality) {
+            LocalReadingQuality.FAST -> "دقة القراءة المحلية: سريع"
+            LocalReadingQuality.BALANCED -> "دقة القراءة المحلية: متوازن"
+            LocalReadingQuality.MAXIMUM -> "دقة القراءة المحلية: أقصى دقة. القراءة أبطأ وأدق."
         }
     }
 

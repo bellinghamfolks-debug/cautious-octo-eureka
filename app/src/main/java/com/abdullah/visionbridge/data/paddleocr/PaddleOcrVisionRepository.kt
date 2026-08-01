@@ -8,8 +8,10 @@ import com.abdullah.visionbridge.domain.model.AnalysisResult
 import com.abdullah.visionbridge.domain.model.AnalysisSource
 import com.abdullah.visionbridge.domain.model.CaptureProfile
 import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
+import com.abdullah.visionbridge.domain.repository.SettingsRepository
 import com.abdullah.visionbridge.domain.repository.VisionAiRepository
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.flow.first
 
 /**
  * The on-device reader, behind the same interface as the cloud repository.
@@ -21,6 +23,7 @@ import kotlinx.coroutines.currentCoroutineContext
  */
 class PaddleOcrVisionRepository(
     private val engine: PaddleOcrEngine,
+    private val settingsRepository: SettingsRepository,
 ) : VisionAiRepository {
 
     class SceneDescriptionUnsupportedException : IllegalStateException(
@@ -47,6 +50,7 @@ class PaddleOcrVisionRepository(
                 mapOf(
                     "captureProfile" to captureProfile.name,
                     "engineLoaded" to engine.isLoaded,
+                    "quality" to settingsRepository.settings.first().localReadingQuality.name,
                     "sourceWidth" to bitmap.width,
                     "sourceHeight" to bitmap.height,
                 ),
@@ -54,7 +58,10 @@ class PaddleOcrVisionRepository(
         )
 
         engine.ensureLoaded().getOrThrow()
-        val result = engine.read(bitmap)
+        // Read per request rather than cached, so changing the quality applies to the next frame
+        // without restarting capture.
+        val quality = settingsRepository.settings.first().localReadingQuality
+        val result = engine.read(bitmap, quality)
 
         DiagnosticHub.record(
             "PPOCR_PAGE_READ",

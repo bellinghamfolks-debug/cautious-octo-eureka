@@ -3,6 +3,7 @@ package com.abdullah.visionbridge.domain.repository
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
+import com.abdullah.visionbridge.domain.model.LocalReadingQuality
 import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
 import kotlinx.coroutines.flow.Flow
 
@@ -17,5 +18,7 @@ interface SettingsRepository {
     suspend fun setInterruptSpeechOnVisualChange(enabled: Boolean)
     suspend fun setSceneDescriptionStyle(style: SceneDescriptionStyle)
     suspend fun setUseLocalOcr(enabled: Boolean)
+
+    suspend fun setLocalReadingQuality(quality: LocalReadingQuality)
     suspend fun setSpeechRate(rate: Float)
 }
