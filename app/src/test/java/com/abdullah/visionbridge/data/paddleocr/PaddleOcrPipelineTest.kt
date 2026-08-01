@@ -379,3 +379,45 @@ class RecognitionDictionaryTest {
         assertEquals(listOf("a", "b", " "), RecognitionDictionary.parse("a\nb"))
     }
 }
+
+class ArabicHeadShortcutTest {
+
+    /** Pure Arabic: the English head adds nothing, so skipping it is free. */
+    @Test
+    fun `a purely arabic reading skips the english head`() {
+        assertTrue(
+            BilingualLineSelector.isPureConfidentArabic(
+                LineReading("تجوال البيانات", 0.93f, OcrScript.ARABIC)
+            )
+        )
+    }
+
+    /**
+     * The regression this guards: "تشغيل بطاقة SIM 1" is decisively Arabic by majority, so the old
+     * shortcut suppressed the English specialist on exactly the lines whose Latin part matters.
+     */
+    @Test
+    fun `an arabic line containing latin still consults the english head`() {
+        val mixed = LineReading("تشغيل بطاقة SIM 1", 0.93f, OcrScript.ARABIC)
+        assertTrue(BilingualLineSelector.isDecisiveArabic(mixed))
+        assertFalse(BilingualLineSelector.isPureConfidentArabic(mixed))
+    }
+
+    @Test
+    fun `a weak arabic reading never short circuits`() {
+        assertFalse(
+            BilingualLineSelector.isPureConfidentArabic(
+                LineReading("تجوال", 0.31f, OcrScript.ARABIC)
+            )
+        )
+    }
+
+    @Test
+    fun `arabic indic digits do not count as latin`() {
+        assertTrue(
+            BilingualLineSelector.isPureConfidentArabic(
+                LineReading("غير معين ٩٦٦٥٣٨٤٨٣٥٣٣", 0.90f, OcrScript.ARABIC)
+            )
+        )
+    }
+}

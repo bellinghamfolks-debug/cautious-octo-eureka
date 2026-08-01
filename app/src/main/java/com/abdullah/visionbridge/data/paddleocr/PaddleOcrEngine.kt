@@ -280,20 +280,56 @@ class PaddleOcrEngine(
         try {
             val crop = OcrImagePreprocessor.toRecognitionTensor(upright)
 
-            // The Arabic head is multilingual, so it runs first on every crop and can settle the
-            // line by itself. Consulting the English head on a line already read as Arabic cannot
-            // change the answer — see BilingualLineSelector — so skipping it is free accuracy-wise
-            // and halves recognition time on an Arabic page.
+            // The Arabic head is multilingual, so it runs first and can settle a crop by itself —
+            // but only one that is Arabic all the way through. The moment a Latin character appears
+            // in its output the crop is mixed, and the English specialist reads Latin better than
+            // the Arabic head does, so suppressing it there trades accuracy for speed on exactly
+            // the content most likely to be a product name or a label the user needs exactly right.
             val arabic =
                 recognize(active, crop, active.arabic, active.arabicDictionary, OcrScript.ARABIC)
-            if (arabic != null && BilingualLineSelector.isDecisiveArabic(arabic)) return arabic
+            if (arabic != null && BilingualLineSelector.isPureConfidentArabic(arabic)) {
+                recordLineDecision(arabic, arabic, null, englishHeadSkipped = true)
+                return arabic
+            }
             val latin =
                 recognize(active, crop, active.latin, active.latinDictionary, OcrScript.LATIN)
-            return BilingualLineSelector.select(arabic, latin)
+            val chosen = BilingualLineSelector.select(arabic, latin)
+            recordLineDecision(chosen, arabic, latin, englishHeadSkipped = false)
+            return chosen
         } finally {
             if (upright !== cropped) upright.recycle()
             cropped.recycle()
         }
+    }
+
+    /**
+     * Records what each head read for one crop and which reading won.
+     *
+     * Without this, a missing word is indistinguishable from a word the detector never found, a
+     * crop both heads failed, and a crop where the wrong head was believed — four different bugs
+     * that all look identical in the final text. The candidates are the only way to tell them
+     * apart from a device the developer cannot hold.
+     */
+    private fun recordLineDecision(
+        chosen: LineReading?,
+        arabic: LineReading?,
+        latin: LineReading?,
+        englishHeadSkipped: Boolean,
+    ) {
+        DiagnosticHub.record(
+            "PPOCR_LINE_DECISION",
+            mapOf(
+                "chosen" to chosen?.text,
+                "chosenScript" to chosen?.script?.name,
+                "chosenConfidence" to chosen?.confidence,
+                "arabicCandidate" to arabic?.text,
+                "arabicConfidence" to arabic?.confidence,
+                "latinCandidate" to latin?.text,
+                "latinConfidence" to latin?.confidence,
+                "englishHeadSkipped" to englishHeadSkipped,
+                "droppedEverything" to (chosen == null),
+            ),
+        )
     }
 
     /**

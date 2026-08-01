@@ -64,6 +64,18 @@ object BilingualLineSelector {
             isUsable(reading) &&
             arabicRatio(reading.text) >= SCRIPT_MAJORITY
 
+    /**
+     * True when the Arabic head's reading is Arabic all the way through, with no Latin letter in
+     * it at all — the only case where skipping the English specialist costs nothing.
+     *
+     * A majority is not enough to skip. "تشغيل بطاقة SIM 1" is decisively Arabic by majority, yet
+     * the part the user most needs read exactly is the Latin part, and the specialist reads that
+     * better than the multilingual head does.
+     */
+    fun isPureConfidentArabic(reading: LineReading): Boolean =
+        isDecisiveArabic(reading) && latinRatio(reading.text) == 0f &&
+            reading.text.none { it in 'a'..'z' || it in 'A'..'Z' }
+
     private fun isUsable(reading: LineReading): Boolean =
         reading.text.isNotBlank() && reading.confidence >= MIN_ACCEPTABLE_CONFIDENCE
 
