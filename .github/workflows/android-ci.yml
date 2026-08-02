@@ -25,6 +25,9 @@ jobs:
     name: Lint, tests, and ARM64 debug APK
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Needed only by the release step below; everything else reads.
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -119,6 +122,49 @@ jobs:
           path: ${{ steps.apk.outputs.name }}
           if-no-files-found: error
           retention-days: 14
+
+      # Downloading a workflow artifact means navigating into a run page, finding the
+      # artifacts section, and unzipping what arrives. With a screen reader that is a
+      # long walk for a file. A release gives one unchanging address that downloads the
+      # APK directly:
+      #
+      #   https://github.com/<owner>/<repo>/releases/latest/download/VisionBridge.apk
+      #
+      # Two assets go up: VisionBridge.apk, whose name never changes so the link above
+      # keeps working, and the versioned name, so a file sitting in a Downloads folder
+      # still says which build it is.
+      - name: Publish the APK to a release with a stable download link
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n1)
+          build=$(sed -n 's/.*versionCode = \([0-9]*\).*/\1/p' app/build.gradle.kts | head -n1)
+          tag="v${version}"
+          cp app/build/outputs/apk/debug/app-debug.apk VisionBridge.apk
+
+          notes=$(printf '%s\n' \
+            "الإصدار ${version}، Build ${build}" \
+            "" \
+            "التنزيل المباشر: VisionBridge.apk" \
+            "" \
+            "بعد التثبيت افتح الإعدادات، وسيظهر في أعلى الشاشة: الإصدار ${version}، Build ${build}." \
+            "" \
+            "commit: ${GITHUB_SHA}")
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" VisionBridge.apk "${{ steps.apk.outputs.name }}" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" \
+              --title "VisionBridge ${version} (Build ${build})" --notes "$notes" --latest
+          else
+            gh release create "$tag" VisionBridge.apk "${{ steps.apk.outputs.name }}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "VisionBridge ${version} (Build ${build})" --notes "$notes" --latest
+          fi
+          echo "Stable link: https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/VisionBridge.apk"
 
       - name: Upload build diagnostics
         if: failure()
