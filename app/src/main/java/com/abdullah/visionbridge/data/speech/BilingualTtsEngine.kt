@@ -547,6 +547,19 @@ class BilingualTtsEngine(context: Context) {
         }
     }
 
+    /**
+     * Speaks an operational notice from the engine's own scope, so it survives the death of
+     * whatever component asked for it.
+     *
+     * The capture service calls this as it stops: a projection Android has taken away leaves a
+     * blind user holding glasses that have silently stopped working, and a message on a screen is
+     * not an answer to that.
+     */
+    fun speakUrgentNotice(text: String, rate: Float = 1.0f) {
+        if (text.isBlank()) return
+        scope.launch { speakFeedback(text = text, rate = rate, interruptPrevious = true) }
+    }
+
     fun resetHistory() {
         noticeDeduplicator.reset()
         DiagnosticHub.record("TTS_DEDUPLICATION_HISTORY_RESET")

@@ -88,7 +88,13 @@ class MediaProjectionService : Service() {
         override fun onStop() {
             DiagnosticHub.record("PROJECTION_SYSTEM_STOPPED")
             releaseProjection(stopProjection = false, reason = "system_stopped_projection")
-            container.runtime.stopped("أوقف Android مشاركة الشاشة")
+            // Said out loud, and said after the release so the stop-speech inside it cannot cut the
+            // notice off. A device session shows the projection dying and then 216 seconds of
+            // silence: the message went to a screen, and the person holding the glasses had no way
+            // to learn that the app had stopped working. It is spoken on the engine's own scope,
+            // which outlives this service.
+            container.tts.speakUrgentNotice(PROJECTION_STOPPED_MESSAGE)
+            container.runtime.stopped(PROJECTION_STOPPED_MESSAGE)
             stopSelf()
         }
 
@@ -478,7 +484,7 @@ class MediaProjectionService : Service() {
             elapsed - lastSurfaceRecoveryAtElapsedMs >= SURFACE_RECOVERY_COOLDOWN_MS
         if (mayRecover) {
             lastSurfaceRecoveryAtElapsedMs = elapsed
-            captureHandler?.post { recreateVirtualDisplayAfterBlackFeed() }
+            captureHandler?.post { refreshCaptureSurfaceAfterBlackFeed() }
         }
 
         val message = when {
@@ -593,11 +599,12 @@ class MediaProjectionService : Service() {
             )
             return
         }
-        val oldReader = imageReader
         val newReader = createImageReader(width, height)
-        imageReader = newReader
+        // Attach before publishing, so a failure here leaves the working reader in place.
         display.resize(width, height, resources.displayMetrics.densityDpi)
         display.setSurface(newReader.surface)
+        val oldReader = imageReader
+        imageReader = newReader
         oldReader?.setOnImageAvailableListener(null, null)
         oldReader?.close()
         appliedCaptureWidth = width
@@ -608,16 +615,21 @@ class MediaProjectionService : Service() {
     }
 
     /**
-     * Rebuilds the virtual display when the capture has been black for too long.
+     * Re-points the capture at a fresh surface when the mirror has been black for too long.
      *
      * Whatever leaves the mirror blank — a surface that did not survive a rotation, or a
      * single-app capture whose window stopped rendering — sitting black for a minute is never the
-     * right outcome for someone waiting to be told what is in front of them. Diagnostics show the
-     * black period starting within 0.3 s of a rotation and ending within 0.4 s of the next one, so
-     * a fresh surface at the current size is the natural thing to try, and it costs one frame.
+     * right outcome for someone waiting to be told what is in front of them.
+     *
+     * This used to ask the projection for a second virtual display, and Android 14 answers that
+     * with `SecurityException: Don't take multiple captures by invoking
+     * MediaProjection#createVirtualDisplay multiple times on the same instance` and then stops the
+     * projection outright. Three device sessions attempted it, all three died within 3 ms, and one
+     * of them left the user with 216 seconds of nothing. One consent yields one virtual display for
+     * its whole life; a new surface goes on the display we already hold.
      */
-    private fun recreateVirtualDisplayAfterBlackFeed() {
-        val projection = mediaProjection ?: return
+    private fun refreshCaptureSurfaceAfterBlackFeed() {
+        val display = virtualDisplay ?: return
         val width = appliedCaptureWidth
         val height = appliedCaptureHeight
         if (width <= 0 || height <= 0) return
@@ -626,29 +638,33 @@ class MediaProjectionService : Service() {
             "CAPTURE_SURFACE_RECOVERY_STARTED",
             mapOf("width" to width, "height" to height),
         )
-        runCatching {
-            val oldReader = imageReader
-            val oldDisplay = virtualDisplay
-            val reader = createImageReader(width, height)
-            imageReader = reader
-            virtualDisplay = projection.createVirtualDisplay(
-                "VisionBridgeCapture",
-                width,
-                height,
-                resources.displayMetrics.densityDpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                reader.surface,
-                null,
-                captureHandler,
-            ) ?: error("تعذر إعادة تهيئة MediaProjection")
-            oldDisplay?.release()
-            oldReader?.setOnImageAvailableListener(null, null)
-            oldReader?.close()
-            resetFrameState()
-            DiagnosticHub.record("CAPTURE_SURFACE_RECOVERY_COMPLETED", mapOf("width" to width, "height" to height))
-        }.onFailure { error ->
+        // Built on the side and swapped in only once the display has accepted it. The previous
+        // version reassigned the field first, so a failure left the capture pointing at a reader
+        // with no producer — a repair that made things worse than not trying.
+        val replacement = runCatching { createImageReader(width, height) }.getOrElse { error ->
             DiagnosticHub.failure("CAPTURE_SURFACE_RECOVERY", error)
+            return
         }
+        val attached = runCatching { display.setSurface(replacement.surface) }
+        if (attached.isFailure) {
+            runCatching { replacement.setOnImageAvailableListener(null, null) }
+            runCatching { replacement.close() }
+            DiagnosticHub.failure(
+                "CAPTURE_SURFACE_RECOVERY",
+                attached.exceptionOrNull() ?: IllegalStateException("setSurface failed"),
+            )
+            return
+        }
+
+        val oldReader = imageReader
+        imageReader = replacement
+        runCatching { oldReader?.setOnImageAvailableListener(null, null) }
+        runCatching { oldReader?.close() }
+        resetFrameState()
+        DiagnosticHub.record(
+            "CAPTURE_SURFACE_RECOVERY_COMPLETED",
+            mapOf("width" to width, "height" to height),
+        )
     }
 
     private fun releaseProjection(stopProjection: Boolean, reason: String) {
@@ -829,6 +845,9 @@ class MediaProjectionService : Service() {
 
         private const val VISUAL_FEED_RECOVERING_MESSAGE =
             "الصورة الواردة سوداء. يعيد VisionBridge تهيئة مشاركة الشاشة الآن. إن استمرت المشكلة، أوقف Share Your View ثم فعّله من جديد."
+
+        private const val PROJECTION_STOPPED_MESSAGE =
+            "أوقف Android مشاركة الشاشة، لذلك توقفت القراءة. افتح VisionBridge واضغط ابدأ الالتقاط للسماح بها من جديد."
 
         private const val SCREEN_OFF_MESSAGE =
             "شاشة الهاتف مطفأة، لذلك توقف وصول الصورة. شغّل الشاشة، ويفضل زيادة مهلة القفل التلقائي من إعدادات الهاتف."

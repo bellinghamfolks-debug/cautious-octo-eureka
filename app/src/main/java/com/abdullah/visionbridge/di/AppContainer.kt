@@ -44,7 +44,12 @@ class AppContainer(context: Context) {
         localEngine = localOcrEngine,
         settingsRepository = settingsRepository,
     )
-    private val tts = BilingualTtsEngine(appContext)
+    /**
+     * Exposed because the capture service must be able to speak after it has torn itself down:
+     * the engine's scope outlives the service, and a projection that dies in silence is the one
+     * failure a blind user cannot detect.
+     */
+    val tts = BilingualTtsEngine(appContext)
 
     val coordinator = FrameAnalysisCoordinator(
         settingsRepository = settingsRepository,
