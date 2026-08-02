@@ -33,7 +33,7 @@ class ReadingLedgerTest {
         val ledger = ReadingLedger()
         val first = ledger.evaluate(page, now = 0L)
         assertTrue(first is ReadingLedger.Decision.Speak)
-        ledger.recordSpoken(page, now = 0L)
+        ledger.recordDelivered("", page, now = 0L)
 
         var spokenAgain = 0
         repeat(24) { attempt ->
@@ -41,7 +41,7 @@ class ReadingLedgerTest {
             when (val decision = ledger.evaluate(page, now = now)) {
                 is ReadingLedger.Decision.Speak -> {
                     spokenAgain++
-                    ledger.recordSpoken(decision.document, now)
+                    ledger.recordDelivered(decision.alreadyHeard, decision.text, now)
                 }
 
                 is ReadingLedger.Decision.Skip ->
@@ -55,7 +55,7 @@ class ReadingLedgerTest {
     fun `a truncated first read is completed by its retry without repeating`() {
         val ledger = ReadingLedger()
         val truncated = "الرصيد الحالي 9.20 ريال\nSubscribe to sawa packages"
-        ledger.recordSpoken(truncated, now = 0L)
+        ledger.recordDelivered("", truncated, now = 0L)
 
         val decision = ledger.evaluate(page, now = 6_000L)
         assertTrue(decision is ReadingLedger.Decision.Speak)
@@ -66,25 +66,116 @@ class ReadingLedgerTest {
         assertTrue(decision.text.contains("عزيزي العميل"))
 
         // Once the tail has been heard the page is complete and stays silent.
-        ledger.recordSpoken(decision.document, now = 6_000L)
+        ledger.recordDelivered(decision.alreadyHeard, decision.text, now = 6_000L)
         assertTrue(ledger.evaluate(page, now = 12_000L) is ReadingLedger.Decision.Skip)
     }
 
     /**
      * From a device log: a perfume label came back as "BLEU / CHANEL", then as
-     * "BLEU / DE / CHANEL". Symmetric identity rejected the pair because one token in three
-     * differed, so the label was read out from the top a second time.
+     * "BLEU / DE / CHANEL". The page must be recognized as the same page — only the word the user
+     * has not heard is spoken, and the label is never read from the top a second time.
      */
     @Test
-    fun `a short label re-split by OCR is not read again`() {
+    fun `a short label re-split by OCR speaks only the word that is new`() {
         val ledger = ReadingLedger()
-        ledger.recordSpoken("BLEU\nCHANEL", now = 0L)
+        ledger.recordDelivered("", "BLEU\nCHANEL", now = 0L)
 
         val decision = ledger.evaluate("BLEU\nDE\nCHANEL", now = 3_000L)
+        assertTrue(decision is ReadingLedger.Decision.Speak)
+        decision as ReadingLedger.Decision.Speak
+        assertTrue(decision.continuation)
+        assertEquals("DE", decision.text)
+        assertFalse(decision.text.contains("BLEU"))
+
+        // And once it has been heard the label settles: further recognitions add nothing.
+        ledger.recordDelivered(decision.alreadyHeard, decision.text, now = 3_000L)
+        assertTrue(ledger.evaluate("BLEU\nDE\nCHANEL", now = 4_000L) is ReadingLedger.Decision.Skip)
+        assertTrue(ledger.evaluate("BLEU\nCHANEL", now = 5_000L) is ReadingLedger.Decision.Skip)
+    }
+
+    /**
+     * The user's own complaint, reproduced from frames F000000682 and F000002602 of the
+     * 2026-08-02 bundle. The reader recognized "BLEU / CHANEL / PARFUM" at 0.87 confidence and the
+     * ledger threw the product name away 42 times in one session because it was shorter than
+     * twenty four characters. A product name is short precisely because it is the whole point.
+     */
+    @Test
+    fun `a product name added to a label the user has heard is spoken`() {
+        val ledger = ReadingLedger()
+        ledger.recordDelivered("", "BLEU 0\nCHANEL\nD", now = 0L)
+
+        val decision = ledger.evaluate("O\nBLEU 0\nCHANEL D\nPARFUM", now = 2_000L)
+        assertTrue(decision is ReadingLedger.Decision.Speak)
+        decision as ReadingLedger.Decision.Speak
+        assertTrue(decision.continuation)
+        assertTrue(decision.text.contains("PARFUM"))
+    }
+
+    /** A room number, a gate number and a platform number are all shorter than a sentence. */
+    @Test
+    fun `a room number added to a sign is spoken`() {
+        val ledger = ReadingLedger()
+        ledger.recordDelivered("", "King Abdulaziz Hospital\nRadiology", now = 0L)
+
+        val decision = ledger.evaluate("King Abdulaziz Hospital\nRadiology\n204", now = 2_000L)
+        assertTrue(decision is ReadingLedger.Decision.Speak)
+        assertEquals("204", (decision as ReadingLedger.Decision.Speak).text)
+    }
+
+    /**
+     * The rule that replaced the character count. Loose glyphs off a bottle's shoulder are not
+     * words, and they were the actual jitter in the device log: "O", "D", "0", "=", "c", "X".
+     */
+    @Test
+    fun `loose glyphs between two reads of a page are still suppressed`() {
+        val ledger = ReadingLedger()
+        ledger.recordDelivered("", "BLEU\nCHANEL\nPARFUM", now = 0L)
+
+        val decision = ledger.evaluate("BLEU\nCHANEL\nPARFUM\nO\nD\n=", now = 2_000L)
         assertTrue(decision is ReadingLedger.Decision.Skip)
         assertEquals(
-            "continuation_below_noise_floor",
+            "continuation_is_recognition_jitter",
             (decision as ReadingLedger.Decision.Skip).reason,
+        )
+    }
+
+    /**
+     * The core of the delivery defect. The coordinator used to record the whole page the moment it
+     * finished queueing speech; the device bundle shows 29 utterances submitted and 15 completed,
+     * with "BLEU D / CHANEL" cut off mid-word by a target change and then never offered again
+     * because the ledger already held it as heard.
+     */
+    @Test
+    fun `a page whose speech was cut off is still owed to the user`() {
+        val ledger = ReadingLedger()
+        val first = ledger.evaluate("BLEU D\nCHANEL", now = 0L)
+        assertTrue(first is ReadingLedger.Decision.Speak)
+
+        // Nothing reached onDone, so nothing is recorded.
+        ledger.recordDelivered("", "", now = 0L)
+
+        val retry = ledger.evaluate("BLEU D\nCHANEL", now = 1_000L)
+        assertTrue(retry is ReadingLedger.Decision.Speak)
+        assertTrue((retry as ReadingLedger.Decision.Speak).text.contains("CHANEL"))
+    }
+
+    /** Half a page heard, half a page owed: the next pass offers exactly the missing half. */
+    @Test
+    fun `only the part that was heard is recorded`() {
+        val ledger = ReadingLedger()
+        ledger.recordDelivered("", "Gate 12", now = 0L)
+
+        val decision = ledger.evaluate("Gate 12\nBoarding 09:40\nSeat 14C", now = 1_000L)
+        assertTrue(decision is ReadingLedger.Decision.Speak)
+        decision as ReadingLedger.Decision.Speak
+        assertEquals("Boarding 09:40\nSeat 14C", decision.text)
+        assertEquals("Gate 12", decision.alreadyHeard)
+
+        // Recording the tail stores the whole page, so the first line is not read a second time.
+        ledger.recordDelivered(decision.alreadyHeard, decision.text, now = 1_000L)
+        assertTrue(
+            ledger.evaluate("Gate 12\nBoarding 09:40\nSeat 14C", now = 2_000L)
+                is ReadingLedger.Decision.Skip,
         )
     }
 
@@ -100,7 +191,7 @@ class ReadingLedgerTest {
             أخطاء
             فجاة جالس يخربط في ارقام
         """.trimIndent()
-        ledger.recordSpoken(first, now = 0L)
+        ledger.recordDelivered("", first, now = 0L)
 
         val second = """
             نص إنجليزي قراه بسرعة وبدون
@@ -119,7 +210,7 @@ class ReadingLedgerTest {
     @Test
     fun `half a page in common is still the same page`() {
         val ledger = ReadingLedger()
-        ledger.recordSpoken("سطر واحد\nسطر اثنان\nسطر ثلاثة\nسطر اربعة", now = 0L)
+        ledger.recordDelivered("", "سطر واحد\nسطر اثنان\nسطر ثلاثة\nسطر اربعة", now = 0L)
         val coverage = com.abdullah.visionbridge.data.speech.DocumentSpeechPolicy.coverageOf(
             alreadySpoken = "سطر واحد\nسطر اثنان\nسطر ثلاثة\nسطر اربعة",
             current = "سطر ثلاثة\nسطر اربعة\nسطر خمسة\nسطر ستة",
@@ -132,7 +223,7 @@ class ReadingLedgerTest {
     @Test
     fun `a different page interrupts and is read in full`() {
         val ledger = ReadingLedger()
-        ledger.recordSpoken(page, now = 0L)
+        ledger.recordDelivered("", page, now = 0L)
         val other = "إعدادات الكاميرا\nجودة الصورة\nالوضع الليلي"
 
         val decision = ledger.evaluate(other, now = 1_000L)
@@ -145,7 +236,7 @@ class ReadingLedgerTest {
     @Test
     fun `returning to a page much later reads it again on purpose`() {
         val ledger = ReadingLedger(repeatWindowMs = 10_000L)
-        ledger.recordSpoken(page, now = 0L)
+        ledger.recordDelivered("", page, now = 0L)
         assertTrue(ledger.evaluate(page, now = 60_000L) is ReadingLedger.Decision.Speak)
     }
 

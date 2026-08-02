@@ -7,6 +7,7 @@ import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
 import com.abdullah.visionbridge.data.gemini.OcrTrustRejectedException
 import com.abdullah.visionbridge.data.gemini.StreamingSpeechBuffer
 import com.abdullah.visionbridge.data.speech.BilingualTtsEngine
+import com.abdullah.visionbridge.data.speech.ReadingDeliveryTracker
 import com.abdullah.visionbridge.data.speech.ReadingLedger
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AnalysisResult
@@ -71,6 +72,7 @@ class FrameAnalysisCoordinator(
     private val visualGeneration = AtomicLong(0L)
     private val lastTrustFeedbackGeneration = AtomicLong(Long.MIN_VALUE)
     private val readingLedger = ReadingLedger()
+    private val deliveryTracker = ReadingDeliveryTracker()
 
     /** Visual generation that the reading currently being spoken belongs to. */
     @Volatile
@@ -105,6 +107,30 @@ class FrameAnalysisCoordinator(
                 runHealthCheck()
             }
         }
+        // The ledger is written from here and nowhere else. A page counts as read when the speech
+        // engine says the user heard it, never when the coordinator finishes queueing it.
+        tts.onBlockDelivered { readingId, blockIndex, outcome ->
+            commitDelivery(deliveryTracker.record(readingId, blockIndex, outcome))
+        }
+    }
+
+    /** Writes the heard part of a settled reading to the ledger and leaves the rest owed. */
+    private fun commitDelivery(delivery: ReadingDeliveryTracker.Delivery?) {
+        if (delivery == null) return
+        if (delivery.deliveredText.isNotBlank()) {
+            readingLedger.recordDelivered(delivery.alreadyHeard, delivery.deliveredText)
+        }
+        DiagnosticHub.record(
+            "DOCUMENT_READING_DELIVERED",
+            mapOf(
+                "deliveredText" to delivery.deliveredText,
+                "deliveredCharacters" to delivery.deliveredText.length,
+                "owedText" to delivery.owedText,
+                "owedCharacters" to delivery.owedText.length,
+                "complete" to delivery.complete,
+                "outcomes" to delivery.outcomes.map { it.name },
+            ),
+        )
     }
 
     suspend fun process(bitmap: Bitmap) = processMutex.withLock {
@@ -835,11 +861,15 @@ class FrameAnalysisCoordinator(
                 val readingId = tts.beginReading(
                     interruptPrevious = settings.interruptSpeechOnVisualChange && !decision.continuation,
                 )
-                blocks.forEach { block ->
-                    tts.speakReadingBlock(readingId, block, settings.speechRate)
+                // Opened before the first block is queued so no outcome can arrive unaccounted for.
+                deliveryTracker.open(readingId, decision.alreadyHeard, blocks)
+                blocks.forEachIndexed { index, block ->
+                    tts.speakReadingBlock(readingId, index, block, settings.speechRate)
                 }
                 tts.finishReading(readingId)
-                readingLedger.recordSpoken(decision.document)
+                // Nothing is written to the ledger here. What the user heard is known only once the
+                // engine reports it, and on a device where the target changes every few hundred
+                // milliseconds the two answers differ by most of a page.
             }
         }
     }
@@ -1042,6 +1072,7 @@ class FrameAnalysisCoordinator(
         lastTextAnalysisGeneration = Long.MIN_VALUE
         lastTextAnalysisAtElapsedMs = 0L
         readingLedger.reset()
+        deliveryTracker.reset()
         synchronized(cloudQueueLock) {
             delayedLaunchJob?.cancel()
             delayedLaunchJob = null

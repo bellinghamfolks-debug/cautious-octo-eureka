@@ -41,13 +41,14 @@ class BilingualTtsEngine(context: Context) {
         val rate: Float,
         val generation: Long,
         val readingId: Long,
+        val blockIndex: Int,
         val flushFirst: Boolean,
         val trace: DiagnosticTrace?,
         val enqueuedAtElapsedNanos: Long,
     )
 
     private class UtteranceState(
-        val completion: CompletableDeferred<Unit>,
+        val completion: CompletableDeferred<SpeechOutcome>,
         val trace: DiagnosticTrace?,
         val text: String,
         val language: String,
@@ -69,6 +70,13 @@ class BilingualTtsEngine(context: Context) {
     private val outstandingBlocks = AtomicInteger(0)
     private val noticeDeduplicator = SpeechDeduplicator()
     private val engineLock = Any()
+
+    /**
+     * Told what became of every block of every reading, so the layer that decides what still needs
+     * saying learns it from the engine rather than from the act of queueing.
+     */
+    @Volatile
+    private var blockDeliveryListener: ((Long, Int, SpeechOutcome) -> Unit)? = null
 
     @Volatile
     private var readingOpen = false
@@ -92,7 +100,7 @@ class BilingualTtsEngine(context: Context) {
         initializeEngine("initialization")
         scope.launch {
             for (request in requests) {
-                if (request.generation == generation.get()) {
+                val outcome = if (request.generation == generation.get()) {
                     speakRequest(request)
                 } else {
                     DiagnosticHub.record(
@@ -107,10 +115,45 @@ class BilingualTtsEngine(context: Context) {
                             ),
                         ),
                     )
+                    SpeechOutcome.SUPERSEDED_BEFORE_START
                 }
-                if (request.readingId != NO_READING) releaseBlock()
+                if (request.readingId != NO_READING) {
+                    reportBlock(request, outcome)
+                    releaseBlock()
+                }
             }
         }
+    }
+
+    /** Installs the listener that learns what the user actually heard. */
+    fun onBlockDelivered(listener: (readingId: Long, blockIndex: Int, outcome: SpeechOutcome) -> Unit) {
+        blockDeliveryListener = listener
+    }
+
+    private fun reportBlock(request: SpeechRequest, outcome: SpeechOutcome) =
+        reportBlock(request.readingId, request.blockIndex, request.text, request.trace, outcome)
+
+    private fun reportBlock(
+        readingId: Long,
+        blockIndex: Int,
+        text: String,
+        trace: DiagnosticTrace?,
+        outcome: SpeechOutcome,
+    ) {
+        if (readingId == NO_READING) return
+        DiagnosticHub.record(
+            "TTS_BLOCK_OUTCOME",
+            trace.fieldsOrEmpty(
+                mapOf(
+                    "readingId" to readingId,
+                    "blockIndex" to blockIndex,
+                    "outcome" to outcome.name,
+                    "text" to text,
+                ),
+            ),
+        )
+        runCatching { blockDeliveryListener?.invoke(readingId, blockIndex, outcome) }
+            .onFailure { DiagnosticHub.failure("TTS_BLOCK_DELIVERY_LISTENER", it) }
     }
 
     // region reading lifecycle
@@ -140,10 +183,21 @@ class BilingualTtsEngine(context: Context) {
         readingId
     }
 
-    /** Queues the next block of [readingId] in visual order. Nothing is dropped for capacity. */
-    suspend fun speakReadingBlock(readingId: Long, text: String, rate: Float) {
-        if (!DocumentSpeechPolicy.isSpeakable(text)) return
+    /**
+     * Queues block [blockIndex] of [readingId] in visual order. Nothing is dropped for capacity.
+     *
+     * Every call reports an outcome exactly once, including the calls that never reach the engine,
+     * so the reading's accounting always closes and a page can never be left in limbo — recorded
+     * neither as heard nor as owed.
+     */
+    suspend fun speakReadingBlock(readingId: Long, blockIndex: Int, text: String, rate: Float) {
         val trace = currentCoroutineContext()[DiagnosticTrace]
+        if (!DocumentSpeechPolicy.isSpeakable(text)) {
+            // Nothing to hear, so nothing is owed: treat it as delivered rather than let it block
+            // the delivered prefix of everything after it.
+            reportBlock(readingId, blockIndex, text, trace, SpeechOutcome.COMPLETED)
+            return
+        }
         if (readingId != activeReadingId.get()) {
             DiagnosticHub.record(
                 "TTS_REQUEST_DROPPED",
@@ -156,6 +210,7 @@ class BilingualTtsEngine(context: Context) {
                     ),
                 ),
             )
+            reportBlock(readingId, blockIndex, text, trace, SpeechOutcome.SUPERSEDED_BEFORE_START)
             return
         }
         outstandingBlocks.incrementAndGet()
@@ -164,6 +219,7 @@ class BilingualTtsEngine(context: Context) {
             rate = rate,
             interruptPrevious = false,
             readingId = readingId,
+            blockIndex = blockIndex,
             trace = trace,
         )
     }
@@ -206,7 +262,13 @@ class BilingualTtsEngine(context: Context) {
             )
             return
         }
-        enqueue(novelText, rate, interruptPrevious, NO_READING, trace)
+        enqueue(
+            text = novelText,
+            rate = rate,
+            interruptPrevious = interruptPrevious,
+            readingId = NO_READING,
+            trace = trace,
+        )
     }
 
     /** Status speech intentionally bypasses content deduplication. */
@@ -308,7 +370,7 @@ class BilingualTtsEngine(context: Context) {
             }
 
             override fun onDone(utteranceId: String?) {
-                completeUtterance(utteranceId, "TTS_UTTERANCE_DONE")
+                completeUtterance(utteranceId, "TTS_UTTERANCE_DONE", SpeechOutcome.COMPLETED)
             }
 
             @Deprecated("Deprecated by Android but still invoked by older engines")
@@ -316,6 +378,7 @@ class BilingualTtsEngine(context: Context) {
                 completeUtterance(
                     utteranceId,
                     "TTS_UTTERANCE_ERROR",
+                    SpeechOutcome.FAILED,
                     mapOf("errorCode" to "legacy"),
                 )
             }
@@ -324,6 +387,7 @@ class BilingualTtsEngine(context: Context) {
                 completeUtterance(
                     utteranceId,
                     "TTS_UTTERANCE_ERROR",
+                    SpeechOutcome.FAILED,
                     mapOf("errorCode" to errorCode),
                 )
             }
@@ -332,6 +396,7 @@ class BilingualTtsEngine(context: Context) {
                 completeUtterance(
                     utteranceId,
                     "TTS_UTTERANCE_STOPPED",
+                    SpeechOutcome.INTERRUPTED,
                     mapOf("interrupted" to interrupted),
                 )
             }
@@ -341,6 +406,7 @@ class BilingualTtsEngine(context: Context) {
     private fun completeUtterance(
         utteranceId: String?,
         event: String,
+        outcome: SpeechOutcome,
         extra: Map<String, Any?> = emptyMap(),
     ) {
         val id = utteranceId ?: return
@@ -362,10 +428,11 @@ class BilingualTtsEngine(context: Context) {
                     } else {
                         null
                     },
+                    "outcome" to outcome.name,
                 ) + extra,
             ),
         )
-        state.completion.complete(Unit)
+        state.completion.complete(outcome)
     }
 
     private suspend fun enqueue(
@@ -373,11 +440,15 @@ class BilingualTtsEngine(context: Context) {
         rate: Float,
         interruptPrevious: Boolean,
         readingId: Long,
+        blockIndex: Int = NO_BLOCK,
         trace: DiagnosticTrace?,
     ) {
         val readyStarted = SystemClock.elapsedRealtimeNanos()
         if (!ensureEngineReady(trace, text)) {
-            if (readingId != NO_READING) releaseBlock()
+            if (readingId != NO_READING) {
+                reportBlock(readingId, blockIndex, text, trace, SpeechOutcome.FAILED)
+                releaseBlock()
+            }
             return
         }
         val afterReady = SystemClock.elapsedRealtimeNanos()
@@ -394,6 +465,7 @@ class BilingualTtsEngine(context: Context) {
                 rate = rate.coerceIn(0.6f, 1.8f),
                 generation = requestGeneration,
                 readingId = readingId,
+                blockIndex = blockIndex,
                 flushFirst = interruptPrevious,
                 trace = trace,
                 enqueuedAtElapsedNanos = enqueuedAt,
@@ -414,7 +486,10 @@ class BilingualTtsEngine(context: Context) {
                     ),
                 ),
             )
-            if (!accepted && readingId != NO_READING) releaseBlock()
+            if (!accepted && readingId != NO_READING) {
+                reportBlock(readingId, blockIndex, text, trace, SpeechOutcome.FAILED)
+                releaseBlock()
+            }
         }
     }
 
@@ -468,7 +543,7 @@ class BilingualTtsEngine(context: Context) {
             activeReadingId.set(NO_READING)
             readingOpen = false
             outstandingBlocks.set(0)
-            interruptInternal("explicit_stop")
+            interruptInternal(EXPLICIT_STOP_REASON)
         }
     }
 
@@ -477,9 +552,16 @@ class BilingualTtsEngine(context: Context) {
         DiagnosticHub.record("TTS_DEDUPLICATION_HISTORY_RESET")
     }
 
-    private suspend fun speakRequest(request: SpeechRequest) {
-        if (!ensureEngineReady(request.trace, request.text)) return
-        val engine = tts ?: return
+    /**
+     * Speaks one request and reports what became of it.
+     *
+     * The return value is the whole point: a segment that was stopped, errored or timed out means
+     * the user did not hear this block, and everything downstream needs to know that rather than
+     * infer success from the absence of a crash.
+     */
+    private suspend fun speakRequest(request: SpeechRequest): SpeechOutcome {
+        if (!ensureEngineReady(request.trace, request.text)) return SpeechOutcome.FAILED
+        val engine = tts ?: return SpeechOutcome.FAILED
         val segments = SpeechTextTools.segment(request.text)
         DiagnosticHub.record(
             "TTS_SEGMENTATION_COMPLETED",
@@ -510,7 +592,7 @@ class BilingualTtsEngine(context: Context) {
                         ),
                     ),
                 )
-                return
+                return SpeechOutcome.INTERRUPTED
             }
 
             val availability = engine.isLanguageAvailable(segment.language.locale)
@@ -520,7 +602,7 @@ class BilingualTtsEngine(context: Context) {
             engine.setSpeechRate(request.rate)
 
             val utteranceId = "vision-${UUID.randomUUID()}"
-            val completion = CompletableDeferred<Unit>()
+            val completion = CompletableDeferred<SpeechOutcome>()
             val submittedAt = SystemClock.elapsedRealtimeNanos()
             utterances[utteranceId] = UtteranceState(
                 completion = completion,
@@ -569,19 +651,16 @@ class BilingualTtsEngine(context: Context) {
                 ),
             )
             if (result == TextToSpeech.ERROR) {
-                utterances.remove(utteranceId)?.completion?.complete(Unit)
+                utterances.remove(utteranceId)?.completion?.complete(SpeechOutcome.FAILED)
                 consecutiveTimeouts++
                 recoverEngineIfNeeded("speak_returned_error", request.trace)
-                continue
+                return SpeechOutcome.FAILED
             }
 
             val timeoutMs = utteranceTimeoutMs(segment.text)
-            val completed = withTimeoutOrNull(timeoutMs) {
-                completion.await()
-                true
-            } ?: false
+            val outcome = withTimeoutOrNull(timeoutMs) { completion.await() }
             utterances.remove(utteranceId)
-            if (!completed) {
+            if (outcome == null) {
                 consecutiveTimeouts++
                 DiagnosticHub.record(
                     "TTS_UTTERANCE_TIMEOUT",
@@ -596,10 +675,14 @@ class BilingualTtsEngine(context: Context) {
                 )
                 engine.stop()
                 recoverEngineIfNeeded("utterance_timeout", request.trace)
-                return
+                return SpeechOutcome.FAILED
             }
+            // One silenced segment silences the rest of the block: the words after it were never
+            // spoken either, whatever the engine goes on to report about them.
+            if (!outcome.delivered) return outcome
             consecutiveTimeouts = 0
         }
+        return SpeechOutcome.COMPLETED
     }
 
     private fun recoverEngineIfNeeded(reason: String, trace: DiagnosticTrace?) {
@@ -621,6 +704,11 @@ class BilingualTtsEngine(context: Context) {
     private fun interruptInternal(reason: String): Long {
         val oldGeneration = generation.get()
         val newGeneration = generation.incrementAndGet()
+        val discardedOutcome = if (reason == EXPLICIT_STOP_REASON) {
+            SpeechOutcome.CANCELLED_BY_USER
+        } else {
+            SpeechOutcome.INTERRUPTED
+        }
         var removedRequests = 0
         while (true) {
             val request = requests.tryReceive().getOrNull() ?: break
@@ -636,6 +724,13 @@ class BilingualTtsEngine(context: Context) {
                     ),
                 ),
             )
+            // A block pulled off the queue here never reaches the worker, so this is its only
+            // chance to be accounted for. Without it the reading never settles and the page is
+            // left neither heard nor owed.
+            if (request.readingId != NO_READING) {
+                reportBlock(request, discardedOutcome)
+                releaseBlock()
+            }
         }
         val activeCount = utterances.size
         utterances.forEach { (id, state) ->
@@ -650,7 +745,7 @@ class BilingualTtsEngine(context: Context) {
                     ),
                 ),
             )
-            state.completion.complete(Unit)
+            state.completion.complete(discardedOutcome)
         }
         utterances.clear()
         outstandingBlocks.set(0)
@@ -692,6 +787,12 @@ class BilingualTtsEngine(context: Context) {
 
     private companion object {
         const val NO_READING = 0L
+
+        /** Block index for speech that is not part of a reading, such as a status notice. */
+        const val NO_BLOCK = -1
+
+        /** The one interrupt reason that is the user's own decision rather than a new target. */
+        const val EXPLICIT_STOP_REASON = "explicit_stop"
         const val ENGINE_READY_TIMEOUT_MS = 8_000L
         const val TIMEOUTS_BEFORE_ENGINE_RESTART = 2
         const val BASE_UTTERANCE_TIMEOUT_MS = 8_000L

@@ -18,11 +18,15 @@ class ReadingLedger(
         /**
          * Speak [text], which is the part of [document] the user has not heard. [continuation] marks
          * the tail of a page they have already partly heard, so speech appends instead of cutting in.
+         *
+         * [alreadyHeard] is the ledger entry this recognition continues, and it must be handed back
+         * to [recordDelivered] so the page is recorded as a whole rather than as a loose tail.
          */
         data class Speak(
             val text: String,
             val document: String,
             val continuation: Boolean,
+            val alreadyHeard: String,
         ) : Decision
 
         data class Skip(val reason: String) : Decision
@@ -52,9 +56,14 @@ class ReadingLedger(
             coverage >= RE_READ_COVERAGE ||
                 DocumentSpeechPolicy.sameDocument(entry.spokenText, candidate) ||
                 DocumentSpeechPolicy.covers(container = candidate, contained = entry.spokenText)
-        } ?: return Decision.Speak(candidate, document = candidate, continuation = false)
+        } ?: return Decision.Speak(
+            candidate,
+            document = candidate,
+            continuation = false,
+            alreadyHeard = "",
+        )
 
-        val (match, coverage) = matched
+        val (match, _) = matched
         match.lastSeenAtMs = now
         val addition = DocumentSpeechPolicy.newContent(
             alreadySpoken = match.spokenText,
@@ -63,35 +72,47 @@ class ReadingLedger(
         return when {
             addition.isBlank() -> Decision.Skip("already_read_completely")
 
-            // A few characters appearing between two reads of an otherwise familiar page is
-            // recognition noise: a changed clock digit, a notification badge, a line break that
-            // moved. Speaking it alone is the stray fragment users hear between full readings.
-            //
-            // The coverage condition matters as much as the length. A short addition to a page the
-            // user has almost entirely heard is noise; the same short addition to a page that is
-            // half new is the point of reading it, and must not be swallowed.
-            addition.length < ALWAYS_NOISE_CHARACTERS ||
-                (addition.length < MIN_CONTINUATION_CHARACTERS && coverage >= NOISE_FLOOR_COVERAGE) ->
-                Decision.Skip("continuation_below_noise_floor")
+            // Recognition jitter between two reads of the same page is loose glyphs: a stray "O",
+            // a "D" from a bottle's shoulder, an "=" where a line ended. It is never a word. This
+            // used to be judged by character count, and the count was wrong in the way that matters
+            // most — it threw away "PARFUM", "DE", a room number and a platform number, which are
+            // short precisely because they are the whole reason someone pointed the glasses at
+            // something. A device bundle shows the addition "BLEU / DE / CHANEL / PARFUM" being
+            // discarded as noise 42 times in one session. Asking whether the addition contains a
+            // word keeps the jitter out and lets the product name through.
+            !carriesAWord(addition) -> Decision.Skip("continuation_is_recognition_jitter")
 
-            else -> Decision.Speak(addition, document = candidate, continuation = true)
+            else -> Decision.Speak(
+                addition,
+                document = candidate,
+                continuation = true,
+                alreadyHeard = match.spokenText,
+            )
         }
     }
 
     /**
-     * Records the whole page the user has now heard, replacing any earlier partial record of it.
+     * Records the part of a page the user has now genuinely heard.
      *
-     * Pass the full recognized document rather than the spoken delta: once the tail has been read
-     * aloud the user has heard the entire page, and storing only the tail would make the first half
-     * look unheard on the next pass and read it a second time.
+     * [alreadyHeard] is the entry this reading continued, taken from [Decision.Speak]; passing it
+     * back means the ledger stores the whole page rather than a loose tail, which would otherwise
+     * make the first half look unread on the next pass and be spoken twice.
      *
-     * Only call this once speech has actually been accepted, so a rejected or dropped reading never
-     * masks the page on the next attempt.
+     * [deliveredText] must contain only what reached the user's ears. Call this from a speech
+     * completion callback, never from the code that queues speech: the two are seconds apart, and
+     * on a device where the target changes every 343 ms they are usually different by most of a
+     * page. Whatever is left out stays owed and will be offered again on the next recognition.
      */
     @Synchronized
-    fun recordSpoken(document: String, now: Long = System.currentTimeMillis()) {
-        val spoken = DocumentSpeechPolicy.readableLines(document).joinToString("\n")
-        if (spoken.isBlank()) return
+    fun recordDelivered(
+        alreadyHeard: String,
+        deliveredText: String,
+        now: Long = System.currentTimeMillis(),
+    ) {
+        val delivered = DocumentSpeechPolicy.readableLines(deliveredText).joinToString("\n")
+        if (delivered.isBlank()) return
+        val heard = DocumentSpeechPolicy.readableLines(alreadyHeard).joinToString("\n")
+        val spoken = if (heard.isBlank()) delivered else "$heard\n$delivered"
 
         entries.removeAll { entry ->
             DocumentSpeechPolicy.sameDocument(entry.spokenText, spoken) ||
@@ -108,15 +129,25 @@ class ReadingLedger(
         entries.removeAll { now - it.lastSeenAtMs >= repeatWindowMs }
     }
 
+    /** True when [text] contains at least one run of letters or digits long enough to be a word. */
+    private fun carriesAWord(text: String): Boolean =
+        NON_WORD.split(text).any { token -> token.length >= MIN_WORD_CHARACTERS }
+
     private companion object {
+        private val NON_WORD = Regex("[^\\p{L}\\p{N}]+")
+
+        /**
+         * Two characters. "DE" and "12" are words; a lone "O" or "=" left over from a bottle's
+         * shoulder is not. A page that really is one character long is not a continuation at all,
+         * so it is spoken through the fresh-page path and never reaches this rule.
+         */
+        const val MIN_WORD_CHARACTERS = 2
+
         /**
          * Long enough that holding a gaze on one page never re-reads it, short enough that coming
          * back to the same page later in a session reads it again on purpose.
          */
         const val DEFAULT_REPEAT_WINDOW_MS = 120_000L
-
-        /** Shortest addition worth interrupting a page for. Below this it is recognition noise. */
-        const val MIN_CONTINUATION_CHARACTERS = 24
 
         /**
          * How much of a recognition must already be familiar for it to count as the same page.
@@ -126,15 +157,5 @@ class ReadingLedger(
          * are read. Below half, the content really has changed and deserves a full reading.
          */
         const val RE_READ_COVERAGE = 0.5
-
-        /** A short addition only counts as noise on a page this thoroughly heard already. */
-        const val NOISE_FLOOR_COVERAGE = 0.8
-
-        /**
-         * An addition this short is never worth interrupting for, whatever the coverage. A word or
-         * two appearing between two reads of a label is a recognition difference, not new content:
-         * a device log shows "BLEU / CHANEL" becoming "BLEU / DE / CHANEL" on the same bottle.
-         */
-        const val ALWAYS_NOISE_CHARACTERS = 12
     }
 }
