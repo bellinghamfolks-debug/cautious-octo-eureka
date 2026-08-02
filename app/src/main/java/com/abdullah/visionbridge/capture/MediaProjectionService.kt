@@ -56,7 +56,20 @@ class MediaProjectionService : Service() {
     private val processing = AtomicBoolean(false)
     private val frameSequence = AtomicLong(0L)
     private val frameChangeDetector = FrameChangeDetector()
-    private val targetChangeDetector = FrameChangeDetector()
+
+    /**
+     * One tracker per mode, because a scene and a page tolerate very different amounts of residual
+     * change. Switching mode leaves the other tracker without a reference, which is the right
+     * answer: the first frame after a mode change genuinely is a new target.
+     */
+    private val textTargetTracker = VisualTargetTracker(
+        minimumResidualMean = TEXT_TARGET_CHANGE_MEAN_DIFFERENCE,
+        minimumResidualRatio = TEXT_TARGET_CHANGE_RATIO,
+    )
+    private val sceneTargetTracker = VisualTargetTracker(
+        minimumResidualMean = SCENE_TARGET_CHANGE_MEAN_DIFFERENCE,
+        minimumResidualRatio = SCENE_TARGET_CHANGE_RATIO,
+    )
     private val frameQueueLock = Any()
 
     private val container by lazy { (application as VisionBridgeApp).container }
@@ -381,33 +394,39 @@ class MediaProjectionService : Service() {
         unavailableFeedSince = 0L
         lastFrameAt = now
 
-        val targetMean = if (settings.mode == AnalysisMode.SCENE_DESCRIPTION) {
+        val scene = settings.mode == AnalysisMode.SCENE_DESCRIPTION
+        val targetMean = if (scene) {
             SCENE_TARGET_CHANGE_MEAN_DIFFERENCE
         } else {
             TEXT_TARGET_CHANGE_MEAN_DIFFERENCE
         }
-        val targetRatio = if (settings.mode == AnalysisMode.SCENE_DESCRIPTION) {
-            SCENE_TARGET_CHANGE_RATIO
-        } else {
-            TEXT_TARGET_CHANGE_RATIO
-        }
-        val targetDecision = targetChangeDetector.evaluateFast(
-            bitmap = bitmap,
-            minimumMeanDifference = targetMean,
-            minimumChangedRatio = targetRatio,
-        )
-        val visualTargetChanged = targetDecision.accepted
+        val targetRatio = if (scene) SCENE_TARGET_CHANGE_RATIO else TEXT_TARGET_CHANGE_RATIO
+        val tracker = if (scene) sceneTargetTracker else textTargetTracker
+        val targetDecision = tracker.evaluate(BitmapSignature.of(bitmap))
+        val visualTargetChanged = targetDecision.targetChanged
         DiagnosticHub.record(
             "VISUAL_TARGET_DECISION",
             trace.fields(
                 mapOf(
                     "targetChanged" to visualTargetChanged,
                     "decisionReason" to targetDecision.reason,
-                    "meanAbsoluteDifference" to targetDecision.meanAbsoluteDifference,
-                    "changedPixelRatio" to targetDecision.changedPixelRatio,
+                    "targetTrackId" to targetDecision.trackId,
+                    // The measurement that matters is the one taken after motion is accounted for.
+                    // The unaligned pair is kept beside it because it is what the previous build
+                    // decided on, so a bundle from the field shows directly how often the two
+                    // disagree.
+                    "meanAbsoluteDifference" to targetDecision.alignedMeanAbsoluteDifference,
+                    "changedPixelRatio" to targetDecision.alignedChangedCellRatio,
+                    "unalignedMeanAbsoluteDifference" to
+                        targetDecision.unalignedMeanAbsoluteDifference,
+                    "unalignedChangedPixelRatio" to targetDecision.unalignedChangedCellRatio,
+                    "motionXCells" to targetDecision.motionXCells,
+                    "motionYCells" to targetDecision.motionYCells,
+                    "motionCells" to targetDecision.motionCells,
+                    "consecutiveCandidateFrames" to targetDecision.consecutiveCandidateFrames,
                     "minimumMeanDifference" to targetMean,
                     "minimumChangedPixelRatio" to targetRatio,
-                    "thresholdLogic" to "OR",
+                    "thresholdLogic" to "OR_AFTER_ALIGNMENT",
                 ),
             ),
         )
@@ -710,7 +729,8 @@ class MediaProjectionService : Service() {
         unavailableFeedSince = 0L
         lastUnavailableFeedNoticeAt = 0L
         frameChangeDetector.reset()
-        targetChangeDetector.reset()
+        textTargetTracker.reset()
+        sceneTargetTracker.reset()
     }
 
     private fun initialCaptureSize(): Triple<Int, Int, Int> {
