@@ -63,12 +63,12 @@ class MediaProjectionService : Service() {
      * answer: the first frame after a mode change genuinely is a new target.
      */
     private val textTargetTracker = VisualTargetTracker(
-        minimumResidualMean = TEXT_TARGET_CHANGE_MEAN_DIFFERENCE,
-        minimumResidualRatio = TEXT_TARGET_CHANGE_RATIO,
+        maximumDissimilarity = TEXT_TARGET_DISSIMILARITY,
+        maximumChromaDifference = TEXT_TARGET_CHROMA,
     )
     private val sceneTargetTracker = VisualTargetTracker(
-        minimumResidualMean = SCENE_TARGET_CHANGE_MEAN_DIFFERENCE,
-        minimumResidualRatio = SCENE_TARGET_CHANGE_RATIO,
+        maximumDissimilarity = SCENE_TARGET_DISSIMILARITY,
+        maximumChromaDifference = SCENE_TARGET_CHROMA,
     )
     private val frameQueueLock = Any()
 
@@ -395,14 +395,10 @@ class MediaProjectionService : Service() {
         lastFrameAt = now
 
         val scene = settings.mode == AnalysisMode.SCENE_DESCRIPTION
-        val targetMean = if (scene) {
-            SCENE_TARGET_CHANGE_MEAN_DIFFERENCE
-        } else {
-            TEXT_TARGET_CHANGE_MEAN_DIFFERENCE
-        }
-        val targetRatio = if (scene) SCENE_TARGET_CHANGE_RATIO else TEXT_TARGET_CHANGE_RATIO
         val tracker = if (scene) sceneTargetTracker else textTargetTracker
-        val targetDecision = tracker.evaluate(BitmapSignature.of(bitmap))
+        val trackingStarted = SystemClock.elapsedRealtimeNanos()
+        val targetDecision = tracker.evaluate(BitmapFrames.trackedFrame(bitmap))
+        val trackingMs = (SystemClock.elapsedRealtimeNanos() - trackingStarted) / 1_000_000.0
         val visualTargetChanged = targetDecision.targetChanged
         DiagnosticHub.record(
             "VISUAL_TARGET_DECISION",
@@ -411,22 +407,25 @@ class MediaProjectionService : Service() {
                     "targetChanged" to visualTargetChanged,
                     "decisionReason" to targetDecision.reason,
                     "targetTrackId" to targetDecision.trackId,
-                    // The measurement that matters is the one taken after motion is accounted for.
-                    // The unaligned pair is kept beside it because it is what the previous build
-                    // decided on, so a bundle from the field shows directly how often the two
-                    // disagree.
-                    "meanAbsoluteDifference" to targetDecision.alignedMeanAbsoluteDifference,
-                    "changedPixelRatio" to targetDecision.alignedChangedCellRatio,
-                    "unalignedMeanAbsoluteDifference" to
-                        targetDecision.unalignedMeanAbsoluteDifference,
-                    "unalignedChangedPixelRatio" to targetDecision.unalignedChangedCellRatio,
-                    "motionXCells" to targetDecision.motionXCells,
-                    "motionYCells" to targetDecision.motionYCells,
-                    "motionCells" to targetDecision.motionCells,
+                    // What is left after the frames have been registered onto each other, measured
+                    // structurally rather than as a pixel difference. The unaligned figure is kept
+                    // beside it because it is what the previous build decided on, so a bundle from
+                    // the field shows directly how often the two disagree.
+                    "structuralDissimilarity" to targetDecision.dissimilarity,
+                    "unalignedDissimilarity" to targetDecision.unalignedDissimilarity,
+                    "chromaDifference" to targetDecision.chromaDifference,
+                    "alignmentCoverage" to targetDecision.coverage,
+                    "registrationMethod" to targetDecision.method,
+                    "motionTranslationX" to targetDecision.translationX,
+                    "motionTranslationY" to targetDecision.translationY,
+                    "motionScale" to targetDecision.scale,
+                    "motionRotationDegrees" to targetDecision.rotationDegrees,
+                    "motionProjective" to targetDecision.projective,
+                    "featureInlierRatio" to targetDecision.featureInlierRatio,
                     "consecutiveCandidateFrames" to targetDecision.consecutiveCandidateFrames,
-                    "minimumMeanDifference" to targetMean,
-                    "minimumChangedPixelRatio" to targetRatio,
-                    "thresholdLogic" to "OR_AFTER_ALIGNMENT",
+                    "maximumDissimilarity" to
+                        if (scene) SCENE_TARGET_DISSIMILARITY else TEXT_TARGET_DISSIMILARITY,
+                    "trackingMs" to trackingMs,
                 ),
             ),
         )
@@ -843,10 +842,31 @@ class MediaProjectionService : Service() {
         private const val SCENE_MIN_MEAN_DIFFERENCE = 2.4
         private const val SCENE_MIN_CHANGED_RATIO = 0.018
 
-        private const val TEXT_TARGET_CHANGE_MEAN_DIFFERENCE = 19.0
-        private const val TEXT_TARGET_CHANGE_RATIO = 0.32
-        private const val SCENE_TARGET_CHANGE_MEAN_DIFFERENCE = 8.0
-        private const val SCENE_TARGET_CHANGE_RATIO = 0.12
+        /**
+         * How much structure may remain unexplained after registration before the subject counts as
+         * replaced. Measured as (1 − SSIM) / 2, so it is a fraction of content rather than a pixel
+         * count: on constructed scenes the same page after motion lands under 0.10, a lighting
+         * change under 0.15, and an entirely different page above 0.30.
+         *
+         * Text reading is the more forgiving of the two, because abandoning a page the user is
+         * halfway through hearing is the expensive mistake. A scene description is a live statement
+         * about what is in front of someone, so it is held to a tighter bound.
+         *
+         * Both sit inside a measured gap. Over 29 views of one page — translated, rotated, zoomed,
+         * relit and noised — the worst score was 0.226; over 13 genuinely different subjects the
+         * best was 0.299. The gap is only 0.073 wide, which is why the consensus rule matters as
+         * much as the threshold: a single frame that lands on the wrong side of it changes nothing.
+         */
+        private const val TEXT_TARGET_DISSIMILARITY = 0.26
+        private const val SCENE_TARGET_DISSIMILARITY = 0.24
+
+        /**
+         * Colour difference that counts as a new subject on its own, averaged over the two chroma
+         * channels. Two labels can share a layout and differ only in hue, which the grayscale
+         * signature this replaces could not see at all.
+         */
+        private const val TEXT_TARGET_CHROMA = 26.0
+        private const val SCENE_TARGET_CHROMA = 18.0
         private const val DROPPED_PREVIEW_INTERVAL_MS = 1_000L
 
         private const val UNAVAILABLE_FEED_NOTICE_AFTER_MS = 1_500L

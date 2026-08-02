@@ -1,210 +1,260 @@
 package com.abdullah.visionbridge.capture
 
-import kotlin.math.sqrt
+import com.abdullah.visionbridge.capture.vision.Features
+import com.abdullah.visionbridge.capture.vision.Homography
+import com.abdullah.visionbridge.capture.vision.LucasKanade
+import com.abdullah.visionbridge.capture.vision.StructuralResidual
+import com.abdullah.visionbridge.capture.vision.TrackedFrame
+import com.abdullah.visionbridge.capture.vision.Warp
 
 /**
- * Decides whether the thing in front of the user has been *replaced*, as opposed to having *moved*.
+ * Decides whether the subject in front of the user has been *replaced*, as opposed to having
+ * *moved*.
  *
- * The previous answer was a whole-frame pixel difference compared cell by cell at the same index.
- * It could not tell the two apart, because it never measured motion. In one 467-second device
- * session, with the user holding a single perfume bottle the entire time, it declared 439 new
- * targets — a median of one every 343 milliseconds. Recognition of that bottle takes 2,231
- * milliseconds, so every result was invalidated roughly six times over before it existed, speech
- * was cut off 153 times, and 153 recognitions of a perfectly legible label produced 200 characters
- * of audio.
+ * The version this replaces shrank each frame to a 24×24 grayscale grid, subtracted it from the
+ * last one cell by cell, and called the result a change of subject. It had no notion of motion at
+ * all, so a hand that drifted a few millimetres was indistinguishable from a page being swapped.
+ * In one 467-second device session, with the user holding a single perfume bottle the whole time,
+ * it declared 439 new targets — one every 343 milliseconds against a recognition pass that takes
+ * 2,231 — cut speech off 153 times, and turned 153 correct readings of a legible label into 200
+ * characters of audio.
  *
- * The rules here are the three the evidence demands:
+ * What runs now is a real registration pipeline:
  *
- * 1. **Estimate the motion.** Search integer cell shifts for the alignment that best explains this
- *    frame in terms of the last one.
- * 2. **Measure what is left.** Compare only the overlap, after alignment. A hand that drifted
- *    leaves almost nothing behind; a bottle swapped for a page leaves everything.
- * 3. **Require agreement over time.** One frame is a glint, a blink, a passing hand. A new target
- *    must be visible, and consistent with itself, across several consecutive frames before the
+ * 1. **Lucas-Kanade**, pyramidal, over a six-parameter affine warp. Coarse levels give it the
+ *    capture range for large motion, fine levels the sub-pixel precision. It answers translation,
+ *    rotation and scale together, because a person holding an object does all three at once.
+ * 2. **Feature matching and a homography** when Lucas-Kanade cannot get there — a large jump, a
+ *    heavy rotation, a moment of occlusion. FAST corners with oriented BRIEF descriptors, matched
+ *    with a ratio test and a cross-check, fitted by normalised DLT inside RANSAC. A homography
+ *    also covers the case Lucas-Kanade's affine model cannot: a flat page now being viewed from an
+ *    angle.
+ * 3. **Structural similarity** on what is left after alignment, not a pixel difference. SSIM
+ *    compares local luminance, contrast and correlation, so the same label under changed lighting
+ *    reads as the same content while a different label at identical brightness does not. Colour is
+ *    carried alongside, which the grayscale signature could not do at all.
+ * 4. **Temporal consensus.** A single frame is a glint, a blink, a hand passing over the page. A
+ *    new subject has to be visible, and consistent with itself, across consecutive frames before a
  *    reading in progress is thrown away.
  *
- * A [Decision.trackId] that survives motion is what lets everything downstream stop treating a
- * steady hand as a stream of new subjects.
+ * [Decision.trackId] is the identity that survives all of that, and it is what lets everything
+ * downstream stop treating a steady hand as a stream of new subjects.
  */
 class VisualTargetTracker(
-    private val minimumResidualMean: Double,
-    private val minimumResidualRatio: Double,
+    private val maximumDissimilarity: Double,
+    private val maximumChromaDifference: Double,
     private val framesToConfirm: Int = DEFAULT_FRAMES_TO_CONFIRM,
-    private val maximumShiftCells: Int = DEFAULT_MAXIMUM_SHIFT_CELLS,
 ) {
     data class Decision(
         val targetChanged: Boolean,
         val reason: String,
         val trackId: Long,
-        /** Difference remaining once motion has been accounted for; null on the first frame. */
-        val alignedMeanAbsoluteDifference: Double?,
-        val alignedChangedCellRatio: Double?,
-        /** What the old index-aligned comparison would have reported, kept for diagnostics. */
-        val unalignedMeanAbsoluteDifference: Double?,
-        val unalignedChangedCellRatio: Double?,
-        val motionXCells: Int,
-        val motionYCells: Int,
-        val motionCells: Double,
+        /** Structural dissimilarity remaining after alignment, 0..1. Null on the first frame. */
+        val dissimilarity: Double?,
+        val chromaDifference: Double?,
+        val coverage: Double?,
+        /** What the same measurement says with no motion compensation at all. */
+        val unalignedDissimilarity: Double?,
+        /** Which estimator produced the alignment that was believed. */
+        val method: String,
+        val translationX: Double,
+        val translationY: Double,
+        val scale: Double,
+        val rotationDegrees: Double,
+        val projective: Double,
+        val featureInlierRatio: Double?,
         val consecutiveCandidateFrames: Int,
     )
 
-    private var accepted: FrameSignature? = null
-    private var candidate: FrameSignature? = null
+    private var reference: TrackedFrame? = null
+    private var candidate: TrackedFrame? = null
     private var candidateStreak = 0
     private var trackId = 0L
 
+    /** The warp from the previous frame, used to start the next search where motion left off. */
+    private var motionPrior: Warp = Warp.identity()
+
     @Synchronized
-    fun evaluate(signature: FrameSignature): Decision {
-        val previous = accepted
+    fun evaluate(frame: TrackedFrame): Decision {
+        val previous = reference
         if (previous == null) {
-            accept(signature)
+            adopt(frame, advance = true)
             return Decision(
                 targetChanged = true,
                 reason = "initial_frame",
                 trackId = trackId,
-                alignedMeanAbsoluteDifference = null,
-                alignedChangedCellRatio = null,
-                unalignedMeanAbsoluteDifference = null,
-                unalignedChangedCellRatio = null,
-                motionXCells = 0,
-                motionYCells = 0,
-                motionCells = 0.0,
+                dissimilarity = null,
+                chromaDifference = null,
+                coverage = null,
+                unalignedDissimilarity = null,
+                method = "none",
+                translationX = 0.0,
+                translationY = 0.0,
+                scale = 1.0,
+                rotationDegrees = 0.0,
+                projective = 0.0,
+                featureInlierRatio = null,
                 consecutiveCandidateFrames = 0,
             )
         }
 
-        val unaligned = previous.compareShifted(signature, 0, 0)
-        val motion = estimateMotion(previous, signature)
-        val aligned = motion.overlap
+        val registration = register(previous, frame)
+        val unaligned = StructuralResidual.measure(previous.plane, frame.plane, Warp.identity())
 
-        if (!exceedsThresholds(aligned)) {
-            // Same subject, wherever it has drifted to. The reference moves with it so a slow
-            // drift can never accumulate into a false replacement.
-            accept(signature)
-            return decision(
-                changed = false,
-                reason = if (motion.magnitude > 0.0) "tracked_through_motion" else "target_unchanged",
-                unaligned = unaligned,
-                motion = motion,
-            )
+        if (registration != null && !isDifferentSubject(registration)) {
+            // The same subject, wherever it has drifted, turned or zoomed to. The reference moves
+            // with it, and the estimated warp seeds the next search, so continuous motion is
+            // followed rather than accumulated into a false replacement.
+            motionPrior = registration.warp
+            adopt(frame, advance = false)
+            return decide(false, trackedReason(registration), registration, unaligned)
         }
 
-        // Something is genuinely different. Before believing it, require the next frames to agree
-        // with each other: a hand passing over the page, a glint, or one badly exposed frame all
-        // look like a new target for exactly one frame.
-        val previousCandidate = candidate
-        val consistent = previousCandidate != null &&
-            !exceedsThresholds(estimateMotion(previousCandidate, signature).overlap)
+        // Something is genuinely different. Before believing it, require the next frame to agree
+        // with this one: a hand crossing the page, a glint, or one badly exposed frame all look
+        // like a new subject for exactly one frame, and each of those used to end a reading.
+        val held = candidate
+        val consistent = held != null && register(held, frame)?.let { !isDifferentSubject(it) } == true
         candidateStreak = if (consistent) candidateStreak + 1 else 1
-        candidate = signature
+        candidate = frame
 
+        val describing = registration ?: Registration(
+            warp = Warp.identity(),
+            residual = unaligned,
+            method = "none",
+            inlierRatio = null,
+        )
         if (candidateStreak < framesToConfirm) {
-            return decision(
-                changed = false,
-                reason = "awaiting_target_consensus",
-                unaligned = unaligned,
-                motion = motion,
-            )
+            return decide(false, "awaiting_target_consensus", describing, unaligned)
         }
 
-        accept(signature)
-        return decision(
-            changed = true,
-            reason = "new_target_confirmed",
-            unaligned = unaligned,
-            motion = motion,
-        )
+        motionPrior = Warp.identity()
+        adopt(frame, advance = true)
+        return decide(true, "new_target_confirmed", describing, unaligned)
     }
 
     @Synchronized
     fun reset() {
-        accepted = null
+        reference = null
         candidate = null
         candidateStreak = 0
+        motionPrior = Warp.identity()
     }
 
-    /** The identity of the subject currently being tracked. */
     @Synchronized
     fun currentTrackId(): Long = trackId
 
-    private fun accept(signature: FrameSignature) {
-        if (accepted == null || candidateStreak >= framesToConfirm) trackId++
-        accepted = signature
+    private fun adopt(frame: TrackedFrame, advance: Boolean) {
+        if (advance) trackId++
+        reference = frame
         candidate = null
         candidateStreak = 0
     }
 
-    private fun exceedsThresholds(overlap: FrameSignature.Overlap): Boolean {
-        // Too little overlap to judge: the frame moved further than the search can follow, which is
-        // itself evidence that the user is sweeping rather than reading.
-        if (overlap.cells == 0) return true
-        return overlap.meanAbsoluteDifference >= minimumResidualMean ||
-            overlap.changedCellRatio >= minimumResidualRatio
-    }
-
-    /**
-     * Finds the integer cell shift that best explains [current] in terms of [reference].
-     *
-     * An exhaustive search over a small grid, which on 32×32 cells and a ±6 range is a few hundred
-     * thousand integer operations — far cheaper than the recognition pass it protects, and free of
-     * the convergence failures a gradient method has on the high-contrast edges of printed text.
-     */
-    private fun estimateMotion(reference: FrameSignature, current: FrameSignature): Motion {
-        var best = Motion(0, 0, reference.compareShifted(current, 0, 0))
-        for (dy in -maximumShiftCells..maximumShiftCells) {
-            for (dx in -maximumShiftCells..maximumShiftCells) {
-                if (dx == 0 && dy == 0) continue
-                val overlap = reference.compareShifted(current, dx, dy)
-                // Require a real overlap, so a shift that simply compares four cells cannot win.
-                if (overlap.cells < reference.luminance.size / MINIMUM_OVERLAP_DIVISOR) continue
-                if (overlap.meanAbsoluteDifference < best.overlap.meanAbsoluteDifference) {
-                    best = Motion(dx, dy, overlap)
-                }
-            }
-        }
-        return best
-    }
-
-    private fun decision(
-        changed: Boolean,
-        reason: String,
-        unaligned: FrameSignature.Overlap,
-        motion: Motion,
-    ) = Decision(
-        targetChanged = changed,
-        reason = reason,
-        trackId = trackId,
-        alignedMeanAbsoluteDifference = motion.overlap.meanAbsoluteDifference,
-        alignedChangedCellRatio = motion.overlap.changedCellRatio,
-        unalignedMeanAbsoluteDifference = unaligned.meanAbsoluteDifference,
-        unalignedChangedCellRatio = unaligned.changedCellRatio,
-        motionXCells = motion.dx,
-        motionYCells = motion.dy,
-        motionCells = motion.magnitude,
-        consecutiveCandidateFrames = candidateStreak,
+    private class Registration(
+        val warp: Warp,
+        val residual: StructuralResidual.Result,
+        val method: String,
+        val inlierRatio: Double?,
     )
 
-    private data class Motion(val dx: Int, val dy: Int, val overlap: FrameSignature.Overlap) {
-        val magnitude: Double get() = sqrt((dx * dx + dy * dy).toDouble())
+    /**
+     * Estimates the transform between two frames, cheaply first and thoroughly only if needed.
+     */
+    private fun register(from: TrackedFrame, to: TrackedFrame): Registration? {
+        // Aligned down to the analysis level rather than the finest, and started from the warp the
+        // last frame produced so continuous motion is followed instead of re-derived.
+        val level = from.analysisLevel
+        val direct = LucasKanade.align(from.pyramid, to.pyramid, motionPrior, finestLevel = level)
+            ?: LucasKanade.align(from.pyramid, to.pyramid, finestLevel = level)
+        val directResidual = direct
+            ?.takeIf { it.warp.isPlausible() }
+            ?.let { Registration(it.warp, StructuralResidual.measure(from.plane, to.plane, it.warp), "lucas_kanade", null) }
+
+        // Good enough: do not pay for feature detection.
+        if (directResidual != null && !isDifferentSubject(directResidual)) return directResidual
+
+        val fromFeatures = from.features
+        val toFeatures = to.features
+        if (fromFeatures.size < Homography.MINIMUM_MATCHES || toFeatures.size < Homography.MINIMUM_MATCHES) {
+            return directResidual
+        }
+        val matches = Features.match(fromFeatures, toFeatures)
+        val estimate = Homography.estimate(matches) ?: return directResidual
+
+        // Features and the residual share a level, so the homography needs no rescaling here.
+        if (!estimate.warp.isPlausible()) return directResidual
+        val featureResidual = Registration(
+            warp = estimate.warp,
+            residual = StructuralResidual.measure(from.plane, to.plane, estimate.warp),
+            method = "homography",
+            inlierRatio = estimate.inlierRatio,
+        )
+
+        if (directResidual == null) return featureResidual
+        return if (featureResidual.residual.dissimilarity < directResidual.residual.dissimilarity) {
+            featureResidual
+        } else {
+            directResidual
+        }
+    }
+
+    private fun isDifferentSubject(registration: Registration): Boolean {
+        val residual = registration.residual
+        // Too little overlap left to judge: the subject moved further than any transform could
+        // follow, which is itself evidence the user has swept away from it.
+        if (!residual.usable) return true
+        return residual.dissimilarity >= maximumDissimilarity ||
+            residual.chromaDifference >= maximumChromaDifference
+    }
+
+    private fun trackedReason(registration: Registration): String {
+        val motion = registration.warp.describe(1, 1)
+        val moved = kotlin.math.abs(motion.translationX) > STILL ||
+            kotlin.math.abs(motion.translationY) > STILL ||
+            kotlin.math.abs(motion.scale - 1.0) > STILL_SCALE ||
+            kotlin.math.abs(motion.rotationDegrees) > STILL_DEGREES
+        return if (moved) "tracked_through_motion" else "target_unchanged"
+    }
+
+    private fun decide(
+        changed: Boolean,
+        reason: String,
+        registration: Registration,
+        unaligned: StructuralResidual.Result,
+    ): Decision {
+        val plane = reference?.plane
+        val description = registration.warp.describe(plane?.width ?: 1, plane?.height ?: 1)
+        return Decision(
+            targetChanged = changed,
+            reason = reason,
+            trackId = trackId,
+            dissimilarity = registration.residual.dissimilarity,
+            chromaDifference = registration.residual.chromaDifference,
+            coverage = registration.residual.coverage,
+            unalignedDissimilarity = unaligned.dissimilarity,
+            method = registration.method,
+            translationX = description.translationX,
+            translationY = description.translationY,
+            scale = description.scale,
+            rotationDegrees = description.rotationDegrees,
+            projective = description.projective,
+            featureInlierRatio = registration.inlierRatio,
+            consecutiveCandidateFrames = candidateStreak,
+        )
     }
 
     companion object {
         /**
          * Two consecutive frames that agree with each other. One frame is a glint or a hand passing
          * over the page; two are a decision the user made. At the capture rates in the device logs
-         * this costs between 0.2 and 0.7 seconds before a genuinely new subject is picked up, which
-         * is far less than the 2.2 seconds recognition takes anyway.
+         * this costs between 0.2 and 0.7 seconds before a genuinely new subject is picked up, far
+         * less than the 2.2 seconds recognition takes anyway.
          */
         const val DEFAULT_FRAMES_TO_CONFIRM = 2
 
-        /**
-         * A fifth of the grid. On 32 cells that is a shift of six, or roughly a fifth of the frame
-         * between two captures — more movement than a person reading a label ever produces, and
-         * past it the user is sweeping the glasses rather than holding something still.
-         */
-        const val DEFAULT_MAXIMUM_SHIFT_CELLS = 6
-
-        /** A candidate alignment must cover at least a third of the reference to count. */
-        const val MINIMUM_OVERLAP_DIVISOR = 3
+        private const val STILL = 0.75
+        private const val STILL_SCALE = 0.02
+        private const val STILL_DEGREES = 0.5
     }
 }

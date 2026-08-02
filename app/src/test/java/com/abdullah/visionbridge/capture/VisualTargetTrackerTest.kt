@@ -1,246 +1,219 @@
 package com.abdullah.visionbridge.capture
 
+import com.abdullah.visionbridge.capture.vision.VisionScenes
+import com.abdullah.visionbridge.capture.vision.Warp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import kotlin.math.abs
-import kotlin.random.Random
 
 /**
- * The tracking rules, exercised against constructed scenes.
+ * The tracking decisions, at the thresholds the service ships.
  *
- * The thresholds are the ones the service uses for text reading, so a case that passes here is a
- * statement about the shipped behaviour and not about a convenient set of numbers.
+ * The case that matters most is the one the device bundle recorded: a user holding a single perfume
+ * bottle for 467 seconds, and 439 declarations that the subject had changed.
  */
 class VisualTargetTrackerTest {
 
     private fun tracker() = VisualTargetTracker(
-        minimumResidualMean = 19.0,
-        minimumResidualRatio = 0.32,
+        maximumDissimilarity = 0.26,
+        maximumChromaDifference = 26.0,
     )
 
-    // region scenes
+    private val centre = VisionScenes.SIZE / 2.0
 
-    /**
-     * A page of dark text on light paper, at a given offset.
-     *
-     * Words and the gaps between them matter: a solid bar would be unchanged by a sideways shift,
-     * and would make this suite easier than the thing it is testing.
-     */
-    private fun page(offsetX: Int = 0, offsetY: Int = 0, seed: Int = 1): FrameSignature {
-        val size = FrameSignature.GRID
-        val values = IntArray(size * size) { 232 }
-        val random = Random(seed)
-        // Nine text lines, three cells apart, each broken into words with spaces between them.
-        for (line in 0 until 9) {
-            val row = 2 + line * 3
-            var column = 2
-            while (column < size - 2) {
-                val word = 2 + random.nextInt(4)
-                repeat(word) {
-                    if (column < size - 2) {
-                        // Drawn before the bounds check so a clipped cell does not desynchronise
-                        // the ink of every cell after it, which would make two offsets of the same
-                        // page different documents rather than the same one moved.
-                        val ink = 24 + random.nextInt(30)
-                        val x = column + offsetX
-                        val y = row + offsetY
-                        if (x in 0 until size && y in 0 until size) values[y * size + x] = ink
-                        column++
-                    }
-                }
-                column += 1 + random.nextInt(2)
-            }
-        }
-        return FrameSignature(size, size, values)
-    }
+    private fun page(warp: Warp) = VisionScenes.frame(VisionScenes.transform(VisionScenes.page(), warp))
 
-    /** A perfume bottle: a bright label band on a dark background. */
-    private fun bottle(offsetX: Int = 0, offsetY: Int = 0): FrameSignature {
-        val size = FrameSignature.GRID
-        val values = IntArray(size * size) { 30 }
-        for (y in 10 until 20) {
-            for (x in 8 until 24) {
-                val px = x + offsetX
-                val py = y + offsetY
-                if (px in 0 until size && py in 0 until size) {
-                    values[py * size + px] = if (y in 13..16 && x in 10..21) 40 else 235
-                }
-            }
-        }
-        return FrameSignature(size, size, values)
-    }
+    // region motion is not replacement
 
-    /** Sensor noise, which every real frame carries. */
-    private fun withNoise(signature: FrameSignature, amplitude: Int, seed: Int): FrameSignature {
-        val random = Random(seed)
-        val values = IntArray(signature.luminance.size) { index ->
-            (signature.luminance[index] + random.nextInt(-amplitude, amplitude + 1)).coerceIn(0, 255)
-        }
-        return FrameSignature(signature.width, signature.height, values)
-    }
-
-    // endregion
-
-    /**
-     * The defect, stated as a measurement. Holding a page one cell to the left is not a new page,
-     * but comparing the two index by index says most of the frame changed — which is exactly what
-     * the old detector did, and why one motionless bottle produced 439 target changes in 467
-     * seconds.
-     */
     @Test
-    fun `a page that moves is not a page that changed`() {
+    fun `a page that drifts is not a page that changed`() {
         val tracker = tracker()
-        tracker.evaluate(page())
+        tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
 
-        val moved = tracker.evaluate(page(offsetX = 1, offsetY = 1))
+        val moved = tracker.evaluate(page(Warp.translation(4.0, 3.0)))
         assertFalse(
-            "A one-cell drift must not be a new target (aligned residual " +
-                "${moved.alignedMeanAbsoluteDifference}, unaligned " +
-                "${moved.unalignedMeanAbsoluteDifference})",
+            "drift reported as a new target: aligned ${moved.dissimilarity}, " +
+                "unaligned ${moved.unalignedDissimilarity}",
             moved.targetChanged,
         )
         assertEquals("tracked_through_motion", moved.reason)
-        assertEquals("The estimate must name the direction the content moved", 1, moved.motionXCells)
-        assertEquals(1, moved.motionYCells)
-
-        // And the difference the old detector would have measured really was over the threshold,
-        // so this test is describing the real failure and not an easy one.
+        // The measurement without motion compensation is the one the old build decided on, and it
+        // must be visibly worse — otherwise this test is not describing the real failure.
         assertTrue(
-            "Expected the unaligned comparison to exceed the old threshold",
-            moved.unalignedMeanAbsoluteDifference!! >= 19.0 ||
-                moved.unalignedChangedCellRatio!! >= 0.32,
-        )
-        assertTrue(
-            "Alignment must remove most of that difference",
-            moved.alignedMeanAbsoluteDifference!! < moved.unalignedMeanAbsoluteDifference!! / 2,
+            "alignment must explain most of the difference",
+            moved.dissimilarity!! < moved.unalignedDissimilarity!! / 2,
         )
     }
 
     @Test
-    fun `a target is tracked through drift in every direction`() {
-        for (dx in -4..4) {
-            for (dy in -4..4) {
-                val tracker = tracker()
-                tracker.evaluate(page())
-                val moved = tracker.evaluate(page(offsetX = dx, offsetY = dy))
-                assertFalse(
-                    "Drift of ($dx, $dy) was reported as a new target",
-                    moved.targetChanged,
-                )
-            }
+    fun `a page that rotates is tracked through the rotation`() {
+        for (degrees in listOf(4.0, 8.0, 12.0, -10.0)) {
+            val tracker = tracker()
+            tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
+            val decision = tracker.evaluate(page(Warp.similarity(centre, centre, degrees, 1.0, 0.0, 0.0)))
+            assertFalse(
+                "$degrees degrees reported as a new target (${decision.dissimilarity})",
+                decision.targetChanged,
+            )
         }
     }
 
     @Test
-    fun `a hand that keeps drifting never accumulates into a false change`() {
+    fun `an object brought closer or moved away is tracked through the zoom`() {
+        for (scale in listOf(0.88, 0.94, 1.08, 1.18)) {
+            val tracker = tracker()
+            tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
+            val decision = tracker.evaluate(page(Warp.similarity(centre, centre, 0.0, scale, 0.0, 0.0)))
+            assertFalse(
+                "scale $scale reported as a new target (${decision.dissimilarity})",
+                decision.targetChanged,
+            )
+        }
+    }
+
+    @Test
+    fun `rotation, zoom and drift at once are still one target`() {
         val tracker = tracker()
-        tracker.evaluate(page())
+        tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
+        val decision = tracker.evaluate(page(Warp.similarity(centre, centre, 9.0, 1.1, 5.0, -4.0)))
+        assertFalse("combined motion reported as a new target", decision.targetChanged)
+        assertTrue(decision.rotationDegrees > 4.0)
+        assertTrue(decision.scale > 1.03)
+    }
+
+    /** The device case: a hand holding a label, wandering, for thirty frames. */
+    @Test
+    fun `a steady hand produces no new targets at all`() {
+        val tracker = tracker()
+        tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
         var changes = 0
-        // Thirty frames of a hand wandering back and forth, as a person holding a label does.
         for (frame in 1..30) {
-            val dx = ((frame % 7) - 3)
-            val dy = ((frame % 5) - 2)
-            if (tracker.evaluate(withNoise(page(dx, dy), amplitude = 4, seed = frame)).targetChanged) {
-                changes++
-            }
+            val warp = Warp.similarity(
+                centre,
+                centre,
+                ((frame % 7) - 3) * 1.2,
+                1.0 + ((frame % 5) - 2) * 0.015,
+                ((frame % 9) - 4).toDouble(),
+                ((frame % 6) - 3).toDouble(),
+            )
+            val plane = VisionScenes.withNoise(
+                VisionScenes.transform(VisionScenes.page(), warp),
+                amplitude = 4f,
+                seed = frame,
+            )
+            if (tracker.evaluate(VisionScenes.frame(plane)).targetChanged) changes++
         }
-        assertEquals("A steady hand must produce no new targets at all", 0, changes)
+        assertEquals("a hand holding one label must be one target", 0, changes)
     }
 
     @Test
     fun `sensor noise alone is never a new target`() {
         val tracker = tracker()
-        tracker.evaluate(page())
+        tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
         repeat(20) { frame ->
-            val decision = tracker.evaluate(withNoise(page(), amplitude = 8, seed = 100 + frame))
-            assertFalse("Noise frame $frame was reported as a new target", decision.targetChanged)
+            val noisy = VisionScenes.withNoise(VisionScenes.page(), amplitude = 9f, seed = 100 + frame)
+            assertFalse("noise frame $frame", tracker.evaluate(VisionScenes.frame(noisy)).targetChanged)
         }
     }
 
-    /** The behaviour that must survive: a genuinely different subject is picked up. */
+    @Test
+    fun `a change of lighting is not a change of subject`() {
+        val tracker = tracker()
+        tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
+        val relit = VisionScenes.relit(VisionScenes.page(), gain = 0.7f, offset = 60f)
+        assertFalse(tracker.evaluate(VisionScenes.frame(relit)).targetChanged)
+    }
+
+    // endregion
+
+    // region replacement is still detected
+
     @Test
     fun `a bottle replaced by a page is a new target`() {
         val tracker = tracker()
-        val start = tracker.evaluate(bottle())
+        val start = tracker.evaluate(VisionScenes.frame(VisionScenes.bottle()))
 
-        val first = tracker.evaluate(page())
-        assertFalse("One frame is not enough to abandon a reading", first.targetChanged)
+        val first = tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
+        assertFalse("one frame must not end a reading", first.targetChanged)
         assertEquals("awaiting_target_consensus", first.reason)
 
-        val confirmed = tracker.evaluate(page())
-        assertTrue("Two agreeing frames confirm a new target", confirmed.targetChanged)
+        val confirmed = tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
+        assertTrue("two agreeing frames must confirm", confirmed.targetChanged)
         assertEquals("new_target_confirmed", confirmed.reason)
-        assertTrue("The track identity must advance", confirmed.trackId > start.trackId)
+        assertTrue(confirmed.trackId > start.trackId)
     }
 
-    /**
-     * A hand passing over the page, or one badly exposed frame, is a single frame of nonsense. It
-     * used to throw away the reading in progress; now it is outvoted.
-     */
+    @Test
+    fun `a page replaced by a different page is a new target`() {
+        val tracker = tracker()
+        tracker.evaluate(VisionScenes.frame(VisionScenes.page(seed = 7)))
+        tracker.evaluate(VisionScenes.frame(VisionScenes.page(seed = 41)))
+        assertTrue(tracker.evaluate(VisionScenes.frame(VisionScenes.page(seed = 41))).targetChanged)
+    }
+
+    /** The freedom the richer model adds must not make it blind to a real change. */
+    @Test
+    fun `many different scenes are each recognised as a change`() {
+        var detected = 0
+        val seeds = listOf(11, 23, 37, 53, 71, 89, 101, 127)
+        for (seed in seeds) {
+            val tracker = tracker()
+            tracker.evaluate(VisionScenes.frame(VisionScenes.page(seed = 5)))
+            tracker.evaluate(VisionScenes.frame(VisionScenes.page(seed = seed)))
+            if (tracker.evaluate(VisionScenes.frame(VisionScenes.page(seed = seed))).targetChanged) {
+                detected++
+            }
+        }
+        assertEquals("every different page must be detected", seeds.size, detected)
+    }
+
+    // endregion
+
+    // region consensus
+
     @Test
     fun `a single occluded frame does not abandon the reading`() {
         val tracker = tracker()
-        val start = tracker.evaluate(page())
+        val start = tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
 
-        val occluded = FrameSignature(
-            FrameSignature.GRID,
-            FrameSignature.GRID,
-            IntArray(FrameSignature.GRID * FrameSignature.GRID) { 12 },
-        )
-        assertFalse(tracker.evaluate(occluded).targetChanged)
+        assertFalse(tracker.evaluate(VisionScenes.frame(VisionScenes.flat(14))).targetChanged)
 
-        val back = tracker.evaluate(page())
-        assertFalse("The page returning is not a new target", back.targetChanged)
-        assertEquals("The track identity must survive the occlusion", start.trackId, back.trackId)
+        val back = tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
+        assertFalse("the page returning is not a new target", back.targetChanged)
+        assertEquals("the track must survive the occlusion", start.trackId, back.trackId)
     }
 
     @Test
-    fun `two different frames in a row do not confirm each other`() {
+    fun `two frames that differ from each other do not confirm each other`() {
         val tracker = tracker()
-        tracker.evaluate(page())
-
-        // A hand, then a wall: both differ from the page and from each other, so neither is a
-        // target the user chose to look at.
-        val hand = FrameSignature(
-            FrameSignature.GRID,
-            FrameSignature.GRID,
-            IntArray(FrameSignature.GRID * FrameSignature.GRID) { 12 },
-        )
-        val wall = FrameSignature(
-            FrameSignature.GRID,
-            FrameSignature.GRID,
-            IntArray(FrameSignature.GRID * FrameSignature.GRID) { 240 },
-        )
-        assertFalse(tracker.evaluate(hand).targetChanged)
-        assertFalse(tracker.evaluate(wall).targetChanged)
+        tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
+        assertFalse(tracker.evaluate(VisionScenes.frame(VisionScenes.flat(14))).targetChanged)
+        assertFalse(tracker.evaluate(VisionScenes.frame(VisionScenes.flat(238))).targetChanged)
     }
 
     @Test
-    fun `a new target settles into a stable track`() {
+    fun `a confirmed target settles into a stable track`() {
         val tracker = tracker()
-        tracker.evaluate(bottle())
-        tracker.evaluate(page())
-        val confirmed = tracker.evaluate(page())
+        tracker.evaluate(VisionScenes.frame(VisionScenes.bottle()))
+        tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
+        val confirmed = tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
         assertTrue(confirmed.targetChanged)
 
-        // Once confirmed, the new page is tracked like any other: drift and noise change nothing.
         var changes = 0
-        for (frame in 1..15) {
-            val moved = page(offsetX = (frame % 5) - 2, offsetY = (frame % 3) - 1)
-            if (tracker.evaluate(withNoise(moved, amplitude = 5, seed = frame)).targetChanged) {
-                changes++
-            }
+        for (frame in 1..12) {
+            val warp = Warp.translation(((frame % 5) - 2).toDouble(), ((frame % 3) - 1).toDouble())
+            if (tracker.evaluate(page(warp)).targetChanged) changes++
         }
         assertEquals(0, changes)
         assertEquals(confirmed.trackId, tracker.currentTrackId())
     }
 
+    // endregion
+
     @Test
     fun `the first frame opens a track`() {
-        val tracker = tracker()
-        val first = tracker.evaluate(page())
+        val first = tracker().evaluate(VisionScenes.frame(VisionScenes.page()))
         assertTrue(first.targetChanged)
         assertEquals("initial_frame", first.reason)
         assertEquals(1L, first.trackId)
@@ -249,74 +222,30 @@ class VisualTargetTrackerTest {
     @Test
     fun `a reset starts a new track`() {
         val tracker = tracker()
-        tracker.evaluate(page())
+        tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
         val before = tracker.currentTrackId()
         tracker.reset()
-        val after = tracker.evaluate(page())
+        val after = tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
         assertTrue(after.targetChanged)
         assertTrue(after.trackId > before)
     }
 
-    /**
-     * Motion beyond what the search can follow is a sweep, not a read, and must be treated as a
-     * change so a stale reading is not spoken over something the user has left behind.
-     */
+    /** Tracking must cost a small fraction of the recognition pass it protects. */
     @Test
-    fun `a sweep past the search range is a new target`() {
+    fun `tracking a frame is fast enough to run on every frame`() {
         val tracker = tracker()
-        tracker.evaluate(page())
-        tracker.evaluate(page(offsetX = 20))
-        assertTrue(tracker.evaluate(page(offsetX = 20)).targetChanged)
-    }
+        tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
+        // Warm the JIT before measuring.
+        repeat(5) { tracker.evaluate(page(Warp.translation(1.0, 1.0))) }
 
-    @Test
-    fun `overlap is measured only where the frames actually overlap`() {
-        val reference = page()
-        val shifted = page(offsetX = 3)
-        val overlap = reference.compareShifted(shifted, 3, 0)
-        assertEquals(FrameSignature.GRID * (FrameSignature.GRID - 3), overlap.cells)
+        val started = System.nanoTime()
+        repeat(20) { frame ->
+            tracker.evaluate(page(Warp.translation((frame % 4).toDouble(), (frame % 3).toDouble())))
+        }
+        val perFrameMs = (System.nanoTime() - started) / 20.0 / 1_000_000.0
         assertTrue(
-            "Aligned overlap should be near identical, was ${overlap.meanAbsoluteDifference}",
-            overlap.meanAbsoluteDifference < 1.0,
+            "tracking took %.1f ms per frame".format(perFrameMs),
+            perFrameMs < 120.0,
         )
-    }
-
-    @Test
-    fun `a shift with no overlap reports nothing rather than dividing by zero`() {
-        val overlap = page().compareShifted(page(), FrameSignature.GRID, 0)
-        assertEquals(0, overlap.cells)
-        assertEquals(0.0, overlap.meanAbsoluteDifference, 0.0)
-    }
-
-    /**
-     * The measurement that justifies the whole redesign, kept as a test so it cannot silently
-     * regress: on a one-cell drift the old index-aligned comparison sees a different page and the
-     * aligned one sees the same page.
-     */
-    @Test
-    fun `alignment is what separates motion from replacement`() {
-        val still = page()
-        val drifted = page(offsetX = 1, offsetY = 1)
-        val replaced = bottle()
-
-        val driftUnaligned = still.compareShifted(drifted, 0, 0)
-        val driftAligned = still.compareShifted(drifted, 1, 1)
-        val replacedAligned = still.compareShifted(replaced, 0, 0)
-
-        assertTrue(
-            "Unaligned drift must look like a change: ${driftUnaligned.meanAbsoluteDifference}",
-            driftUnaligned.meanAbsoluteDifference >= 19.0 ||
-                driftUnaligned.changedCellRatio >= 0.32,
-        )
-        assertTrue(
-            "Aligned drift must look like the same page: ${driftAligned.meanAbsoluteDifference}",
-            driftAligned.meanAbsoluteDifference < 19.0 && driftAligned.changedCellRatio < 0.32,
-        )
-        assertTrue(
-            "A replaced subject must stay over the threshold even at its best alignment",
-            replacedAligned.meanAbsoluteDifference >= 19.0 ||
-                replacedAligned.changedCellRatio >= 0.32,
-        )
-        assertTrue(abs(driftAligned.meanAbsoluteDifference) < 1.0)
     }
 }
