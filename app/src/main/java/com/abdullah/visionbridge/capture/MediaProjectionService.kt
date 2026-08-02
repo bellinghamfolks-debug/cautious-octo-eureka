@@ -40,6 +40,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
@@ -163,7 +164,18 @@ class MediaProjectionService : Service() {
         captureThread?.quitSafely()
         captureThread = null
         captureHandler = null
-        runBlocking { container.localOcrEngine.release("capture_service_destroyed") }
+        // Bounded, because releasing now waits for any read in flight and this runs on the main
+        // thread: an unbounded wait here would be an ANR. If the reader is still busy the sessions
+        // are left loaded — they are reused if capture restarts, and reclaimed with the process
+        // otherwise, so nothing leaks by giving up.
+        runBlocking {
+            withTimeoutOrNull(RELEASE_ON_DESTROY_TIMEOUT_MS) {
+                container.localOcrEngine.release("capture_service_destroyed")
+            } ?: DiagnosticHub.record(
+                "PPOCR_RELEASE_ON_DESTROY_TIMED_OUT",
+                mapOf("timeoutMs" to RELEASE_ON_DESTROY_TIMEOUT_MS),
+            )
+        }
         DiagnosticHub.record("CAPTURE_SERVICE_DESTROYED")
         serviceScope.cancel()
         super.onDestroy()
@@ -771,6 +783,9 @@ class MediaProjectionService : Service() {
         else getParcelableExtra(name)
 
     companion object {
+        /** Longest the main thread may wait for the reader before the service gives up on it. */
+        private const val RELEASE_ON_DESTROY_TIMEOUT_MS = 1_500L
+
         private const val CHANNEL_ID = "screen_capture_analysis"
         private const val NOTIFICATION_ID = 4101
         private const val EXTRA_RESULT_CODE = "result_code"

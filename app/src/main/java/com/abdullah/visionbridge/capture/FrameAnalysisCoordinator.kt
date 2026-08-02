@@ -269,7 +269,11 @@ class FrameAnalysisCoordinator(
         trace: DiagnosticTrace?,
     ) {
         val key = apiKeyStore.get()
-        if (key == null && !settings.useLocalOcr) {
+        // Describing has no on-device implementation, so it needs the key whatever the local
+        // reading switch says. Consulting that switch here let a user with local reading on and no
+        // key through the guard, and the request then failed against Gemini with an HTTP error
+        // instead of the one sentence that would have told them what to do.
+        if (key == null) {
             throw IllegalStateException("أدخل مفتاح Gemini أولاً لاستخدام وصف المشهد")
         }
         val minimumInterval = when (settings.sceneDescriptionStyle) {

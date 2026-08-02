@@ -44,13 +44,15 @@ class PaddleOcrVisionRepository(
         if (mode != AnalysisMode.TEXT_READING) throw SceneDescriptionUnsupportedException()
 
         val trace = currentCoroutineContext()[DiagnosticTrace]
+        // Read once. Reading the flow twice could report one quality and use another.
+        val quality = settingsRepository.settings.first().localReadingQuality
         DiagnosticHub.record(
             "PPOCR_ANALYSIS_REQUESTED",
             trace.fieldsOrEmpty(
                 mapOf(
                     "captureProfile" to captureProfile.name,
                     "engineLoaded" to engine.isLoaded,
-                    "quality" to settingsRepository.settings.first().localReadingQuality.name,
+                    "quality" to quality.name,
                     "sourceWidth" to bitmap.width,
                     "sourceHeight" to bitmap.height,
                 ),
@@ -58,9 +60,6 @@ class PaddleOcrVisionRepository(
         )
 
         engine.ensureLoaded().getOrThrow()
-        // Read per request rather than cached, so changing the quality applies to the next frame
-        // without restarting capture.
-        val quality = settingsRepository.settings.first().localReadingQuality
         val result = engine.read(bitmap, quality)
 
         DiagnosticHub.record(

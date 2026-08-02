@@ -9,6 +9,8 @@ import android.os.SystemClock
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.domain.model.LocalReadingQuality
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -190,12 +192,27 @@ class PaddleOcrEngine(
     private fun containsArabicLetters(dictionary: List<String>): Boolean =
         dictionary.any { entry -> entry.any { it in '\u0600'..'\u06FF' } }
 
-    suspend fun release(reason: String) = lifecycleMutex.withLock {
-        val current = sessions ?: return@withLock
-        sessions = null
-        withContext(Dispatchers.IO) {
-            current.close()
-            DiagnosticHub.record("PPOCR_RELEASED", mapOf("reason" to reason))
+    /**
+     * Frees the native sessions.
+     *
+     * The inference lock is taken as well as the lifecycle lock, because closing an OrtSession frees
+     * native memory: a read still walking those sessions would not throw, it would fault the
+     * process. Every caller of this is reachable while a page is being read — memory pressure, the
+     * service being destroyed, and the user simply turning the local switch off mid-read.
+     *
+     * Lock order is lifecycle then inference everywhere, and a read never asks for the lifecycle
+     * lock, so this cannot deadlock.
+     */
+    suspend fun release(reason: String) {
+        lifecycleMutex.withLock {
+            inferenceMutex.withLock {
+                val current = sessions ?: return@withLock
+                sessions = null
+                withContext(Dispatchers.IO) {
+                    current.close()
+                    DiagnosticHub.record("PPOCR_RELEASED", mapOf("reason" to reason))
+                }
+            }
         }
     }
 
@@ -236,7 +253,27 @@ class PaddleOcrEngine(
                     "lines" to grouped.size,
                 ),
             )
-            val lines = grouped.mapNotNull { line -> readLine(active, bitmap, line, quality) }
+            var cropsRead = 0
+            var capped = false
+            val lines = grouped.mapNotNull { line ->
+                // Cancellation is cooperative. Everything below this point is plain function calls
+                // into ONNX Runtime with no suspension, so without an explicit check a stopped
+                // capture, a changed setting or the lane's timeout could not interrupt a page part
+                // way through — the exact "refuses to be cancelled" behaviour this engine replaced.
+                currentCoroutineContext().ensureActive()
+                if (cropsRead >= MAX_CROPS_PER_FRAME) {
+                    capped = true
+                    return@mapNotNull null
+                }
+                cropsRead += line.size
+                readLine(active, bitmap, line, quality)
+            }
+            if (capped) {
+                DiagnosticHub.record(
+                    "PPOCR_FRAME_CROP_LIMIT_REACHED",
+                    mapOf("limit" to MAX_CROPS_PER_FRAME, "cropsOffered" to grouped.sumOf { it.size }),
+                )
+            }
             val text = PageAssembler.assemble(lines)
             DiagnosticHub.record(
                 "PPOCR_RECOGNITION_COMPLETED",
@@ -455,6 +492,15 @@ class PaddleOcrEngine(
         /** PP-OCRv5 recognizers take a fixed 48-pixel input height. */
         const val RECOGNITION_HEIGHT = 48
         const val BOX_PADDING_PIXELS = 3
+
+        /**
+         * Most crops one frame may be recognised into.
+         *
+         * Work per frame is otherwise unbounded in the number of detected regions, and a dense page
+         * at the highest quality could hold the reader for tens of seconds. Reading most of a page
+         * promptly serves a listener better than reading all of it far too late.
+         */
+        const val MAX_CROPS_PER_FRAME = 120
 
         /** The orientation classifier's fixed input, and PaddleOCR's own 0.9 decision threshold. */
         const val ORIENTATION_HEIGHT = 48
