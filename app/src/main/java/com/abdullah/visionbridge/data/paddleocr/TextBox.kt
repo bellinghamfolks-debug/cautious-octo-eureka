@@ -1,6 +1,5 @@
 package com.abdullah.visionbridge.data.paddleocr
 
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -44,11 +43,20 @@ data class TextBox(
 object TextLineOrdering {
 
     /**
-     * Boxes whose vertical centres are closer than this fraction of their height belong to the
-     * same visual line. Generous enough for a line that rises slightly across a photographed page.
+     * How much of the shorter of a box and a line must overlap vertically for them to be the same
+     * visual line. Generous enough for a line that rises slightly across a photographed page.
      */
-    private const val SAME_LINE_HEIGHT_FRACTION = 0.6f
+    private const val MIN_LINE_OVERLAP = 0.5f
 
+    /**
+     * Groups boxes into visual lines by how much they overlap vertically.
+     *
+     * Comparing centre distances against a tolerance derived from the incoming box's own height was
+     * wrong in a way that only showed up on real layouts: a tall box gets a large tolerance, so a
+     * heading reached up and swallowed the smaller line above it, and any tall element absorbed
+     * whatever it passed. Overlap is symmetric — a big box and a small one have to actually share
+     * vertical space — and it handles a rising baseline for free.
+     */
     fun groupIntoLines(boxes: List<TextBox>): List<List<TextBox>> {
         if (boxes.isEmpty()) return emptyList()
         val sorted = boxes.sortedBy { it.centerY }
@@ -56,17 +64,21 @@ object TextLineOrdering {
 
         for (box in sorted) {
             val line = lines.lastOrNull()
-            val reference = line?.let { current ->
-                current.sumOf { it.centerY.toDouble() }.toFloat() / current.size
-            }
-            val tolerance = box.height * SAME_LINE_HEIGHT_FRACTION
-            if (line != null && reference != null && abs(box.centerY - reference) <= tolerance) {
+            if (line != null && overlapsLine(box, line)) {
                 line += box
             } else {
                 lines += mutableListOf(box)
             }
         }
         return lines
+    }
+
+    private fun overlapsLine(box: TextBox, line: List<TextBox>): Boolean {
+        val lineTop = line.minOf { it.top }
+        val lineBottom = line.maxOf { it.bottom }
+        val overlap = min(box.bottom, lineBottom) - max(box.top, lineTop)
+        val shorter = min(box.height, lineBottom - lineTop).coerceAtLeast(1)
+        return overlap >= shorter * MIN_LINE_OVERLAP
     }
 
     /**

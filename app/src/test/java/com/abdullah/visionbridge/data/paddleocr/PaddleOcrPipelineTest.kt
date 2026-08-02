@@ -483,3 +483,106 @@ class BoxMergingTest {
         assertEquals(700, merged.last().right)
     }
 }
+
+/**
+ * Cases found by simulating real layouts against the detection and grouping code rather than by
+ * waiting for a device to hit them.
+ */
+class LayoutSimulationTest {
+
+    private fun box(left: Int, top: Int, right: Int, bottom: Int) =
+        TextBox(left, top, right, bottom, 0.9f)
+
+    /** Renders a line as separate glyph blobs, which is what the detector actually emits. */
+    private fun canvas(width: Int, height: Int, build: (put: (Int, Int, Int, Int) -> Unit) -> Unit): FloatArray {
+        val data = FloatArray(width * height)
+        build { l, t, r, b ->
+            for (y in t.coerceAtLeast(0) until b.coerceAtMost(height))
+                for (x in l.coerceAtLeast(0) until r.coerceAtMost(width)) data[y * width + x] = 0.9f
+        }
+        return data
+    }
+
+    /**
+     * A tolerance taken from the incoming box's own height let a tall heading reach up and swallow
+     * the smaller line above it, because a big box got a big tolerance.
+     */
+    @Test
+    fun `a tall heading does not absorb the line above it`() {
+        val lines = TextLineOrdering.groupIntoLines(
+            listOf(box(0, 10, 100, 26), box(0, 20, 200, 60)),
+        )
+        assertEquals(2, lines.size)
+    }
+
+    @Test
+    fun `boxes of very different sizes on the same row stay one line`() {
+        val lines = TextLineOrdering.groupIntoLines(
+            listOf(box(10, 20, 70, 60), box(110, 32, 150, 46)),
+        )
+        assertEquals(1, lines.size)
+    }
+
+    /** A scrollbar or window rule spans every row at once and drags unrelated rows together. */
+    @Test
+    fun `detection rejects a full height sliver`() {
+        val data = canvas(400, 400) { put ->
+            put(300, 0, 304, 400)
+            put(0, 10, 60, 26)
+            put(0, 100, 60, 116)
+        }
+        val boxes = DbPostProcessor.extractBoxes(data, 400, 400, 1f, 1f, 400, 400)
+        assertEquals(2, boxes.size)
+        assertEquals(2, TextLineOrdering.groupIntoLines(boxes).size)
+    }
+
+    /** A single Arabic alif is about five to one, so real glyphs stay well clear of the guard. */
+    @Test
+    fun `a tall narrow glyph is still accepted`() {
+        val data = canvas(100, 60) { put -> put(20, 10, 24, 40) }
+        assertEquals(1, DbPostProcessor.extractBoxes(data, 100, 60, 1f, 1f, 100, 60).size)
+    }
+
+    /** End to end: a letterspaced sign must come out as one crop, not six. */
+    @Test
+    fun `a letterspaced sign survives detection grouping and merging as one crop`() {
+        val data = canvas(400, 100) { put ->
+            var x = 20
+            repeat(6) { put(x, 20, x + 22, 64); x += 42 }
+        }
+        val boxes = DbPostProcessor.extractBoxes(data, 400, 100, 1f, 1f, 400, 100)
+        val crops = TextLineOrdering.groupIntoLines(boxes).map(TextLineOrdering::mergeAdjacent)
+        assertEquals(1, crops.size)
+        assertEquals(1, crops.first().size)
+    }
+
+    @Test
+    fun `two columns on the same row are not merged`() {
+        val data = canvas(600, 60) { put ->
+            var x = 10
+            repeat(6) { put(x, 20, x + 8, 36); x += 10 }
+            x = 400
+            repeat(5) { put(x, 20, x + 8, 36); x += 10 }
+        }
+        val boxes = DbPostProcessor.extractBoxes(data, 600, 60, 1f, 1f, 600, 60)
+        val crops = TextLineOrdering.groupIntoLines(boxes).map(TextLineOrdering::mergeAdjacent)
+        assertEquals(2, crops.first().size)
+    }
+}
+
+class BidiRunTest {
+
+    /** The sign belongs to the number. Trimming it off left "966+" on a real dialling code. */
+    @Test
+    fun `a leading sign stays with its number`() {
+        assertEquals(
+            "الرقم +966 3550",
+            BidiTextOrder.toLogicalOrder("3550 +966 مقرلا"),
+        )
+    }
+
+    @Test
+    fun `a trailing symbol stays with its number`() {
+        assertEquals("البطارية 80%", BidiTextOrder.toLogicalOrder("80% ةيراطبلا"))
+    }
+}

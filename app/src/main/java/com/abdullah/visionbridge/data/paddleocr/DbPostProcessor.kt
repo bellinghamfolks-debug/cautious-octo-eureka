@@ -32,6 +32,9 @@ object DbPostProcessor {
     /** How far to grow each region, as a fraction of its shorter side. */
     private const val UNCLIP_RATIO = 0.4f
 
+    /** Above this height-to-width ratio a region is a rule or a scrollbar, not a line of text. */
+    private const val MAX_HEIGHT_TO_WIDTH_RATIO = 12
+
     /**
      * @param probability row-major probability map of size [mapWidth] x [mapHeight].
      * @param scaleX maps map coordinates back to source-image pixels.
@@ -86,6 +89,11 @@ object DbPostProcessor {
             val regionWidth = maxX - minX + 1
             val regionHeight = maxY - minY + 1
             if (regionWidth < MIN_REGION_SIDE || regionHeight < MIN_REGION_SIDE) continue
+            // A scrollbar, a table rule or a window divider is a text-like blob to a detector, and
+            // because it spans the whole screen it lands on every row at once and drags unrelated
+            // rows together. No glyph is this much taller than it is wide — a bare Arabic alif is
+            // about five to one — so the bar is well clear of anything real.
+            if (regionHeight > regionWidth * MAX_HEIGHT_TO_WIDTH_RATIO) continue
 
             val score = (sum / count).toFloat()
             if (score < BOX_SCORE_THRESHOLD) continue

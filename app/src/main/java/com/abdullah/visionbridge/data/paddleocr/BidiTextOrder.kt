@@ -38,17 +38,12 @@ object BidiTextOrder {
             // punctuation that binds them together such as the dot in "1.2" or the dash in "Wi-Fi".
             var end = index
             while (end < reversed.length && isLeftToRightRun(reversed[end])) end++
-            // Trailing binder characters belong to the Arabic side, not to the run.
-            var trimmedEnd = end
-            while (trimmedEnd > index && isRunBinder(reversed[trimmedEnd - 1])) trimmedEnd--
-            if (trimmedEnd == index) {
-                result.append(mirrored(reversed[index]))
-                index++
-                continue
-            }
-            result.append(reversed, index, trimmedEnd)
-            result.reverse(result.length - (trimmedEnd - index), result.length)
-            index = trimmedEnd
+            // The binder stays inside the run and is reversed with it. Trimming it off instead
+            // stranded the sign of a phone number: "+966" came back as "966+", because in visual
+            // order the sign is the run's last character, not a leftover belonging to the Arabic.
+            result.append(reversed, index, end)
+            result.reverse(result.length - (end - index), result.length)
+            index = end
         }
         return result.toString()
     }
