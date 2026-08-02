@@ -93,17 +93,21 @@ class CellularNetworkManager(context: Context) {
         trace: DiagnosticTrace?,
         block: suspend () -> T,
     ): T {
-        val started = SystemClock.elapsedRealtimeNanos()
+        // Stated as an instant, not a countdown. `withTimeout` is kept as the fast path because it
+        // cancels promptly while the process is running, but the deadline is what the coordinator
+        // checks on every arriving frame, so a request cannot outlive its budget just because
+        // every scheduler that was watching it stopped at the same moment.
+        val deadline = AnalysisDeadline(ANALYSIS_BUDGET_MS, SystemClock::elapsedRealtime)
         return try {
             withTimeout(ANALYSIS_BUDGET_MS) { block() }
         } catch (error: TimeoutCancellationException) {
-            val elapsed = (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0
             DiagnosticHub.record(
                 "CLOUD_ANALYSIS_BUDGET_EXCEEDED",
                 trace.fieldsOrEmpty(
                     mapOf(
                         "budgetMs" to ANALYSIS_BUDGET_MS,
-                        "elapsedMs" to elapsed,
+                        "elapsedMs" to deadline.elapsedMs(),
+                        "overrunMs" to deadline.overrunMs(),
                     ),
                 ),
             )
@@ -114,16 +118,65 @@ class CellularNetworkManager(context: Context) {
         }
     }
 
-    private suspend fun acquireCellularNetwork(): NetworkLease = withTimeout(REQUEST_TIMEOUT_MS) {
+    /**
+     * Acquires a cellular network to bind the request's sockets to.
+     *
+     * `onAvailable` means the radio came up, not that anything can be sent over it. A network that
+     * is still authenticating, or sitting behind a captive portal, satisfies the old request and
+     * then swallows the request until something times out — indistinguishable, from inside the app,
+     * from a slow model. Asking for `NET_CAPABILITY_VALIDATED` asks for a network that has been
+     * proven to carry traffic.
+     *
+     * The unvalidated fallback exists because a network that never reports validation is still
+     * usually usable, and a blind user who has chosen cellular deliberately should not be left
+     * with nothing because a carrier does not set a flag. Which path was taken is recorded, so a
+     * bundle can show whether the fallback is load-bearing.
+     */
+    private suspend fun acquireCellularNetwork(): NetworkLease {
+        val validated = runCatching {
+            withTimeout(VALIDATED_REQUEST_TIMEOUT_MS) { requestNetwork(requireValidated = true) }
+        }
+        validated.getOrNull()?.let { return it }
+
+        DiagnosticHub.record(
+            "CELLULAR_NETWORK_VALIDATION_FALLBACK",
+            mapOf(
+                "timeoutMs" to VALIDATED_REQUEST_TIMEOUT_MS,
+                "reason" to (validated.exceptionOrNull()?.javaClass?.simpleName ?: "timeout"),
+            ),
+        )
+        return withTimeout(REQUEST_TIMEOUT_MS - VALIDATED_REQUEST_TIMEOUT_MS) {
+            requestNetwork(requireValidated = false)
+        }
+    }
+
+    private suspend fun requestNetwork(requireValidated: Boolean): NetworkLease =
         suspendCancellableCoroutine { continuation ->
             val request = NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
                 .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .apply {
+                    if (requireValidated) {
+                        addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                    }
+                }
                 .build()
 
             val callback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
-                    if (continuation.isActive) continuation.resume(NetworkLease(network, this))
+                    if (continuation.isActive) {
+                        DiagnosticHub.record(
+                            "CELLULAR_NETWORK_CAPABILITIES",
+                            mapOf(
+                                "requiredValidated" to requireValidated,
+                                "validated" to connectivityManager
+                                    ?.getNetworkCapabilities(network)
+                                    ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
+                                "networkHandle" to network.networkHandle,
+                            ),
+                        )
+                        continuation.resume(NetworkLease(network, this))
+                    }
                 }
 
                 override fun onUnavailable() {
@@ -138,9 +191,13 @@ class CellularNetworkManager(context: Context) {
             continuation.invokeOnCancellation {
                 runCatching { connectivityManager.unregisterNetworkCallback(callback) }
             }
-            connectivityManager.requestNetwork(request, callback, REQUEST_TIMEOUT_MS.toInt())
+            val timeout = if (requireValidated) {
+                VALIDATED_REQUEST_TIMEOUT_MS
+            } else {
+                REQUEST_TIMEOUT_MS - VALIDATED_REQUEST_TIMEOUT_MS
+            }
+            connectivityManager.requestNetwork(request, callback, timeout.toInt())
         }
-    }
 
     private fun DiagnosticTrace?.fieldsOrEmpty(
         extra: Map<String, Any?> = emptyMap(),
@@ -153,6 +210,9 @@ class CellularNetworkManager(context: Context) {
 
     private companion object {
         const val REQUEST_TIMEOUT_MS = 15_000L
+
+        /** Two thirds of the acquisition budget spent insisting on a network that works. */
+        const val VALIDATED_REQUEST_TIMEOUT_MS = 10_000L
         const val ANALYSIS_BUDGET_MS = 24_000L
     }
 }

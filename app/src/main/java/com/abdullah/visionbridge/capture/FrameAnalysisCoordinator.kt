@@ -40,9 +40,13 @@ import kotlin.coroutines.EmptyCoroutineContext
  * Coordinates the single analysis lane, result freshness and speech.
  *
  * The lane deliberately owns at most one active request and one latest pending frame, whichever
- * engine serves it. A visual target change marks an active result stale but never cancels a healthy
- * request, so repeated target changes cannot starve the analysis by cancelling every request before
- * it produces anything.
+ * engine serves it. A visual target change now cancels the active request as well as dropping the
+ * pending frame, because a target change means the subject really was replaced: the request in
+ * flight is for something the user has walked away from, and letting it finish only delays the one
+ * they are waiting for. That was not safe while target changes fired every 343 ms on a motionless
+ * bottle — 460 requests were marked stale across one diagnostic bundle — and it is safe now that
+ * [VisualTargetTracker] separates a subject that moved from a subject that changed. A scene
+ * description the user has asked not to interrupt is the one request allowed to outlive its target.
  */
 class FrameAnalysisCoordinator(
     private val settingsRepository: SettingsRepository,
@@ -93,6 +97,12 @@ class FrameAnalysisCoordinator(
     private var activeCloudMode: AnalysisMode? = null
     private var activeCloudFrameId: String? = null
     private var activeCloudStartedAtElapsedMs = 0L
+
+    /**
+     * True when the active request's result would still be publishable after the target changes.
+     * Only a scene description the user has asked not to interrupt qualifies.
+     */
+    private var activeCloudMayOutliveTarget = false
     private var lastCloudProgressAtElapsedMs = 0L
     private var lastCloudCompletedAtElapsedMs = 0L
     private var cloudFailureStreak = 0
@@ -134,6 +144,12 @@ class FrameAnalysisCoordinator(
     }
 
     suspend fun process(bitmap: Bitmap) = processMutex.withLock {
+        // Every arriving frame enforces the deadline of whatever is still in flight. The health
+        // loop alone was not enough: after a capture died, a 48,000 ms watchdog first ran at
+        // 221,584 ms, because the `delay` driving it had stopped along with everything else. A
+        // frame is proof that the app is running, which makes it the one moment a stalled request
+        // is guaranteed to be noticed.
+        runHealthCheck()
         val trace = currentCoroutineContext()[DiagnosticTrace]
         val settings = settingsRepository.settings.first()
         val generationAtCapture = visualGeneration.get()
@@ -531,6 +547,7 @@ class FrameAnalysisCoordinator(
                         cloudJob = null
                         activeCloudMode = null
                         activeCloudFrameId = null
+                        activeCloudMayOutliveTarget = false
                         activeCloudStartedAtElapsedMs = 0L
                         lastCloudProgressAtElapsedMs = 0L
                         pendingCloudFrame.also { pendingCloudFrame = null }
@@ -574,6 +591,8 @@ class FrameAnalysisCoordinator(
             cloudJob = launched
             activeCloudMode = frame.mode
             activeCloudFrameId = frame.trace?.frameId
+            activeCloudMayOutliveTarget = frame.mode == AnalysisMode.SCENE_DESCRIPTION &&
+                !frame.settings.interruptSpeechOnVisualChange
             activeCloudStartedAtElapsedMs = SystemClock.elapsedRealtime()
             lastCloudProgressAtElapsedMs = activeCloudStartedAtElapsedMs
             val now = System.currentTimeMillis()
@@ -964,6 +983,7 @@ class FrameAnalysisCoordinator(
             tts.onVisualTargetChanged(true)
         }
 
+        var abandoned: Job? = null
         synchronized(cloudQueueLock) {
             pendingCloudFrame?.let { pending ->
                 DiagnosticHub.record(
@@ -979,17 +999,27 @@ class FrameAnalysisCoordinator(
             }
             pendingCloudFrame = null
             if (cloudJob?.isCompleted == false) {
+                // A request for a subject the user has walked away from is work nobody will hear.
+                // It used to be left running on the reasoning that target changes were often
+                // spurious and cancelling everything would starve the analysis — and they were:
+                // 460 requests were marked stale across one bundle, 431 of them in a single
+                // session where the "changes" were one bottle being held still. Now that a target
+                // change means the subject really was replaced, holding the lane, the cellular
+                // lease and the radio for the old one is simply a delay before the new one starts.
+                val mayOutlive = activeCloudMayOutliveTarget
+                if (!mayOutlive) abandoned = cloudJob
                 DiagnosticHub.record(
                     "CLOUD_ACTIVE_REQUEST_MARKED_STALE",
                     mapOf(
                         "activeCloudMode" to activeCloudMode?.name,
                         "activeFrameId" to activeCloudFrameId,
                         "newGeneration" to newGeneration,
-                        "requestCancelled" to false,
+                        "requestCancelled" to !mayOutlive,
                     ),
                 )
             }
         }
+        abandoned?.cancel(CancellationException("visual_target_changed"))
     }
 
     private fun runHealthCheck() {
@@ -1080,6 +1110,7 @@ class FrameAnalysisCoordinator(
             cloudJob = null
             activeCloudMode = null
             activeCloudFrameId = null
+            activeCloudMayOutliveTarget = false
             activeCloudStartedAtElapsedMs = 0L
             lastCloudProgressAtElapsedMs = 0L
             pendingCloudFrame?.let { pending ->
@@ -1118,8 +1149,18 @@ class FrameAnalysisCoordinator(
          */
         const val STATIC_TEXT_REANALYSIS_INTERVAL_MS = 15_000L
 
-        const val CLOUD_REQUEST_HARD_TIMEOUT_MS = 42_000L
-        const val CLOUD_WATCHDOG_TIMEOUT_MS = 48_000L
+        /**
+         * Bounds for one request, ordered so each is the backstop for the one before it.
+         *
+         * The analysis budget inside [com.abdullah.visionbridge.data.network.CellularNetworkManager]
+         * is 24 s and should always be what fires. These sit just above it, close enough that a
+         * request which slips past the budget is caught in seconds rather than minutes. They used
+         * to be 42 s and 48 s, which on a device that stopped scheduling meant a request was
+         * finally noticed at 221.6 s — the watchdog cannot be the thing that saves you if it is
+         * asleep too, so the frame path now checks these as well.
+         */
+        const val CLOUD_REQUEST_HARD_TIMEOUT_MS = 27_000L
+        const val CLOUD_WATCHDOG_TIMEOUT_MS = 30_000L
         const val HEALTH_CHECK_INTERVAL_MS = 5_000L
         const val HEALTH_SNAPSHOT_INTERVAL_MS = 30_000L
         const val SPEECH_INTERRUPT_COOLDOWN_MS = 1_200L

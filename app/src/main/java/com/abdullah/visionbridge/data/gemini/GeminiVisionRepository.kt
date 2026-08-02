@@ -46,11 +46,15 @@ class GeminiVisionRepository(
 
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
     private val imageEnhancer = TextImageEnhancer()
+    // Every bound sits below the 24 s analysis budget's backstop rather than far above it. A 45 s
+    // call timeout can never fire before the coordinator has already given up, which is how a
+    // stalled request was left holding the lane; and it never fired anyway when the process
+    // stopped being scheduled, so it is a backstop to a backstop and is set accordingly.
     private val baseClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(35, TimeUnit.SECONDS)
-        .writeTimeout(15, TimeUnit.SECONDS)
-        .callTimeout(45, TimeUnit.SECONDS)
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .writeTimeout(12, TimeUnit.SECONDS)
+        .callTimeout(26, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .eventListenerFactory(DiagnosticNetworkEventListener.Factory())
         .build()
