@@ -1,4 +1,4 @@
-# What changed in 2.2.0, and what it was measured against
+# What changed in 2.2.0 and 2.3.0, and what it was measured against
 
 Companion to [ROOT_CAUSE_2.1.1.md](ROOT_CAUSE_2.1.1.md), which states the defects. This document
 states the repairs, the evidence each one answers, and what is still open.
@@ -67,20 +67,54 @@ continuation and reaches speech through the fresh-page path regardless.
 
 ### A target that moved is not a target that changed
 
-`VisualTargetTracker` replaces the index-aligned comparison with three steps:
+Every piece of the old detector is gone: the 24×24 sampling grid, the global grayscale signature,
+mean absolute difference as the arbiter, the changed-pixel ratio, and acceptance from a single
+frame. What replaced it lives in `capture/vision`.
 
-1. **Motion estimation** — exhaustive integer-shift search over a 32×32 luminance grid, ±6 cells.
-2. **Residual measurement** — mean difference and changed-cell ratio computed only on the overlap,
-   after alignment.
-3. **Temporal consensus** — two consecutive frames must agree with each other before a reading in
-   flight is abandoned.
+| Stage | What it does |
+|---|---|
+| `Warp` | One 3×3 projective transform type, so every estimator's answer is comparable |
+| `ImagePlane` / `FramePyramid` | Multi-resolution Y′CbCr — colour is carried, not discarded |
+| `LucasKanade` | Pyramidal, six-parameter affine, inverse-compositional |
+| `Features` | FAST-9 corners, Harris ranking, oriented BRIEF over a scale space |
+| `Homography` | Normalised DLT inside RANSAC, refitted over its inliers |
+| `StructuralResidual` | SSIM over the aligned overlap, plus a chroma term |
 
-The grid went from 24 to 32 cells because one cell at 24 was about 45 px on a 1080-wide capture,
-which is more than a steady hand drifts between frames: the smallest motion the old detector could
-tolerate was already larger than the tremor it needed to tolerate.
+Lucas-Kanade answers translation, rotation and scale together, because a person holding an object
+does all three at once. Feature matching and a homography take over where a gradient descent cannot
+reach — a large jump, a heavy rotation, or a flat page now being viewed from an angle, which an
+affine model cannot express at all. Structural similarity then measures what is left, so the same
+label under changed lighting reads as the same content while a different label at identical
+brightness does not.
 
-A stable `targetTrackId` now survives motion, and the diagnostics record the aligned and unaligned
-measurements side by side so the next field bundle shows directly how often the two disagree.
+Accuracy against ground truth: translation to 0.02 px, rotation to 0.02°, scale to 0.001, and a
+known projective transform recovered to 1e-6.
+
+**Defects found by measuring rather than by reading**, each fixed:
+
+| Symptom | Cause |
+|---|---|
+| 7 of a possible 200 feature matches survived a 15° rotation | BRIEF sampled raw pixels; it assumes a smoothed patch |
+| A 24-pixel error at full resolution | The 16×16 pyramid level reported a 2.98-cell shift where the truth was 0.375, and every step down doubled it |
+| Two entirely different pages scored 0.18 against a 0.30 bar | The SSIM average was dominated by windows of blank paper |
+| A 25% zoom stopped at scale 1.007 | The convergence test compared a raw coefficient against a fixed bound |
+| A zoom that leaves 64% of the template in view stalled | Inverse composition reused a Hessian built over pixels the error no longer covered |
+| A 1.25× zoom sat at a local minimum | The objective is not convex on a page of text; the coarsest level now tries several seeds |
+| A seed hijacked a case the plain descent handled | Seeding now runs only when the plain descent ends unconverged or far off |
+
+**Thresholds sit inside a measured gap.** Over 29 views of one page — translated, rotated, zoomed,
+relit and noised — the worst score is 0.226; over 13 genuinely different subjects the best is
+0.299. The shipped values are 0.26 for text and 0.24 for scene. `SeparationTest` asserts both the
+gap and that the thresholds lie inside it, so neither can drift unnoticed. The gap is only 0.073
+wide, which is why the two-frame consensus matters as much as the threshold.
+
+**Cost**, on a desktop JVM: 12.8 ms for the common path, 26 ms when the feature fallback runs,
+against a recognition pass of 2,231 ms. Feature detection is lazy, so a steady hand never pays for
+it. Not yet measured on an ARM device.
+
+A stable `targetTrackId` survives motion, and the diagnostics record the aligned and unaligned
+measurements side by side, plus the registration method, the estimated rotation, scale and
+projective terms, and the feature inlier ratio.
 
 The frame-change detector is untouched. "Is anything happening" is a different question from "is
 this a different subject", and a raw difference is the right answer to the first.
@@ -140,7 +174,9 @@ a delay rather than the feature.
 |---|---|---|
 | `ReadingLedgerTest` | 14 | Interrupted pages stay owed; product names and room numbers reach speech; loose glyphs do not |
 | `ReadingDeliveryTrackerTest` | 10 | Delivery is a completed prefix; every non-completed outcome leaves the block owed |
-| `VisualTargetTrackerTest` | 14 | Drift in every direction is tracked; a replaced subject is confirmed in two frames; one occluded frame does not abandon a reading |
+| `VisualTargetTrackerTest` | 16 | Drift, rotation, zoom and all three at once are tracked; a replaced subject is confirmed in two frames; one occluded frame does not abandon a reading |
+| `RegistrationTest` | 20 | Lucas-Kanade, features, homography and SSIM against exact ground truth |
+| `SeparationTest` | 2 | Same-subject and different-subject populations stay separated, and the thresholds lie between them |
 | `ProjectionOwnershipTest` | 4 | Exactly one `createVirtualDisplay()`; recovery re-points the display it holds; a stopped projection is spoken |
 | `AnalysisDeadlineTest` | 6 | A 197-second gap in scheduling does not extend a deadline |
 | `DocumentSpeechPolicyTest`, `SpeechTextToolsTest`, `GeminiStreamProtocolTest`, `PaddleOcrPipelineTest`, `LocalReadingQualityTest` | existing | unchanged |
