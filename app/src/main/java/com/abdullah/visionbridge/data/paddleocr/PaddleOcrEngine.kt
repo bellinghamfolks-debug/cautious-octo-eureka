@@ -225,9 +225,18 @@ class PaddleOcrEngine(
             if (boxes.isEmpty()) return@withContext PaddleOcrResult("", 0f, 0)
 
             val recognitionStarted = SystemClock.elapsedRealtimeNanos()
-            val lines = TextLineOrdering.groupIntoLines(boxes).mapNotNull { line ->
-                readLine(active, bitmap, line, quality)
-            }
+            // Merge before recognizing. Letterspaced type arrives as one blob per glyph, and a
+            // recognizer shown a single letter has nothing to condition on.
+            val grouped = TextLineOrdering.groupIntoLines(boxes).map(TextLineOrdering::mergeAdjacent)
+            DiagnosticHub.record(
+                "PPOCR_BOXES_MERGED",
+                mapOf(
+                    "detectedBoxes" to boxes.size,
+                    "cropsAfterMerge" to grouped.sumOf { it.size },
+                    "lines" to grouped.size,
+                ),
+            )
+            val lines = grouped.mapNotNull { line -> readLine(active, bitmap, line, quality) }
             val text = PageAssembler.assemble(lines)
             DiagnosticHub.record(
                 "PPOCR_RECOGNITION_COMPLETED",

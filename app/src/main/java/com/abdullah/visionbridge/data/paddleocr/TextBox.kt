@@ -70,6 +70,61 @@ object TextLineOrdering {
     }
 
     /**
+     * Gap between two boxes, as a fraction of their height, below which they are the same word or
+     * phrase rather than two separate pieces of text.
+     *
+     * Ordinary inter-word gaps sit near 0.3 of the text height and gaps between columns are
+     * several times it, so 0.8 merges words and letterspaced display type without pulling two
+     * columns together.
+     */
+    private const val SAME_PHRASE_GAP_FRACTION = 0.8f
+
+    /** Boxes must overlap vertically by at least this much of the shorter one to be merged. */
+    private const val MERGE_VERTICAL_OVERLAP = 0.5f
+
+    /**
+     * Joins boxes that are really one piece of text before anything is recognized.
+     *
+     * The detector emits a region per connected blob, and on large letterspaced type — a shop sign,
+     * a perfume label, a title — every letter is its own blob. Recognizing those one at a time is
+     * the worst case for a CTC model: it has no neighbouring glyphs to condition on, so it returns
+     * one low-confidence character that the acceptance floor then discards, and the whole word is
+     * silently lost. A device bundle showed this plainly: 68% of discarded crops were a single
+     * character, and the median accepted crop was two characters long.
+     *
+     * Merging first also costs less, because one wide crop replaces several narrow ones.
+     */
+    fun mergeAdjacent(line: List<TextBox>): List<TextBox> {
+        if (line.size < 2) return line
+        val sorted = line.sortedBy { it.left }
+        val merged = mutableListOf(sorted.first())
+        for (box in sorted.drop(1)) {
+            val previous = merged.last()
+            if (belongTogether(previous, box)) {
+                merged[merged.lastIndex] = TextBox(
+                    left = min(previous.left, box.left),
+                    top = min(previous.top, box.top),
+                    right = max(previous.right, box.right),
+                    bottom = max(previous.bottom, box.bottom),
+                    confidence = min(previous.confidence, box.confidence),
+                )
+            } else {
+                merged += box
+            }
+        }
+        return merged
+    }
+
+    private fun belongTogether(left: TextBox, right: TextBox): Boolean {
+        val overlap = min(left.bottom, right.bottom) - max(left.top, right.top)
+        val shorter = min(left.height, right.height).coerceAtLeast(1)
+        if (overlap < shorter * MERGE_VERTICAL_OVERLAP) return false
+        // Overlapping boxes have a negative gap, which is well inside the threshold.
+        val gap = right.left - left.right
+        return gap <= shorter * SAME_PHRASE_GAP_FRACTION
+    }
+
+    /**
      * Orders one line's boxes. [rightToLeft] comes from the recognized text of the line, not from
      * geometry, because geometry alone cannot tell an Arabic line from an English one.
      */

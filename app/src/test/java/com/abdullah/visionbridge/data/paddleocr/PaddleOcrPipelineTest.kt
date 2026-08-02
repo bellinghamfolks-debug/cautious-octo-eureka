@@ -421,3 +421,65 @@ class ArabicHeadShortcutTest {
         )
     }
 }
+
+/**
+ * Built from a device bundle in which 68% of discarded crops were a single character and the
+ * median accepted crop was two characters long — the signature of a word arriving one glyph at a
+ * time.
+ */
+class BoxMergingTest {
+
+    private fun box(left: Int, right: Int, top: Int = 0, bottom: Int = 40) =
+        TextBox(left, top, right, bottom, 0.9f)
+
+    /** "CHANEL" in wide display type: six blobs, one word. */
+    @Test
+    fun `letterspaced glyphs become one crop`() {
+        val glyphs = listOf(
+            box(0, 30), box(50, 80), box(100, 130),
+            box(150, 180), box(200, 230), box(250, 280),
+        )
+        val merged = TextLineOrdering.mergeAdjacent(glyphs)
+        assertEquals(1, merged.size)
+        assertEquals(0, merged.first().left)
+        assertEquals(280, merged.first().right)
+    }
+
+    /** A label and its value sit far apart and must stay apart. */
+    @Test
+    fun `a wide gap is left alone`() {
+        val merged = TextLineOrdering.mergeAdjacent(listOf(box(0, 200), box(700, 900)))
+        assertEquals(2, merged.size)
+    }
+
+    @Test
+    fun `boxes on different rows are never merged`() {
+        val merged = TextLineOrdering.mergeAdjacent(
+            listOf(box(0, 30, top = 0, bottom = 40), box(35, 65, top = 200, bottom = 240)),
+        )
+        assertEquals(2, merged.size)
+    }
+
+    @Test
+    fun `overlapping boxes merge`() {
+        val merged = TextLineOrdering.mergeAdjacent(listOf(box(0, 100), box(80, 160)))
+        assertEquals(1, merged.size)
+        assertEquals(160, merged.first().right)
+    }
+
+    @Test
+    fun `a single box and an empty line are returned unchanged`() {
+        assertEquals(1, TextLineOrdering.mergeAdjacent(listOf(box(0, 30))).size)
+        assertTrue(TextLineOrdering.mergeAdjacent(emptyList()).isEmpty())
+    }
+
+    /** Merging must not reorder or lose a line's extent. */
+    @Test
+    fun `merging preserves the full horizontal extent of a line`() {
+        val boxes = listOf(box(0, 30), box(40, 70), box(600, 700))
+        val merged = TextLineOrdering.mergeAdjacent(boxes)
+        assertEquals(2, merged.size)
+        assertEquals(0, merged.first().left)
+        assertEquals(700, merged.last().right)
+    }
+}
