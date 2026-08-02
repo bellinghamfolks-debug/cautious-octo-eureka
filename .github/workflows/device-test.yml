@@ -1,0 +1,96 @@
+name: Device test (Firebase Test Lab)
+
+# Manual on purpose. Test Lab bills per device-minute against the repository owner's Google Cloud
+# project, so it runs when someone asks for it rather than on every push.
+on:
+  workflow_dispatch:
+    inputs:
+      devices:
+        description: >
+          Devices to run on, as gcloud --device flags separated by ";".
+          Confirm availability first with: gcloud firebase test android models list
+        default: "model=MediumPhone.arm,version=34,locale=ar,orientation=portrait"
+        required: true
+      run_robo:
+        description: "Also run a Robo crawl over the UI"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  device-test:
+    name: Instrumentation and Robo on real hardware
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 35 SDK
+        run: yes | sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Fetch and checksum the bundled PP-OCR models
+        run: python3 scripts/fetch_ocr_models.py
+
+      # Both APKs are needed: the app under test, and the instrumentation that drives it.
+      - name: Assemble app and instrumentation APKs
+        run: ./gradlew --no-daemon assembleDebug assembleDebugAndroidTest
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      # The instrumentation run is the one that matters. It exercises the real models on real arm64
+      # silicon with no API key, no network and no screen-capture consent, which is precisely the
+      # part that cannot be simulated on a workstation.
+      - name: Run the on-device reader tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=';' read -ra DEVICES <<< "${{ inputs.devices }}"
+          args=()
+          for device in "${DEVICES[@]}"; do args+=(--device "$device"); done
+          gcloud firebase test android run \
+            --type instrumentation \
+            --app app/build/outputs/apk/debug/app-debug.apk \
+            --test app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk \
+            --test-targets "class com.abdullah.visionbridge.data.paddleocr.PaddleOcrOnDeviceTest" \
+            --timeout 15m \
+            --use-orchestrator \
+            "${args[@]}"
+
+      # Robo cannot reach the reader — it would need screen-capture consent and something worth
+      # reading — but it does find crashes, ANRs and dead ends by walking the UI on real devices,
+      # which is where a lifecycle mistake shows up.
+      - name: Robo crawl for crashes and ANRs
+        if: ${{ inputs.run_robo }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=';' read -ra DEVICES <<< "${{ inputs.devices }}"
+          args=()
+          for device in "${DEVICES[@]}"; do args+=(--device "$device"); done
+          gcloud firebase test android run \
+            --type robo \
+            --app app/build/outputs/apk/debug/app-debug.apk \
+            --timeout 8m \
+            "${args[@]}"

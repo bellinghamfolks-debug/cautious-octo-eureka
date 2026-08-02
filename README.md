@@ -87,6 +87,10 @@ app/build/outputs/apk/debug/app-debug.apk
 ./gradlew --no-daemon lintDebug testDebugUnitTest assembleDebug
 ```
 
+اختبارات الوحدة تغطي المنطق على الحاسوب. أما ما يحتاج جهازاً حقيقياً — تحميل النماذج على arm64،
+وXNNPACK، والذاكرة، ودقة القراءة من طرف إلى طرف — فيغطيه `PaddleOcrOnDeviceTest` عبر Firebase Test
+Lab، وتفاصيله في [`docs/DEVICE_TESTING.md`](docs/DEVICE_TESTING.md).
+
 المتطلبات: JDK 17 وAndroid SDK 35. يستخدم البناء Gradle Wrapper الموجود في المستودع حتى ينفذ GitHub وCodex والبناء المحلي النسخة نفسها.
 
 ## الاستخدام

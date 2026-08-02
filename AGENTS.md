@@ -31,6 +31,12 @@ The four PP-OCR models are not committed. `scripts/fetch_ocr_models.py` fetches 
 so the first build of a fresh clone needs network access. Never commit the fetched assets, and never
 relax the checksum check — it is what stops a mirror serving a model that reads plausible nonsense.
 
+Pure logic is covered by `testDebugUnitTest`, which runs on a workstation. Anything that depends on
+ONNX Runtime actually executing — model loading, arm64, XNNPACK, memory, end-to-end accuracy — is
+covered by `app/src/androidTest/.../PaddleOcrOnDeviceTest.kt`, which needs a real device. The
+`Device test (Firebase Test Lab)` workflow runs it on demand; see `docs/DEVICE_TESTING.md`. Do not
+assert on-device behaviour from unit tests alone.
+
 ## Important files
 - `capture/MediaProjectionService.kt`: foreground capture lifecycle and frame throttling.
 - `capture/FrameAnalysisCoordinator.kt`: hybrid local/cloud analysis policy.

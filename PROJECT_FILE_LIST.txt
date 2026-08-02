@@ -1,11 +1,13 @@
 .github/gradle-retry.sh
 .github/workflows/android-ci.yml
+.github/workflows/device-test.yml
 .gitignore
 AGENTS.md
 LICENSE
 README.md
 app/build.gradle.kts
 app/proguard-rules.pro
+app/src/androidTest/java/com/abdullah/visionbridge/data/paddleocr/PaddleOcrOnDeviceTest.kt
 app/src/main/AndroidManifest.xml
 app/src/main/java/com/abdullah/visionbridge/VisionBridgeApp.kt
 app/src/main/java/com/abdullah/visionbridge/capture/CaptureRuntime.kt
@@ -75,6 +77,7 @@ app/src/test/java/com/abdullah/visionbridge/data/speech/ReadingLedgerTest.kt
 app/src/test/java/com/abdullah/visionbridge/data/speech/SpeechTextToolsTest.kt
 app/src/test/java/com/abdullah/visionbridge/domain/model/LocalReadingQualityTest.kt
 build.gradle.kts
+docs/DEVICE_TESTING.md
 docs/LOCAL_OCR_SETUP.md
 gradle.properties
 gradle/wrapper/gradle-wrapper.jar
