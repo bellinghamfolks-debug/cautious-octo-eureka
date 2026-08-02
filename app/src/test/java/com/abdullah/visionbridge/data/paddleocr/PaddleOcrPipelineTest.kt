@@ -658,4 +658,34 @@ class LineSkewTest {
     fun `a single line has no slope to measure`() {
         assertEquals(0f, LineSkew.degrees(listOf(line(600, 300))), 0.001f)
     }
+
+    /**
+     * Real prose is ragged on the right and aligns on the left, so its centres never form a
+     * straight stack. Measuring only centres meant no real document was ever straightened — across
+     * a hundred rendered pages the correction fired on none of the twelve tilted ones.
+     */
+    @Test
+    fun `a tilted page ragged on the right is still corrected`() {
+        val radians = Math.toRadians(4.0)
+        val ragged = (0 until 8).map { index ->
+            val y = index * 100.0
+            val left = 200 + y * Math.tan(radians)
+            val width = 400 + (index % 4) * 260      // wildly different line lengths
+            TextBox(left.toInt(), (300 + y).toInt() - 20, (left + width).toInt(), (300 + y).toInt() + 20, 0.9f)
+        }
+        assertEquals(-4f, LineSkew.pageDegrees(ragged), 0.6f)
+    }
+
+    /** Arabic aligns on the right and is ragged on the left, the mirror of the case above. */
+    @Test
+    fun `a tilted page ragged on the left is still corrected`() {
+        val radians = Math.toRadians(4.0)
+        val ragged = (0 until 8).map { index ->
+            val y = index * 100.0
+            val right = 1200 + y * Math.tan(radians)
+            val width = 400 + (index % 4) * 260
+            TextBox((right - width).toInt(), (300 + y).toInt() - 20, right.toInt(), (300 + y).toInt() + 20, 0.9f)
+        }
+        assertEquals(-4f, LineSkew.pageDegrees(ragged), 0.6f)
+    }
 }

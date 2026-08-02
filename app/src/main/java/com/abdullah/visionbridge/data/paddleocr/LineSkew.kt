@@ -47,11 +47,42 @@ object LineSkew {
     fun pageDegrees(lines: List<TextBox>): Float {
         if (lines.size < MIN_LINES_FOR_PAGE_SKEW) return 0f
 
+        // Three ways a page can be aligned, and only the matching one gives a straight stack.
+        // Centres line up when every line is the same width, which is true of a rendered test page
+        // and of almost no real document: English prose is ragged on the right and aligns on the
+        // left, Arabic is ragged on the left and aligns on the right. Measuring only centres meant
+        // no real page was ever straightened, while the test page that suggested it worked was the
+        // one layout where centres happen to align.
+        val anchors = listOf<(TextBox) -> Float>(
+            { it.left.toFloat() },
+            { it.right.toFloat() },
+            { it.centerX },
+        )
+
+        var best = 0f
+        var bestCorrelation = 0f
+        for (anchor in anchors) {
+            val (angle, correlation) = fit(lines, anchor)
+            if (correlation > bestCorrelation) {
+                bestCorrelation = correlation
+                best = angle
+            }
+        }
+        if (bestCorrelation < MIN_CORRELATION) return 0f
+        return if (abs(best) < MIN_CORRECTABLE_DEGREES || abs(best) > MAX_CORRECTABLE_DEGREES) {
+            0f
+        } else {
+            best
+        }
+    }
+
+    /** @return the correction angle this anchor implies, and how straight its stack is. */
+    private fun fit(lines: List<TextBox>, anchor: (TextBox) -> Float): Pair<Float, Float> {
         val n = lines.size
         var meanX = 0.0
         var meanY = 0.0
         for (box in lines) {
-            meanX += box.centerX.toDouble()
+            meanX += anchor(box).toDouble()
             meanY += box.centerY.toDouble()
         }
         meanX /= n
@@ -61,27 +92,20 @@ object LineSkew {
         var varianceX = 0.0
         var varianceY = 0.0
         for (box in lines) {
-            val dx = box.centerX - meanX
+            val dx = anchor(box) - meanX
             val dy = box.centerY - meanY
             covariance += dx * dy
             varianceX += dx * dx
             varianceY += dy * dy
         }
-        if (varianceY < 1e-3 || varianceX < 1e-3) return 0f
+        if (varianceY < 1e-3 || varianceX < 1e-3) return 0f to 0f
 
-        val correlation = covariance / kotlin.math.sqrt(varianceX * varianceY)
-        if (abs(correlation) < MIN_CORRELATION) return 0f
-
-        // How far the stack leans horizontally as it descends, negated because the returned value
-        // is the correction to apply, not the tilt observed. Verified against a page tilted a known
-        // four degrees: the stack leans -4.02, so the crop must be turned +4.02 to come level.
-        val lean = covariance / varianceY
-        val angle = -Math.toDegrees(atan2(lean, 1.0)).toFloat()
-        return if (abs(angle) < MIN_CORRECTABLE_DEGREES || abs(angle) > MAX_CORRECTABLE_DEGREES) {
-            0f
-        } else {
-            angle
-        }
+        val correlation = abs(covariance / kotlin.math.sqrt(varianceX * varianceY)).toFloat()
+        // Negated because the returned value is the correction to apply, not the tilt observed.
+        // Verified against a page tilted a known four degrees: the stack leans -4.02, so the crop
+        // must be turned +4.02 to come level.
+        val angle = -Math.toDegrees(atan2(covariance / varianceY, 1.0)).toFloat()
+        return angle to correlation
     }
 
     /**
