@@ -132,6 +132,7 @@ class MediaProjectionService : Service() {
                 if (newSettings != activeSettings) {
                     DiagnosticHub.record("SETTINGS_CHANGED", settingsMap(newSettings))
                 }
+                DiagnosticHub.setEvidenceCapture(newSettings.captureFailureEvidence)
                 activeSettings = newSettings
             }
         }
@@ -387,6 +388,26 @@ class MediaProjectionService : Service() {
         observeVisualFeedHealth(changeDecision, now, trace)
 
         if (!changeDecision.accepted) {
+            // A frame the app calls unusable is exactly the frame worth keeping: "the mirror is
+            // black" and "the room is dark" produce the same measurements and need opposite
+            // repairs, and only the picture separates them.
+            if (changeDecision.reason.startsWith("quality_")) {
+                DiagnosticHub.evidence(
+                    bitmap = bitmap,
+                    frameId = trace.frameId,
+                    reason = changeDecision.reason,
+                    fields = mapOf(
+                        "captureWidth" to appliedCaptureWidth,
+                        "captureHeight" to appliedCaptureHeight,
+                        "sinceLastResizeMs" to
+                            if (lastResizeAtElapsedMs > 0L) {
+                                SystemClock.elapsedRealtime() - lastResizeAtElapsedMs
+                            } else {
+                                null
+                            },
+                    ),
+                )
+            }
             recordDroppedFrame(bitmap, trace, "change_detector_rejected", changeFields)
             bitmap.recycle()
             return
@@ -755,6 +776,7 @@ class MediaProjectionService : Service() {
         "captureProfile" to settings.captureProfile.name,
         "interruptSpeechOnVisualChange" to settings.interruptSpeechOnVisualChange,
         "sceneDescriptionStyle" to settings.sceneDescriptionStyle.name,
+        "captureFailureEvidence" to settings.captureFailureEvidence,
         "speechRate" to settings.speechRate,
     )
 

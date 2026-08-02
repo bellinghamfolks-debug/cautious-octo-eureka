@@ -13,6 +13,15 @@ data class AppSettings(
     val useLocalOcr: Boolean = false,
     /** How much of the captured image the on-device reader uses. Speed against fine print. */
     val localReadingQuality: LocalReadingQuality = LocalReadingQuality.BALANCED,
+    /**
+     * Store the actual frame behind a failure in the diagnostic bundle.
+     *
+     * Off, and meant to be switched on only while reproducing a specific problem. Without pixels a
+     * page that was not read cannot be told apart from a page that was read and discarded, and those
+     * need opposite repairs — but a frame is whatever the user was looking at, so this is their
+     * decision to make each time, not a default.
+     */
+    val captureFailureEvidence: Boolean = false,
     val speechRate: Float = 1.0f,
     val frameIntervalMs: Long = 700L,
     val cloudOcrIntervalMs: Long = 2_500L,

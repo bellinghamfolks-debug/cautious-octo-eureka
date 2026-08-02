@@ -56,6 +56,9 @@ class DiagnosticRecorder(context: Context) {
     private val appContext = context.applicationContext
     private val root = File(appContext.filesDir, "diagnostic_black_box").apply { mkdirs() }
     private val sessions = File(root, "sessions").apply { mkdirs() }
+    /** Frames kept for named failures, when the user has asked for them. Empty unless switched on. */
+    val evidenceStore = EvidenceStore(File(root, "evidence"))
+
     private val mutex = Mutex()
     private val processId = UUID.randomUUID().toString()
 
@@ -171,11 +174,16 @@ class DiagnosticRecorder(context: Context) {
             exportDir.listFiles()?.filter { it.isFile }?.forEach { it.delete() }
             val output = File(
                 exportDir,
-                "VisionBridge-automatic-diagnostics-${timestamp()}-NO-IMAGES.zip",
+                if (evidenceStore.frameCount() > 0) {
+                    "VisionBridge-automatic-diagnostics-${timestamp()}-WITH-${evidenceStore.frameCount()}-FRAMES.zip"
+                } else {
+                    "VisionBridge-automatic-diagnostics-${timestamp()}-NO-IMAGES.zip"
+                },
             )
             val summary = buildSummaryLocked()
             val findings = buildAutomaticFindingsLocked()
             val traceAnalysis = buildTraceAnalysisLocked()
+            val verdict = buildSessionVerdictLocked()
 
             ZipOutputStream(FileOutputStream(output)).use { zip ->
                 zip.setLevel(Deflater.BEST_COMPRESSION)
@@ -189,10 +197,20 @@ class DiagnosticRecorder(context: Context) {
                             zip.closeEntry()
                         }
                 }
+                // First in the archive and first by name, because it is what should be read first.
+                // Evidence frames, when the user switched capture on. Named after the failure that
+                // kept them, so each file answers "why is this here" on its own.
+                evidenceStore.directory.listFiles()?.filter { it.isFile }?.forEach { file ->
+                    zip.putNextEntry(ZipEntry("evidence/${file.name}"))
+                    file.inputStream().use { it.copyTo(zip) }
+                    zip.closeEntry()
+                }
+                writeZipText(zip, "00_VERDICT_AR.txt", renderVerdictText(verdict))
+                writeZipText(zip, "00_session_verdict.json", verdict.toString(2))
                 writeZipText(zip, "diagnostic_summary.json", summary.toString(2))
                 writeZipText(zip, "automatic_findings.json", findings.toString(2))
                 writeZipText(zip, "trace_analysis.json", traceAnalysis.toString(2))
-                writeZipText(zip, "README_AR.txt", README_AR)
+                writeZipText(zip, "README_AR.txt", readmeFor(evidenceStore.frameCount()))
                 writeZipText(
                     zip,
                     "export_manifest.json",
@@ -213,6 +231,10 @@ class DiagnosticRecorder(context: Context) {
                         put("includesSpeechTiming", true)
                         put("includesAutomaticFindings", true)
                         put("includesPerTraceAnalysis", true)
+                        put("includesSessionVerdict", true)
+                        // The truth about images, whichever way it falls. A bundle that carries
+                        // screen frames must never look like one that does not.
+                        evidenceStore.manifest().forEach { (key, value) -> put(key, value) }
                         put("sessionCount", sessionFiles().size)
                         put("retentionDays", RETENTION_DAYS)
                         put("maximumRawBytes", MAX_TOTAL_BYTES)
@@ -535,6 +557,83 @@ class DiagnosticRecorder(context: Context) {
             put("visualFingerprintCount", globalFingerprints)
             put("eventTypeCounts", JSONObject(globalCounts as Map<*, *>))
             put("sessions", sessionSummaries)
+        }
+    }
+
+    /**
+     * Runs the outcome rules over each session and returns a ranked diagnosis.
+     *
+     * This is the part of the bundle meant to be read first. Everything else records what happened;
+     * this says what went wrong, in one sentence per failure, with the numbers that justify it.
+     */
+    private fun buildSessionVerdictLocked(): JSONObject {
+        val sessions = JSONArray()
+        val worst = linkedMapOf<String, Int>()
+        sessionFiles().forEach { session ->
+            val events = ArrayList<SessionVerdict.Event>()
+            forEachEvent(session) { event ->
+                val fields = HashMap<String, Any?>(event.length())
+                for (key in event.keys()) {
+                    val value = event.get(key)
+                    fields[key] = if (value == JSONObject.NULL) null else value
+                }
+                events.add(SessionVerdict.Event(event.optString("type"), fields))
+            }
+            val verdict = SessionVerdict.analyse(events)
+            verdict.forEach { finding -> worst[finding.code] = (worst[finding.code] ?: 0) + 1 }
+            sessions.put(
+                JSONObject().apply {
+                    put("sessionId", session.name)
+                    put("eventCount", events.size)
+                    put(
+                        "findings",
+                        JSONArray().apply {
+                            verdict.forEach { finding ->
+                                put(
+                                    JSONObject().apply {
+                                        put("code", finding.code)
+                                        put("severity", finding.severity.name)
+                                        put("headline", finding.headline)
+                                        put("measurement", finding.measurement)
+                                        put("evidence", JSONArray(finding.evidence))
+                                    },
+                                )
+                            }
+                        },
+                    )
+                },
+            )
+        }
+        return JSONObject().apply {
+            put("schemaVersion", SCHEMA_VERSION)
+            put("generatedAtEpochMs", System.currentTimeMillis())
+            put("readThisFirst", VERDICT_PREAMBLE)
+            put("findingCodeCounts", JSONObject(worst as Map<*, *>))
+            put("sessions", sessions)
+        }
+    }
+
+    /** The same verdict as plain text, so it can be read without a JSON viewer. */
+    private fun renderVerdictText(verdict: JSONObject): String = buildString {
+        appendLine("VisionBridge — تشخيص الجلسات")
+        appendLine(VERDICT_PREAMBLE)
+        appendLine()
+        val sessions = verdict.optJSONArray("sessions") ?: JSONArray()
+        for (index in 0 until sessions.length()) {
+            val session = sessions.getJSONObject(index)
+            appendLine("=".repeat(70))
+            appendLine("${session.optString("sessionId")}  (${session.optInt("eventCount")} حدثاً)")
+            val findings = session.optJSONArray("findings") ?: JSONArray()
+            if (findings.length() == 0) {
+                appendLine("  لا عطل معروف في هذه الجلسة.")
+                continue
+            }
+            for (order in 0 until findings.length()) {
+                val finding = findings.getJSONObject(order)
+                appendLine("  ${order + 1}. [${finding.optString("severity")}] ${finding.optString("code")}")
+                appendLine("     ${finding.optString("headline")}")
+                appendLine("     ${finding.optString("measurement")}")
+            }
         }
     }
 
@@ -867,6 +966,34 @@ class DiagnosticRecorder(context: Context) {
         )
         val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "heic", "bmp", "gif")
 
+        /**
+         * The archive's own readme, told the truth about whether it carries screen frames.
+         *
+         * The privacy promise printed inside the bundle has to match the bundle. A file that says
+         * "no screen images" while carrying forty of them would be worse than not offering capture
+         * at all.
+         */
+        fun readmeFor(evidenceFrames: Int): String = if (evidenceFrames == 0) {
+            README_AR
+        } else {
+            README_AR
+                .replace(
+                    "- الحزمة لا تحتوي أي صورة أو معاينة أو شبكة بكسلات.",
+                    "- الحزمة تحتوي $evidenceFrames صورة شاشة، حفظتها بنفسك بتفعيل خيار " +
+                        "«حفظ صورة الشاشة عند فشل القراءة». مجلد evidence/.",
+                )
+                .replace(
+                    "- لا توجد صور شاشة.",
+                    "- توجد $evidenceFrames صورة شاشة في مجلد evidence/، كل واحدة باسم سبب الفشل " +
+                        "الذي حفظها. أطفئ الخيار من الإعدادات لتعود الحزم بلا صور.",
+                )
+        }
+
+        /** Explains, inside the bundle itself, what the verdict is and is not. */
+        const val VERDICT_PREAMBLE =
+            "قائمة مرتّبة بالأسوأ أولاً. كل سطر عطل معروف، ومعه الأرقام التي أثبتته. " +
+                "غياب أي عطل لا يعني أن كل شيء سليم — يعني أن لا شيء من الأعطال المعروفة ظهر."
+
         val README_AR = """
             حزمة التشخيص التلقائي الشامل لتطبيق VisionBridge
 
@@ -881,6 +1008,8 @@ class DiagnosticRecorder(context: Context) {
             - هندسة كتل وأسطر OCR كنسب موضعية، مع ثقة Tesseract.
 
             الملفات:
+            - 00_VERDICT_AR.txt: ابدأ من هنا. تشخيص مرتّب بالأسوأ أولاً لكل جلسة، ومعه أرقامه.
+            - 00_session_verdict.json: نفس التشخيص بصيغة يقرأها البرنامج.
             - sessions/*/device.json: معلومات الجهاز والإصدار والإعدادات.
             - sessions/*/events.jsonl: الخط الزمني الخام الكامل والمرتب.
             - diagnostic_summary.json: ملخص جميع الجلسات والأحداث.

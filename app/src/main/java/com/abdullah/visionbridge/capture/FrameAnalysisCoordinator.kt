@@ -722,6 +722,23 @@ class FrameAnalysisCoordinator(
             ),
         )
 
+        // A reading that came back empty, with the frame that produced it still in hand. This is
+        // the one moment that separates "the text was never detected" from "it was detected and
+        // discarded" — the two explanations for a label that is not read, which need opposite
+        // repairs and cannot be told apart from events alone.
+        if (mode == AnalysisMode.TEXT_READING && rawResult.text.isBlank() && trace != null) {
+            DiagnosticHub.evidence(
+                bitmap = bitmap,
+                frameId = trace.frameId,
+                reason = "recognition_returned_nothing",
+                fields = mapOf(
+                    "source" to rawResult.source.name,
+                    "bitmapWidth" to bitmap.width,
+                    "bitmapHeight" to bitmap.height,
+                ),
+            )
+        }
+
         return rawResult
     }
 

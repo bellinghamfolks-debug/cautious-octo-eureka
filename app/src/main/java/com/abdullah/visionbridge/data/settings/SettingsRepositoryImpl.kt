@@ -35,6 +35,7 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
             useLocalOcr = values[Keys.USE_LOCAL_OCR] ?: false,
             localReadingQuality =
                 LocalReadingQuality.fromStored(values[Keys.LOCAL_READING_QUALITY]),
+            captureFailureEvidence = values[Keys.CAPTURE_FAILURE_EVIDENCE] ?: false,
             speechRate = (values[Keys.SPEECH_RATE] ?: 1.0f)
                 .coerceIn(AppSettings.MIN_SPEECH_RATE, AppSettings.MAX_SPEECH_RATE),
         )
@@ -61,6 +62,9 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
     override suspend fun setLocalReadingQuality(quality: LocalReadingQuality) =
         update(Keys.LOCAL_READING_QUALITY, quality.name)
 
+    override suspend fun setCaptureFailureEvidence(enabled: Boolean) =
+        update(Keys.CAPTURE_FAILURE_EVIDENCE, enabled)
+
     override suspend fun setSpeechRate(rate: Float) =
         update(Keys.SPEECH_RATE, rate.coerceIn(AppSettings.MIN_SPEECH_RATE, AppSettings.MAX_SPEECH_RATE))
 
@@ -79,6 +83,7 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
         val SCENE_DESCRIPTION_STYLE = stringPreferencesKey("scene_description_style")
         val USE_LOCAL_OCR = booleanPreferencesKey("use_local_ocr")
         val LOCAL_READING_QUALITY = stringPreferencesKey("local_reading_quality")
+        val CAPTURE_FAILURE_EVIDENCE = booleanPreferencesKey("capture_failure_evidence")
         val SPEECH_RATE = floatPreferencesKey("speech_rate")
     }
 }

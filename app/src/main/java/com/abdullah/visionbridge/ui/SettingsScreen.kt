@@ -75,6 +75,7 @@ fun SettingsScreen(
     onSpeechRateChange: (Float) -> Unit,
     onUseLocalOcrChange: (Boolean) -> Unit,
     onLocalReadingQualityChange: (LocalReadingQuality) -> Unit,
+    onCaptureFailureEvidenceChange: (Boolean) -> Unit,
     onExportDiagnostics: () -> Unit,
     onBack: () -> Unit,
     onMessageConsumed: () -> Unit,
@@ -396,14 +397,41 @@ fun SettingsScreen(
                     "يسجل VisionBridge بيانات التشخيص تلقائيًا من دون صور، بما يشمل التوقيتات ونتائج OCR وGemini وحالة النطق.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
+
+                // Off by default, and worded so the cost is plain before it is switched on. A frame
+                // is whatever the user was looking at, and that is theirs to decide about each time.
+                AccessibleSwitchRow(
+                    title = "حفظ صورة الشاشة عند فشل القراءة",
+                    description = if (state.settings.captureFailureEvidence) {
+                        "مُفعّل. تُحفظ صورة الشاشة الكاملة في لحظات الفشل فقط، بحد أقصى ٤٠ صورة، " +
+                            "وتُرسل داخل ملف التشخيص. أطفئه بعد إعادة إنتاج المشكلة."
+                    } else {
+                        "مطفأ. ملف التشخيص لا يحوي أي صورة. فعّله فقط أثناء إعادة إنتاج مشكلة " +
+                            "قراءة، لأن الصورة وحدها تفرّق بين نص لم يُكتشف ونص اكتُشف ثم رُمي."
+                    },
+                    checked = state.settings.captureFailureEvidence,
+                    onCheckedChange = onCaptureFailureEvidenceChange,
+                )
+                if (state.settings.captureFailureEvidence) {
+                    Text(
+                        text = "تنبيه: ملف التشخيص القادم سيحتوي صوراً لما كنت تنظر إليه عند الفشل. " +
+                            "اسم الملف سيذكر عدد الصور.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                    )
+                }
+
                 Button(
                     onClick = onExportDiagnostics,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(56.dp)
                         .semantics {
-                            contentDescription =
+                            contentDescription = if (state.settings.captureFailureEvidence) {
+                                "مشاركة ملف التشخيص، ويحتوي صور لحظات الفشل والتوقيتات ونتائج OCR وGemini وحالة النطق"
+                            } else {
                                 "مشاركة ملف التشخيص من دون صور، ويشمل التوقيتات ونتائج OCR وGemini وحالة النطق"
+                            }
                         },
                 ) {
                     Text("مشاركة ملف التشخيص")

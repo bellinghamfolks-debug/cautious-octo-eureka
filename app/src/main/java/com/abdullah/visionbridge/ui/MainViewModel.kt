@@ -42,6 +42,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshKeyState()
     }
 
+    fun setCaptureFailureEvidence(enabled: Boolean) = viewModelScope.launch {
+        container.settingsRepository.setCaptureFailureEvidence(enabled)
+    }
+
     fun setUseLocalOcr(enabled: Boolean) = viewModelScope.launch {
         container.settingsRepository.setUseLocalOcr(enabled)
         if (!enabled) container.localOcrEngine.release("user_disabled_local_reader")

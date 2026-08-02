@@ -20,5 +20,8 @@ interface SettingsRepository {
     suspend fun setUseLocalOcr(enabled: Boolean)
 
     suspend fun setLocalReadingQuality(quality: LocalReadingQuality)
+    /** Store the frame behind a failure in the diagnostic bundle. Off by default; see AppSettings. */
+    suspend fun setCaptureFailureEvidence(enabled: Boolean)
+
     suspend fun setSpeechRate(rate: Float)
 }

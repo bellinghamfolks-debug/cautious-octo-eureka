@@ -1,0 +1,275 @@
+package com.abdullah.visionbridge.data.diagnostics
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * The verdict rules, checked against timelines shaped like the ones that produced them.
+ *
+ * Each case is a defect that was real and was diagnosed by hand from a device bundle. The point of
+ * the test is that the same diagnosis now falls out of the data automatically, and — just as
+ * importantly — that a healthy session stays silent.
+ */
+class SessionVerdictTest {
+
+    private var clock = 1_000_000L
+
+    private fun event(
+        type: String,
+        vararg fields: Pair<String, Any?>,
+        advanceMs: Long = 10L,
+    ): SessionVerdict.Event {
+        clock += advanceMs
+        return SessionVerdict.Event(type, mapOf("epochMs" to clock) + fields.toMap())
+    }
+
+    private fun codes(events: List<SessionVerdict.Event>): List<String> =
+        SessionVerdict.analyse(events).map { it.code }
+
+    /** A session where nothing went wrong must produce nothing. Noise is what made the old findings useless. */
+    @Test
+    fun `a healthy session yields no findings`() {
+        val events = buildList {
+            repeat(40) { add(event("FRAME_ACQUIRED")) }
+            repeat(20) { add(event("COORDINATOR_PROCESS_STARTED")) }
+            repeat(10) { add(event("PPOCR_PAGE_READ", "characters" to 60, "sinceCaptureMs" to 800.0)) }
+            repeat(12) { add(event("TTS_UTTERANCE_DONE", "text" to "a".repeat(55))) }
+        }
+        assertEquals(emptyList<String>(), codes(events))
+    }
+
+    /**
+     * The perfume session: 4,742 characters recognised, 200 heard. The measurement that would have
+     * named the complaint on sight.
+     */
+    @Test
+    fun `text recognised but not delivered is named`() {
+        val events = buildList {
+            repeat(50) { add(event("PPOCR_PAGE_READ", "characters" to 95, "sinceCaptureMs" to 2200.0)) }
+            repeat(3) { add(event("TTS_UTTERANCE_DONE", "text" to "BLEU CHANEL")) }
+        }
+        val finding = SessionVerdict.analyse(events).firstOrNull { it.code == "RECOGNISED_TEXT_NOT_DELIVERED" }
+        assertNotNull(finding)
+        assertEquals(SessionVerdict.Severity.FATAL, finding!!.severity)
+        assertTrue("expected the counts in the measurement", finding.measurement.contains("4750"))
+    }
+
+    @Test
+    fun `speech cut off repeatedly is named`() {
+        val events = buildList {
+            repeat(14) { add(event("TTS_UTTERANCE_INTERRUPTED", "text" to "BLEU D CHANEL")) }
+            repeat(15) { add(event("TTS_UTTERANCE_DONE", "text" to "ok")) }
+            repeat(153) { add(event("TTS_QUEUE_INTERRUPTED")) }
+        }
+        assertTrue("SPEECH_REPEATEDLY_CUT_OFF" in codes(events))
+    }
+
+    /** Interruptions that are rare beside completions are normal use, not a defect. */
+    @Test
+    fun `occasional interruptions are not a finding`() {
+        val events = buildList {
+            repeat(2) { add(event("TTS_UTTERANCE_INTERRUPTED", "text" to "x")) }
+            repeat(40) { add(event("TTS_UTTERANCE_DONE", "text" to "ok")) }
+        }
+        assertTrue("SPEECH_REPEATEDLY_CUT_OFF" !in codes(events))
+    }
+
+    /**
+     * The arithmetic behind the whole repair: a target declared new every 343 ms against an
+     * analysis that needs 2,231.
+     */
+    @Test
+    fun `a target changing faster than analysis can finish is named`() {
+        val events = buildList {
+            repeat(60) { add(event("VISUAL_TARGET_CHANGED", advanceMs = 343L)) }
+            repeat(20) { add(event("PPOCR_PAGE_READ", "characters" to 40, "sinceCaptureMs" to 2231.0)) }
+        }
+        val finding = SessionVerdict.analyse(events)
+            .firstOrNull { it.code == "TARGET_CHANGES_FASTER_THAN_ANALYSIS" }
+        assertNotNull(finding)
+        assertTrue(finding!!.measurement.contains("343"))
+        assertTrue(finding.measurement.contains("2231"))
+    }
+
+    @Test
+    fun `a target changing slower than analysis is not a finding`() {
+        val events = buildList {
+            repeat(20) { add(event("VISUAL_TARGET_CHANGED", advanceMs = 6_000L)) }
+            repeat(20) { add(event("PPOCR_PAGE_READ", "characters" to 40, "sinceCaptureMs" to 900.0)) }
+        }
+        assertTrue("TARGET_CHANGES_FASTER_THAN_ANALYSIS" !in codes(events))
+    }
+
+    /** 24,000 ms budget enforced at 221,605. A timer that did not run, not a slow network. */
+    @Test
+    fun `a request that outlived its deadline is named`() {
+        val events = listOf(
+            event("CLOUD_ANALYSIS_BUDGET_EXCEEDED", "budgetMs" to 24_000.0, "elapsedMs" to 221_605.0),
+        )
+        val finding = SessionVerdict.analyse(events).firstOrNull { it.code == "REQUEST_OUTLIVED_ITS_DEADLINE" }
+        assertNotNull(finding)
+        assertTrue(finding!!.measurement.contains("221605"))
+    }
+
+    /** A request that overran slightly really is just a slow network. */
+    @Test
+    fun `a request that overran slightly is not a finding`() {
+        val events = listOf(
+            event("CLOUD_ANALYSIS_BUDGET_EXCEEDED", "budgetMs" to 24_000.0, "elapsedMs" to 24_400.0),
+        )
+        assertTrue("REQUEST_OUTLIVED_ITS_DEADLINE" !in codes(events))
+    }
+
+    @Test
+    fun `an illegal second virtual display is named as the cause of a dead capture`() {
+        val events = listOf(
+            event(
+                "FAILURE",
+                "exception" to "java.lang.SecurityException",
+                "message" to "Don't take multiple captures by invoking " +
+                    "MediaProjection#createVirtualDisplay multiple times on the same instance.",
+            ),
+            event("PROJECTION_SYSTEM_STOPPED"),
+        )
+        val finding = SessionVerdict.analyse(events).firstOrNull { it.code == "CAPTURE_SESSION_KILLED" }
+        assertNotNull(finding)
+        assertTrue(finding!!.measurement.contains("SecurityException"))
+    }
+
+    /** The 216-second hole, and the honesty about what cannot be concluded without a heartbeat. */
+    @Test
+    fun `a long silence is named, and says whether it can be explained`() {
+        val withoutHeartbeat = listOf(event("SESSION_START"), event("SESSION_END", advanceMs = 216_000L))
+        val blind = SessionVerdict.analyse(withoutHeartbeat).first { it.code == "APP_STOPPED_RECORDING" }
+        assertTrue(blind.measurement.contains("216"))
+        assertTrue("must admit it cannot tell", blind.measurement.contains("لا يوجد نبض حياة"))
+
+        val withHeartbeat = listOf(
+            event("SESSION_START"),
+            event("PROCESS_HEARTBEAT"),
+            event("SESSION_END", advanceMs = 216_000L),
+        )
+        val informed = SessionVerdict.analyse(withHeartbeat).first { it.code == "APP_STOPPED_RECORDING" }
+        assertTrue("must use the heartbeat", informed.measurement.contains("نبض الحياة يؤكد"))
+    }
+
+    /** A black feed that always follows a resize is a different bug from a dark room. */
+    @Test
+    fun `a black feed correlated with a resize says so`() {
+        val events = listOf(
+            event("VISUAL_FEED_UNAVAILABLE_NOTICE_TRIGGERED", "sinceLastResizeMs" to 1592.0, "landscapeCapture" to true),
+            event("VISUAL_FEED_UNAVAILABLE_NOTICE_TRIGGERED", "sinceLastResizeMs" to 1719.0, "landscapeCapture" to true),
+        )
+        val finding = SessionVerdict.analyse(events).first { it.code == "CAPTURE_WENT_BLACK" }
+        assertTrue(finding.headline.contains("تغيير لحجم الالتقاط"))
+    }
+
+    @Test
+    fun `a black feed unrelated to a resize does not blame one`() {
+        val events = listOf(
+            event("VISUAL_FEED_UNAVAILABLE_NOTICE_TRIGGERED", "sinceLastResizeMs" to 90_000.0),
+            event("VISUAL_FEED_UNAVAILABLE_NOTICE_TRIGGERED", "sinceLastResizeMs" to 120_000.0),
+        )
+        val finding = SessionVerdict.analyse(events).first { it.code == "CAPTURE_WENT_BLACK" }
+        assertTrue(!finding.headline.contains("تغيير لحجم الالتقاط"))
+    }
+
+    /** The signature of a build that records a page as heard the moment it queues it. */
+    @Test
+    fun `suppression with no delivery record at all is named`() {
+        val events = buildList {
+            repeat(86) { add(event("DOCUMENT_READING_SKIPPED", "reason" to "already_read_completely")) }
+        }
+        assertTrue("SUPPRESSED_WITHOUT_DELIVERY_PROOF" in codes(events))
+    }
+
+    /** With delivery records present, the question becomes how much is still owed. */
+    @Test
+    fun `content still owed is named once delivery is recorded`() {
+        val events = buildList {
+            repeat(10) { add(event("DOCUMENT_READING_SKIPPED", "reason" to "already_read_completely")) }
+            repeat(4) {
+                add(event("DOCUMENT_READING_DELIVERED", "owedCharacters" to 30, "complete" to false))
+            }
+        }
+        val codes = codes(events)
+        assertTrue("CONTENT_STILL_OWED" in codes)
+        assertTrue("SUPPRESSED_WITHOUT_DELIVERY_PROOF" !in codes)
+    }
+
+    @Test
+    fun `a session that delivers everything it suppresses is silent`() {
+        val events = buildList {
+            repeat(10) { add(event("DOCUMENT_READING_SKIPPED", "reason" to "already_read_completely")) }
+            repeat(4) {
+                add(event("DOCUMENT_READING_DELIVERED", "owedCharacters" to 0, "complete" to true))
+            }
+        }
+        val codes = codes(events)
+        assertTrue("CONTENT_STILL_OWED" !in codes)
+        assertTrue("SUPPRESSED_WITHOUT_DELIVERY_PROOF" !in codes)
+    }
+
+    @Test
+    fun `cloud requests that mostly fail are named`() {
+        val events = buildList {
+            repeat(24) { add(event("HTTP_REQUEST_STARTED", "forceCellular" to true)) }
+            repeat(3) { add(event("CLOUD_ANALYSIS_COMPLETED", "text" to "x")) }
+        }
+        val finding = SessionVerdict.analyse(events).firstOrNull { it.code == "CLOUD_REQUESTS_MOSTLY_FAIL" }
+        assertNotNull(finding)
+        assertTrue("must mention cellular when the session was on it", finding!!.measurement.contains("الخلوية"))
+    }
+
+    /** Findings must arrive worst-first; a reader should not have to rank them. */
+    @Test
+    fun `findings are ranked by severity`() {
+        val events = buildList {
+            repeat(400) { add(event("FRAME_ACQUIRED")) }
+            add(event("COORDINATOR_PROCESS_STARTED"))
+            repeat(50) { add(event("PPOCR_PAGE_READ", "characters" to 95, "sinceCaptureMs" to 2200.0)) }
+            add(event("PROJECTION_SYSTEM_STOPPED"))
+        }
+        val severities = SessionVerdict.analyse(events).map { it.severity }
+        assertEquals(severities.sortedBy { it.ordinal }, severities)
+        assertEquals(SessionVerdict.Severity.FATAL, severities.first())
+    }
+
+    /**
+     * A number that survived a JSON round trip as text must still be read. A rule that silently
+     * fails to fire makes a broken session look clean, which is worse than having no rule.
+     */
+    @Test
+    fun `rules fire when numbers arrive as strings`() {
+        val events = buildList {
+            repeat(60) { add(event("VISUAL_TARGET_CHANGED", advanceMs = 343L)) }
+            repeat(20) {
+                add(
+                    event(
+                        "PPOCR_PAGE_READ",
+                        "characters" to "40",
+                        "sinceCaptureMs" to "2231.0",
+                    ),
+                )
+            }
+        }
+        assertTrue("TARGET_CHANGES_FASTER_THAN_ANALYSIS" in codes(events))
+    }
+
+    @Test
+    fun `flags stored as text are still read`() {
+        val events = listOf(
+            event("VISUAL_FEED_UNAVAILABLE_NOTICE_TRIGGERED", "sinceLastResizeMs" to "1592", "landscapeCapture" to "true"),
+            event("VISUAL_FEED_UNAVAILABLE_NOTICE_TRIGGERED", "sinceLastResizeMs" to "1719", "landscapeCapture" to "true"),
+        )
+        val finding = SessionVerdict.analyse(events).first { it.code == "CAPTURE_WENT_BLACK" }
+        assertTrue(finding.measurement.contains("2 في الوضع الأفقي"))
+    }
+
+    @Test
+    fun `an empty timeline is handled`() {
+        assertEquals(emptyList<String>(), codes(emptyList()))
+    }
+}

@@ -7,6 +7,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -24,6 +27,12 @@ import kotlin.coroutines.CoroutineContext
  */
 object DiagnosticHub {
     private const val FATAL_FLUSH_TIMEOUT_MS = 2_000L
+
+    /**
+     * Ten seconds. Frequent enough that a stall of any consequence is bracketed by two beats, rare
+     * enough that a long session adds a few hundred events rather than a few thousand.
+     */
+    private const val HEARTBEAT_INTERVAL_MS = 10_000L
 
     private sealed interface Command {
         data class Record(val type: String, val fields: Map<String, Any?>) : Command
@@ -62,10 +71,49 @@ object DiagnosticHub {
         scope.launch {
             for (command in commands) handle(command)
         }
+        scope.launch { beatWhileAlive() }
     }
+
+    /**
+     * A steady pulse, so a hole in the timeline can be read.
+     *
+     * A bundle once contained 216 seconds during which the app recorded nothing at all, and there
+     * was no way to tell a frozen process from an idle one — the difference between a bug and a
+     * user putting the phone down. A beat that should have arrived and did not is proof the process
+     * was not being scheduled; the wall clock and the monotonic clock are both carried so a clock
+     * change cannot be mistaken for either.
+     */
+    private suspend fun beatWhileAlive() {
+        var lastWallMs = System.currentTimeMillis()
+        var lastElapsedMs = SystemClock.elapsedRealtime()
+        while (currentCoroutineContext().isActive) {
+            delay(HEARTBEAT_INTERVAL_MS)
+            val wallMs = System.currentTimeMillis()
+            val elapsedMs = SystemClock.elapsedRealtime()
+            val sinceElapsed = elapsedMs - lastElapsedMs
+            record(
+                "PROCESS_HEARTBEAT",
+                mapOf(
+                    "intervalMs" to HEARTBEAT_INTERVAL_MS,
+                    "sinceLastBeatElapsedMs" to sinceElapsed,
+                    "sinceLastBeatWallMs" to (wallMs - lastWallMs),
+                    // Zero on a healthy pulse. Anything above it counts the beats that never ran.
+                    "missedBeats" to
+                        ((sinceElapsed - HEARTBEAT_INTERVAL_MS) / HEARTBEAT_INTERVAL_MS)
+                            .coerceAtLeast(0L),
+                ),
+            )
+            lastWallMs = wallMs
+            lastElapsedMs = elapsedMs
+        }
+    }
+
+    @Volatile
+    private var evidence: EvidenceStore? = null
 
     fun initialize(value: DiagnosticRecorder) {
         recorder = value
+        evidence = value.evidenceStore
         record(
             "DIAGNOSTIC_HUB_INITIALIZED",
             mapOf(
@@ -74,6 +122,32 @@ object DiagnosticHub {
                 "storesImages" to false,
                 "visualEvidence" to "aggregate_fingerprint",
             ),
+        )
+    }
+
+    /** Turns failure-frame capture on or off. Off is the only default. */
+    fun setEvidenceCapture(enabled: Boolean) {
+        val store = evidence ?: return
+        if (store.enabled == enabled) return
+        store.enabled = enabled
+        if (!enabled) store.clear()
+        record("EVIDENCE_CAPTURE_SETTING", mapOf("enabled" to enabled))
+    }
+
+    /**
+     * Keeps the frame behind a named failure, when the user has switched capture on.
+     *
+     * Called where a bitmap is still in hand and something has demonstrably gone wrong. Without
+     * this, a page that was not read cannot be told apart from a page that was read and discarded,
+     * and those two need opposite repairs.
+     */
+    fun evidence(bitmap: Bitmap, frameId: String, reason: String, fields: Map<String, Any?> = emptyMap()) {
+        val store = evidence ?: return
+        if (!store.enabled) return
+        val name = store.capture(bitmap, frameId, reason) ?: return
+        record(
+            "EVIDENCE_FRAME_CAPTURED",
+            fields + mapOf("frameId" to frameId, "reason" to reason, "file" to name),
         )
     }
 

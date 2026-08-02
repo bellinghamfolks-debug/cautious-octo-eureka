@@ -33,8 +33,8 @@ android {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 35
-        versionCode = 21
-        versionName = "2.3.0"
+        versionCode = 22
+        versionName = "2.4.0"
 
         // 64-bit only. ONNX Runtime's AAR ships four ABIs; abiFilters keeps arm64-v8a and drops
         // the rest at packaging time, so the APK carries no library this device cannot run.

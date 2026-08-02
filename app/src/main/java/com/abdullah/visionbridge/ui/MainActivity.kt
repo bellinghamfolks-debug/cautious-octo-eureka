@@ -84,6 +84,7 @@ class MainActivity : ComponentActivity() {
                         onSpeechRateChange = viewModel::setSpeechRate,
                         onUseLocalOcrChange = viewModel::setUseLocalOcr,
                         onLocalReadingQualityChange = viewModel::setLocalReadingQuality,
+                        onCaptureFailureEvidenceChange = viewModel::setCaptureFailureEvidence,
                         onExportDiagnostics = {
                             viewModel.exportDiagnostics { file ->
                                 this@MainActivity.shareDiagnosticFile(file)
