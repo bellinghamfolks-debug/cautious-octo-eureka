@@ -232,7 +232,8 @@ class PaddleOcrEngine(
             // vertically until the text is a sliver of the crop's height, which reads worse than
             // the tilt did: on a page tilted four degrees it produced no readable lines at all,
             // while deskewing the page and re-detecting read every line exactly.
-            val deskew = LineSkew.pageDegrees(TextLineOrdering.groupIntoLines(boxes).map(::bounds))
+            val skew = LineSkew.estimate(TextLineOrdering.groupIntoLines(boxes).map(::bounds))
+            val deskew = skew.degrees
             if (deskew != 0f) {
                 val straight = OcrImagePreprocessor.rotate(page, deskew)
                 if (straight !== page) {
@@ -249,6 +250,13 @@ class PaddleOcrEngine(
                     "sourceWidth" to bitmap.width,
                     "sourceHeight" to bitmap.height,
                     "deskewDegrees" to deskew,
+                    // Recorded alongside the correction so a bundle can be argued with rather than
+                    // guessed at: two page reads in the field were rotated by nearly 24 degrees and
+                    // the events gave no way to tell a genuine tilt from a coincidental column.
+                    "skewMeasuredDegrees" to skew.measuredDegrees,
+                    "skewCorrelation" to skew.correlation,
+                    "skewLineCount" to skew.lineCount,
+                    "skewAnchor" to skew.anchor,
                     "quality" to quality.name,
                     "detectionLongEdge" to quality.detectionLongEdge,
                     "xnnpack" to xnnpackEnabled,

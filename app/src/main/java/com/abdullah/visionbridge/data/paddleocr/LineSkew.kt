@@ -44,8 +44,20 @@ object LineSkew {
      * only believed when the correlation is strong — a menu with lines of wildly different widths
      * must not be rotated on the strength of a coincidence.
      */
-    fun pageDegrees(lines: List<TextBox>): Float {
-        if (lines.size < MIN_LINES_FOR_PAGE_SKEW) return 0f
+    fun pageDegrees(lines: List<TextBox>): Float = estimate(lines).degrees
+
+    /**
+     * The same estimate with the reasoning attached, so a diagnostic bundle can be argued with.
+     *
+     * A device bundle contains two page reads corrected by nearly 24°, on captures of phone UI
+     * rather than paper, and there is no way to tell from the events alone whether those were real
+     * tilts or a column of separate items that happened to line up. Recording the correlation, the
+     * anchor and the line count behind each estimate is what makes that answerable next time.
+     */
+    fun estimate(lines: List<TextBox>): Estimate {
+        if (lines.size < MIN_LINES_FOR_PAGE_SKEW) {
+            return Estimate(0f, 0f, lines.size, "too_few_lines", 0f)
+        }
 
         // Three ways a page can be aligned, and only the matching one gives a straight stack.
         // Centres line up when every line is the same width, which is true of a rendered test page
@@ -53,28 +65,49 @@ object LineSkew {
         // left, Arabic is ragged on the left and aligns on the right. Measuring only centres meant
         // no real page was ever straightened, while the test page that suggested it worked was the
         // one layout where centres happen to align.
-        val anchors = listOf<(TextBox) -> Float>(
-            { it.left.toFloat() },
-            { it.right.toFloat() },
-            { it.centerX },
+        val anchors = listOf<Pair<String, (TextBox) -> Float>>(
+            "left" to { it.left.toFloat() },
+            "right" to { it.right.toFloat() },
+            "centre" to { it.centerX },
         )
 
         var best = 0f
         var bestCorrelation = 0f
-        for (anchor in anchors) {
+        var bestAnchor = "none"
+        for ((name, anchor) in anchors) {
             val (angle, correlation) = fit(lines, anchor)
             if (correlation > bestCorrelation) {
                 bestCorrelation = correlation
                 best = angle
+                bestAnchor = name
             }
         }
-        if (bestCorrelation < MIN_CORRELATION) return 0f
-        return if (abs(best) < MIN_CORRECTABLE_DEGREES || abs(best) > MAX_CORRECTABLE_DEGREES) {
-            0f
-        } else {
-            best
+        val rejected = when {
+            bestCorrelation < MIN_CORRELATION -> "correlation_below_floor"
+            abs(best) < MIN_CORRECTABLE_DEGREES -> "below_correctable_range"
+            abs(best) > MAX_CORRECTABLE_DEGREES -> "above_correctable_range"
+            else -> null
         }
+        return Estimate(
+            degrees = if (rejected == null) best else 0f,
+            correlation = bestCorrelation,
+            lineCount = lines.size,
+            anchor = if (rejected == null) bestAnchor else rejected,
+            measuredDegrees = best,
+        )
     }
+
+    /**
+     * [degrees] is the correction actually applied — zero when the fit was not believed —
+     * while [measuredDegrees] is what the fit said before that judgement.
+     */
+    data class Estimate(
+        val degrees: Float,
+        val correlation: Float,
+        val lineCount: Int,
+        val anchor: String,
+        val measuredDegrees: Float,
+    )
 
     /** @return the correction angle this anchor implies, and how straight its stack is. */
     private fun fit(lines: List<TextBox>, anchor: (TextBox) -> Float): Pair<Float, Float> {
