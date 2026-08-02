@@ -868,7 +868,7 @@ class DiagnosticRecorder(context: Context) {
         val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "heic", "bmp", "gif")
 
         val README_AR = """
-            حزمة التشخيص التلقائي الشامل لتطبيق رفيق الرؤية
+            حزمة التشخيص التلقائي الشامل لتطبيق VisionBridge
 
             التسجيل:
             - يبدأ تلقائياً، ولا يحتاج الضغط على «حدثت مشكلة الآن».

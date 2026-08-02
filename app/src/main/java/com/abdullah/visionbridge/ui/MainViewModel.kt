@@ -46,18 +46,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         container.settingsRepository.setUseLocalOcr(enabled)
         if (!enabled) container.localOcrEngine.release("user_disabled_local_reader")
         message.value = if (enabled) {
-            "تم تفعيل القراءة المحلية. قراءة النص تعمل على الجهاز، ووصف المشهد يبقى سحابياً."
+            "تم تفعيل PP-OCRv5. ستتم قراءة النص على الجهاز، بينما يبقى وصف المشهد عبر Gemini."
         } else {
-            "عادت قراءة النص إلى Gemini السحابي."
+            "تم إيقاف PP-OCRv5. ستتم قراءة النص عبر Gemini."
         }
     }
 
     fun setLocalReadingQuality(quality: LocalReadingQuality) = viewModelScope.launch {
         container.settingsRepository.setLocalReadingQuality(quality)
         message.value = when (quality) {
-            LocalReadingQuality.FAST -> "دقة القراءة المحلية: سريع"
-            LocalReadingQuality.BALANCED -> "دقة القراءة المحلية: متوازن"
-            LocalReadingQuality.MAXIMUM -> "دقة القراءة المحلية: أقصى دقة. القراءة أبطأ وأدق."
+            LocalReadingQuality.FAST -> "جودة OCR على الجهاز: سريع"
+            LocalReadingQuality.BALANCED -> "جودة OCR على الجهاز: متوازن"
+            LocalReadingQuality.MAXIMUM -> "جودة OCR على الجهاز: أعلى دقة. قد تستغرق القراءة وقتًا أطول."
         }
     }
 
@@ -65,15 +65,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { container.apiKeyStore.save(value) }
             .onSuccess {
                 keyState.value = true
-                message.value = "تم حفظ المفتاح مشفراً داخل الجهاز"
+                message.value = "تم حفظ Gemini API Key وتشفيره على هذا الجهاز"
             }
-            .onFailure { message.value = it.message ?: "تعذر حفظ المفتاح" }
+            .onFailure { message.value = it.message ?: "تعذر حفظ Gemini API Key" }
     }
 
     fun deleteApiKey() = viewModelScope.launch {
         container.apiKeyStore.clear()
         keyState.value = false
-        message.value = "تم حذف المفتاح"
+        message.value = "تم حذف Gemini API Key"
     }
 
     fun setMode(mode: AnalysisMode) = viewModelScope.launch {
@@ -120,12 +120,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }.onSuccess { status ->
             val megabytes = status.totalBytes.toDouble() / (1024.0 * 1024.0)
             message.value =
-                "أضيفت العلامة الاختيارية. التشخيص التلقائي كان يعمل مسبقاً، ومحفوظ ${status.sessionCount} جلسة بلا صور بحجم ${String.format(Locale.US, "%.1f", megabytes)} ميجابايت"
-        }.onFailure { message.value = it.message ?: "تعذر إضافة العلامة الاختيارية" }
+                "تم تحديد لحظة المشكلة. يحتوي السجل على ${status.sessionCount} جلسة من دون صور، بحجم ${String.format(Locale.US, "%.1f", megabytes)} MB"
+        }.onFailure { message.value = it.message ?: "تعذر تحديد لحظة المشكلة" }
     }
 
     fun exportDiagnostics(onReady: (File) -> Unit) = viewModelScope.launch {
-        message.value = "يجري ضغط سجل التشخيص التلقائي الشامل بلا صور"
+        message.value = "جارٍ تجهيز ملف التشخيص من دون صور"
         runCatching {
             DiagnosticHub.record(
                 "AUTOMATIC_DIAGNOSTIC_EXPORT_REQUESTED",
@@ -138,9 +138,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }.onSuccess { file ->
             val megabytes = file.length().toDouble() / (1024.0 * 1024.0)
             message.value =
-                "تم تجهيز التشخيص التلقائي الشامل بلا صور: ${String.format(Locale.US, "%.1f", megabytes)} ميجابايت"
+                "تم تجهيز ملف التشخيص من دون صور: ${String.format(Locale.US, "%.1f", megabytes)} MB"
             onReady(file)
-        }.onFailure { message.value = it.message ?: "تعذر إنشاء حزمة التشخيص التلقائي" }
+        }.onFailure { message.value = it.message ?: "تعذر إنشاء ملف التشخيص" }
     }
 
     fun clearMessage() { message.value = null }

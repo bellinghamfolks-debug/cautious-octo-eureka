@@ -79,6 +79,7 @@ app/src/test/java/com/abdullah/visionbridge/domain/model/LocalReadingQualityTest
 build.gradle.kts
 docs/DEVICE_TESTING.md
 docs/LOCAL_OCR_SETUP.md
+docs/UI_COPY_GUIDE.md
 gradle.properties
 gradle/wrapper/gradle-wrapper.jar
 gradle/wrapper/gradle-wrapper.properties

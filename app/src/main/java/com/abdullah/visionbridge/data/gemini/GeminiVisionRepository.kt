@@ -317,7 +317,7 @@ class GeminiVisionRepository(
                     )
                     signals.trySend(
                         StreamSignal.Failure(
-                            IllegalStateException("تعذر قراءة جزء Gemini المتدفق", error)
+                            IllegalStateException("تعذر استقبال جزء من بث Gemini", error)
                         )
                     )
                     eventSource.cancel()
@@ -325,7 +325,7 @@ class GeminiVisionRepository(
                 }
 
                 parsed.error?.let { apiError ->
-                    val error = IllegalStateException(apiError.message ?: "أعاد Gemini خطأ أثناء البث")
+                    val error = IllegalStateException(apiError.message ?: "أعاد Gemini خطأ أثناء بث الاستجابة")
                     DiagnosticHub.failure(
                         "GEMINI_STREAM_API_ERROR",
                         error,
@@ -371,7 +371,7 @@ class GeminiVisionRepository(
 
             override fun onFailure(eventSource: EventSource, throwable: Throwable?, response: Response?) {
                 val error = throwable ?: IllegalStateException(
-                    "انقطع بث Gemini${response?.code?.let { " برمز HTTP $it" }.orEmpty()}"
+                    "انقطع بث Gemini${response?.code?.let { "، HTTP $it" }.orEmpty()}"
                 )
                 DiagnosticHub.failure(
                     "SSE_CONNECTION_FAILURE",
@@ -497,9 +497,9 @@ class GeminiVisionRepository(
 
         if (requireQualityHeader && !accumulator.ocrAccepted) {
             val feedback = when {
-                accumulator.inferred -> "النص غير واضح بما يكفي، وتم رفض قراءة غير مؤكدة."
-                !accumulator.legible -> "النص غير واضح. قرّب الصورة أو ثبّت النظرة."
-                else -> "النص غير واضح بما يكفي للقراءة الموثوقة."
+                accumulator.inferred -> "رفض VisionBridge النتيجة لأنها تتضمن تخمينًا غير موثوق."
+                !accumulator.legible -> "النص غير واضح. قرّب المحتوى أو ثبّت النظرة ثم حاول مرة أخرى."
+                else -> "تعذر الحصول على قراءة موثوقة من هذه اللقطة."
             }
             throw OcrTrustRejectedException(feedback)
         }
@@ -507,7 +507,7 @@ class GeminiVisionRepository(
         val fullText = accumulator.fullText
         if (fullText.isBlank()) {
             if (requireQualityHeader) {
-                throw OcrTrustRejectedException("لم يظهر نص واضح. قرّب الصورة أو غيّر زاوية النظر.")
+                throw OcrTrustRejectedException("لم يظهر نص واضح. قرّب المحتوى أو غيّر زاوية النظر.")
             }
             // Pointing text reading at a screen with no text is ordinary use, not a fault. Raising
             // it as an exception produced a spoken error and a failure streak that pushed the whole
@@ -524,7 +524,7 @@ class GeminiVisionRepository(
                     urgent = false,
                 )
             }
-            throw IllegalStateException("لم يرجع Gemini وصفاً")
+            throw IllegalStateException("لم يُرجع Gemini وصفًا للمشهد")
         }
         return AnalysisResult(
             text = fullText,

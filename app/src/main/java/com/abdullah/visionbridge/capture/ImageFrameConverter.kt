@@ -7,7 +7,7 @@ import java.nio.ByteBuffer
 object ImageFrameConverter {
     /** Copies an RGBA_8888 ImageReader frame and removes row padding safely. */
     fun toBitmap(image: Image): Bitmap {
-        val plane = image.planes.firstOrNull() ?: error("إطار الشاشة لا يحتوي بيانات")
+        val plane = image.planes.firstOrNull() ?: error("لقطة الشاشة لا تحتوي على بيانات صورة")
         val buffer: ByteBuffer = plane.buffer
         val pixelStride = plane.pixelStride
         val rowStride = plane.rowStride

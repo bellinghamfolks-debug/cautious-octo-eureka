@@ -88,7 +88,7 @@ class MediaProjectionService : Service() {
         override fun onStop() {
             DiagnosticHub.record("PROJECTION_SYSTEM_STOPPED")
             releaseProjection(stopProjection = false, reason = "system_stopped_projection")
-            container.runtime.stopped("أوقف النظام مشاركة الشاشة")
+            container.runtime.stopped("أوقف Android مشاركة الشاشة")
             stopSelf()
         }
 
@@ -133,14 +133,14 @@ class MediaProjectionService : Service() {
                     startProjection(resultCode, resultData)
                 } else {
                     DiagnosticHub.record("PROJECTION_PERMISSION_REJECTED", mapOf("resultCode" to resultCode))
-                    container.runtime.error("لم تُمنح صلاحية مشاركة الشاشة")
+                    container.runtime.error("لم تمنح إذن مشاركة الشاشة")
                     stopSelf()
                 }
             }
             ACTION_MARK_PROBLEM -> {
-                DiagnosticHub.markProblemAsync("تم تعليم المشكلة مباشرة من إشعار الالتقاط")
+                DiagnosticHub.markProblemAsync("تم تحديد لحظة المشكلة من إشعار VisionBridge")
                 DiagnosticHub.record("PROBLEM_MARKED_FROM_NOTIFICATION")
-                container.runtime.notice("تم تعليم لحظة المشكلة وربطها بأقرب إطار")
+                container.runtime.notice("تم تسجيل لحظة المشكلة في ملف التشخيص")
             }
             ACTION_STOP -> {
                 releaseProjection(stopProjection = true, reason = "user_stopped_capture")
@@ -221,7 +221,7 @@ class MediaProjectionService : Service() {
                 reader.surface,
                 null,
                 captureHandler,
-            ) ?: error("تعذر إنشاء شاشة افتراضية للالتقاط")
+            ) ?: error("تعذر إنشاء سطح MediaProjection")
 
             appliedCaptureWidth = width
             appliedCaptureHeight = height
@@ -239,7 +239,7 @@ class MediaProjectionService : Service() {
             )
         }.onFailure { error ->
             DiagnosticHub.failure("START_PROJECTION", error, settingsMap(activeSettings))
-            container.runtime.error(error.message ?: "فشل بدء التقاط الشاشة")
+            container.runtime.error(error.message ?: "تعذر بدء مشاركة الشاشة")
             releaseProjection(stopProjection = true, reason = "projection_start_failed")
             stopSelf()
         }
@@ -273,7 +273,7 @@ class MediaProjectionService : Service() {
         } catch (error: Throwable) {
             image.close()
             DiagnosticHub.failure("IMAGE_TO_BITMAP", error, trace.fields())
-            container.runtime.error(error.message ?: "تعذر تحويل إطار الشاشة")
+            container.runtime.error(error.message ?: "تعذر تجهيز لقطة الشاشة للتحليل")
             return
         }
         image.close()
@@ -640,7 +640,7 @@ class MediaProjectionService : Service() {
                 reader.surface,
                 null,
                 captureHandler,
-            ) ?: error("تعذر إعادة إنشاء شاشة الالتقاط")
+            ) ?: error("تعذر إعادة تهيئة MediaProjection")
             oldDisplay?.release()
             oldReader?.setOnImageAvailableListener(null, null)
             oldReader?.close()
@@ -816,8 +816,8 @@ class MediaProjectionService : Service() {
         private const val UNAVAILABLE_FEED_NOTICE_AFTER_MS = 1_500L
         private const val UNAVAILABLE_FEED_NOTICE_REPEAT_MS = 30_000L
         private const val VISUAL_FEED_UNAVAILABLE_MESSAGE =
-            "لا تصل صورة قابلة للتحليل. تأكد أن شاشة الهاتف مضاءة، وأن منظر النظارة ظاهر عليها. " +
-                "إن كنت في تطبيق إي سايت فاضغط شير يور فيو."
+            "لا تصل صورة قابلة للتحليل. تأكد من أن شاشة الهاتف مضاءة وأن بث eSight ظاهر عليها. " +
+                "داخل تطبيق eSight، فعّل Share Your View."
 
         /**
          * Screen capture mirrors the phone display, so a display that has gone to sleep is captured
@@ -828,10 +828,10 @@ class MediaProjectionService : Service() {
         private const val SURFACE_RECOVERY_COOLDOWN_MS = 20_000L
 
         private const val VISUAL_FEED_RECOVERING_MESSAGE =
-            "الصورة الواردة سوداء. أعيد تجهيز الالتقاط الآن. إن استمرت، أعد الضغط على شير يور فيو."
+            "الصورة الواردة سوداء. يعيد VisionBridge تهيئة مشاركة الشاشة الآن. إن استمرت المشكلة، أوقف Share Your View ثم فعّله من جديد."
 
         private const val SCREEN_OFF_MESSAGE =
-            "شاشة الهاتف مطفأة، ولذلك لا تصل صورة. أضئ الشاشة، ويفضل إطالة مهلة إطفاء الشاشة من إعدادات الهاتف."
+            "شاشة الهاتف مطفأة، لذلك توقف وصول الصورة. شغّل الشاشة، ويفضل زيادة مهلة القفل التلقائي من إعدادات الهاتف."
 
         fun startIntent(context: Context, resultCode: Int, resultData: Intent) =
             Intent(context, MediaProjectionService::class.java).apply {

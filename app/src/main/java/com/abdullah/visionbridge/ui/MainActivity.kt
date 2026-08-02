@@ -124,7 +124,7 @@ class MainActivity : ComponentActivity() {
                 putExtra(Intent.EXTRA_SUBJECT, "VisionBridge automatic image-free diagnostics")
                 putExtra(
                     Intent.EXTRA_TEXT,
-                    "حزمة تشخيص رفيق الرؤية التلقائية الشاملة. لا تحتوي صوراً، وتضم الخط الزمني الكامل والبصمات البصرية غير القابلة لإعادة البناء ونتائج OCR وGemini والنطق والتوقيتات والتحليل الآلي لكل لقطة.",
+                    "ملف تشخيص VisionBridge من دون صور. يتضمن الخط الزمني، والبصمات البصرية غير القابلة لإعادة بناء الصورة، ونتائج OCR وGemini، وحالة النطق، والتوقيتات.",
                 )
                 clipData = ClipData.newRawUri("VisionBridge diagnostics", uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -140,13 +140,13 @@ class MainActivity : ComponentActivity() {
                 ),
             )
             this@MainActivity.startActivity(
-                Intent.createChooser(share, "مشاركة التشخيص التلقائي الشامل")
+                Intent.createChooser(share, "مشاركة ملف تشخيص VisionBridge")
             )
         }.onFailure { error ->
             DiagnosticHub.failure("DIAGNOSTIC_SHARE", error)
             Toast.makeText(
                 this@MainActivity,
-                error.message ?: "تعذر مشاركة ملف التشخيص",
+                error.message ?: "تعذرت مشاركة ملف التشخيص",
                 Toast.LENGTH_LONG,
             ).show()
         }

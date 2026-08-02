@@ -75,14 +75,14 @@ fun MainScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Text(
-                    text = "رفيق الرؤية",
+                    text = "VisionBridge",
                     style = MaterialTheme.typography.headlineMedium,
                     modifier = Modifier.semantics { heading() },
                 )
 
                 StatusCard(state)
 
-                SectionTitle("وضع التحليل")
+                SectionTitle("وضع التشغيل")
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -94,7 +94,7 @@ fun MainScreen(
                         modifier = Modifier
                             .weight(1f)
                             .height(56.dp)
-                            .semantics { contentDescription = "تفعيل وضع قراءة النص العربي والإنجليزي" },
+                            .semantics { contentDescription = "اختيار قراءة النص العربي والإنجليزي" },
                     )
                     FilterChip(
                         selected = state.settings.mode == AnalysisMode.SCENE_DESCRIPTION,
@@ -103,7 +103,7 @@ fun MainScreen(
                         modifier = Modifier
                             .weight(1f)
                             .height(56.dp)
-                            .semantics { contentDescription = "تفعيل وضع وصف المشهد والعوائق" },
+                            .semantics { contentDescription = "اختيار وصف المشهد والعوائق الظاهرة" },
                     )
                 }
 
@@ -113,7 +113,7 @@ fun MainScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(72.dp)
-                            .semantics { contentDescription = "إيقاف التقاط الشاشة والتحليل" },
+                            .semantics { contentDescription = "إيقاف مشاركة الشاشة والتحليل" },
                     ) {
                         Icon(Icons.Default.Stop, contentDescription = null)
                         Text(" إيقاف")
@@ -128,16 +128,16 @@ fun MainScreen(
                             .height(72.dp)
                             .semantics {
                                 contentDescription = when {
-                                    state.hasApiKey -> "بدء مشاركة الشاشة والتحليل"
+                                    state.hasApiKey -> "بدء مشاركة الشاشة وتشغيل VisionBridge"
                                     state.settings.useLocalOcr ->
-                                        "بدء مشاركة الشاشة، القراءة تعمل على الجهاز بلا مفتاح"
+                                        "بدء مشاركة الشاشة. قراءة النص ستعمل عبر PP-OCRv5 على الجهاز"
                                     else ->
-                                        "بدء مشاركة الشاشة، لا يوجد مفتاح Gemini ولا قارئ محلي مفعّل"
+                                        "بدء مشاركة الشاشة. يلزم Gemini API Key أو تفعيل PP-OCRv5 من الإعدادات"
                                 }
                             },
                     ) {
                         Icon(Icons.Default.PlayArrow, contentDescription = null)
-                        Text(" بدء التقاط الشاشة")
+                        Text(" بدء مشاركة الشاشة")
                     }
                 }
 
@@ -148,7 +148,7 @@ fun MainScreen(
                         .height(56.dp)
                         .semantics {
                             contentDescription =
-                                "فتح الإعدادات: مفتاح Gemini والنموذج والنطق ودقة الالتقاط والتشخيص"
+                                "فتح الإعدادات: Gemini API Key، نموذج Gemini، OCR على الجهاز، النطق، والتشخيص"
                         },
                 ) {
                     Icon(Icons.Default.Settings, contentDescription = null)
@@ -156,7 +156,7 @@ fun MainScreen(
                 }
 
                 Text(
-                    text = "تنبيه سلامة: الوصف الآلي مساعد إضافي، وليس بديلاً عن العصا البيضاء أو مهارات التنقل أو التحقق البشري في البيئات الخطرة.",
+                    text = "تنبيه للسلامة: وصف المشهد أداة مساعدة فقط. لا تعتمد عليه بدل العصا البيضاء أو مهارات التوجيه والتنقل، ولا تستخدمه لاتخاذ قرار يتعلق بالسلامة في موقف خطِر.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Spacer(Modifier.height(24.dp))
@@ -173,11 +173,11 @@ private fun StatusCard(state: MainUiState) {
             .semantics {
                 liveRegion = LiveRegionMode.Polite
                 contentDescription = buildString {
-                    append("حالة التطبيق: ${state.capture.status}. ")
+                    append("حالة VisionBridge: ${state.capture.status}. ")
                     append(engineSummary(state))
                     append(". ")
                     if (!state.hasApiKey && !state.settings.useLocalOcr) {
-                        append("لا يوجد مفتاح Gemini محفوظ. ")
+                        append("لا يوجد Gemini API Key محفوظ، وPP-OCRv5 غير مفعّل. ")
                     }
                     state.capture.error?.let { append("الخطأ: $it. ") }
                     state.capture.lastResult?.text?.let { append("آخر نتيجة: $it") }
@@ -188,17 +188,17 @@ private fun StatusCard(state: MainUiState) {
             Text("الحالة", style = MaterialTheme.typography.titleLarge)
             Text(state.capture.status)
             Text(engineSummary(state))
-            if (state.capture.isProcessing) Text("يجري تحليل إطار جديد")
+            if (state.capture.isProcessing) Text("جارٍ تحليل أحدث لقطة")
             if (!state.hasApiKey && !state.settings.useLocalOcr) {
-                Text("لا يوجد مفتاح Gemini محفوظ. افتح الإعدادات لحفظه.")
+                Text("يلزم Gemini API Key أو تفعيل PP-OCRv5 من الإعدادات.")
             }
             state.capture.error?.let { Text("خطأ: $it", color = MaterialTheme.colorScheme.error) }
             state.capture.lastResult?.let {
                 Text("آخر نتيجة", style = MaterialTheme.typography.titleMedium)
                 Text(it.text)
                 Text("المصدر: " + when (it.source) {
-                    AnalysisSource.LOCAL_OCR -> "قارئ محلي على الجهاز"
-                    AnalysisSource.GEMINI -> "Gemini سحابي"
+                    AnalysisSource.LOCAL_OCR -> "PP-OCRv5 على الجهاز"
+                    AnalysisSource.GEMINI -> "Gemini"
                 })
             }
         }
@@ -214,7 +214,7 @@ private fun StatusCard(state: MainUiState) {
  */
 private fun engineSummary(state: MainUiState): String =
     if (state.settings.useLocalOcr) {
-        "المحرك: قراءة النص على الجهاز، ووصف المشهد عبر Gemini السحابي"
+        "قراءة النص: PP-OCRv5 على الجهاز. وصف المشهد: Gemini عبر الإنترنت"
     } else {
-        "المحرك: Gemini سحابي للقراءة والوصف"
+        "قراءة النص ووصف المشهد: Gemini عبر الإنترنت"
     }

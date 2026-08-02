@@ -22,7 +22,7 @@ class AndroidKeystoreApiKeyStore(context: Context) : ApiKeyStore {
 
     override suspend fun save(apiKey: String) = withContext(Dispatchers.IO) {
         val normalized = apiKey.trim()
-        require(normalized.isNotEmpty()) { "مفتاح API فارغ" }
+        require(normalized.isNotEmpty()) { "Gemini API Key فارغ" }
 
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())

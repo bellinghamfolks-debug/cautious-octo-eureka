@@ -43,7 +43,7 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
     override suspend fun setMode(mode: AnalysisMode) = update(Keys.MODE, mode.name)
 
     override suspend fun setModel(model: String) {
-        require(model in AppSettings.SUPPORTED_MODELS) { "نموذج غير مدعوم" }
+        require(model in AppSettings.SUPPORTED_MODELS) { "نموذج Gemini غير مدعوم" }
         update(Keys.MODEL, model)
     }
 

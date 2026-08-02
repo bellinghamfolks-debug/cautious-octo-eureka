@@ -274,7 +274,7 @@ class FrameAnalysisCoordinator(
         // key through the guard, and the request then failed against Gemini with an HTTP error
         // instead of the one sentence that would have told them what to do.
         if (key == null) {
-            throw IllegalStateException("أدخل مفتاح Gemini أولاً لاستخدام وصف المشهد")
+            throw IllegalStateException("أضف Gemini API Key من الإعدادات لاستخدام وصف المشهد")
         }
         val minimumInterval = when (settings.sceneDescriptionStyle) {
             SceneDescriptionStyle.BRIEF -> BRIEF_SCENE_INTERVAL_MS
@@ -478,7 +478,7 @@ class FrameAnalysisCoordinator(
                         ),
                     ),
                 )
-                runtime.notice("تأخر التحليل؛ انتقلت تلقائياً إلى أحدث صورة")
+                runtime.notice("استغرق التحليل وقتًا أطول من المعتاد، لذلك انتقل VisionBridge إلى أحدث لقطة")
             } catch (error: Throwable) {
                 if (error !is CancellationException) {
                     synchronized(cloudQueueLock) {
@@ -1070,7 +1070,7 @@ class FrameAnalysisCoordinator(
     ): Map<String, Any?> = this?.fields(extra) ?: extra
 
     private fun Throwable.userMessage(): String =
-        message?.takeIf { it.isNotBlank() } ?: "تعذر تحليل إطار الشاشة"
+        message?.takeIf { it.isNotBlank() } ?: "تعذر تحليل أحدث لقطة"
 
     private companion object {
         const val STABLE_PENDING_SNAPSHOT_INTERVAL_MS = 1_000L

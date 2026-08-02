@@ -27,7 +27,7 @@ class PaddleOcrVisionRepository(
 ) : VisionAiRepository {
 
     class SceneDescriptionUnsupportedException : IllegalStateException(
-        "القارئ المحلي يقرأ النص فقط ولا يصف المشاهد. لوصف المشهد أوقف مفتاح القراءة المحلية."
+        "PP-OCRv5 مخصص لقراءة النص فقط. وصف المشهد يعمل عبر Gemini."
     )
 
     override suspend fun analyzeStreaming(

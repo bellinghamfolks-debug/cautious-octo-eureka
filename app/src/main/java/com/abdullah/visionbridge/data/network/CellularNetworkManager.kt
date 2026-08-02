@@ -108,7 +108,7 @@ class CellularNetworkManager(context: Context) {
                 ),
             )
             throw IllegalStateException(
-                "تأخر رد التحليل أكثر من ${ANALYSIS_BUDGET_MS / 1_000} ثانية، فتم تجاوزه وتحضير أحدث لقطة.",
+                "تجاوز التحليل المهلة المحددة، لذلك انتقل VisionBridge إلى أحدث لقطة.",
                 error,
             )
         }
@@ -129,7 +129,7 @@ class CellularNetworkManager(context: Context) {
                 override fun onUnavailable() {
                     if (continuation.isActive) {
                         continuation.resumeWithException(
-                            IllegalStateException("تعذر الحصول على شبكة بيانات خلوية متصلة بالإنترنت")
+                            IllegalStateException("تعذر الاتصال بالإنترنت عبر بيانات الجوال")
                         )
                     }
                 }

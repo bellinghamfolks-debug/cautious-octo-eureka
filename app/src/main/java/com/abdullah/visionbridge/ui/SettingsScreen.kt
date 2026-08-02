@@ -125,28 +125,28 @@ fun SettingsScreen(
                 // confused for each other in this project, and a blind user has no way to check an
                 // APK's version from the outside.
                 Text(
-                    text = "إصدار التطبيق ${BuildConfig.VERSION_NAME} (بناء ${BuildConfig.VERSION_CODE})",
+                    text = "الإصدار ${BuildConfig.VERSION_NAME}، Build ${BuildConfig.VERSION_CODE}",
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.semantics {
                         contentDescription =
-                            "إصدار التطبيق ${BuildConfig.VERSION_NAME}، رقم البناء ${BuildConfig.VERSION_CODE}"
+                            "إصدار VisionBridge ${BuildConfig.VERSION_NAME}، Build ${BuildConfig.VERSION_CODE}"
                     },
                 )
 
-                SectionTitle("مفتاح Gemini")
+                SectionTitle("Gemini API Key")
                 Text(
-                    text = if (state.hasApiKey) "المفتاح محفوظ ومشفّر داخل الجهاز." else "لا يوجد مفتاح محفوظ.",
+                    text = if (state.hasApiKey) "Gemini API Key محفوظ ومشفّر على هذا الجهاز." else "لا يوجد Gemini API Key محفوظ.",
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                 )
                 OutlinedTextField(
                     value = apiKey,
                     onValueChange = { apiKey = it },
-                    label = { Text("مفتاح API") },
+                    label = { Text("Gemini API Key") },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .semantics { contentDescription = "حقل إدخال مفتاح Gemini، النص مخفي" },
+                        .semantics { contentDescription = "حقل إدخال Gemini API Key، والقيمة مخفية" },
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
@@ -158,7 +158,7 @@ fun SettingsScreen(
                         modifier = Modifier
                             .weight(1f)
                             .height(56.dp),
-                    ) { Text("حفظ مشفّر") }
+                    ) { Text("حفظ المفتاح") }
                     OutlinedButton(
                         onClick = onDeleteApiKey,
                         enabled = state.hasApiKey,
@@ -171,7 +171,7 @@ fun SettingsScreen(
                     }
                 }
 
-                SectionTitle("نموذج الذكاء الاصطناعي")
+                SectionTitle("نموذج Gemini")
                 ExposedDropdownMenuBox(
                     expanded = modelMenuExpanded,
                     onExpandedChange = { modelMenuExpanded = !modelMenuExpanded },
@@ -203,23 +203,23 @@ fun SettingsScreen(
                     }
                 }
 
-                SectionTitle("قراءة النص على الجهاز")
+                SectionTitle("OCR على الجهاز")
                 AccessibleSwitchRow(
-                    title = "القراءة المحلية بلا إنترنت",
+                    title = "استخدام PP-OCRv5 دون إنترنت",
                     description = if (state.settings.useLocalOcr) {
-                        "قراءة النص تعمل داخل الجهاز بالعربية والإنجليزية، بلا إرسال أي صورة."
+                        "تُقرأ النصوص العربية والإنجليزية على الجهاز، ولا تُرسل الصور إلى Gemini."
                     } else {
-                        "الافتراضي: قراءة النص عبر Gemini السحابي، وهو أدق للنصوص الصعبة."
+                        "تُقرأ النصوص عبر Gemini. فعّل هذا الخيار للقراءة على الجهاز دون إنترنت."
                     },
                     checked = state.settings.useLocalOcr,
                     onCheckedChange = onUseLocalOcrChange,
                 )
                 Text(
-                    text = "وصف المشهد يعمل عبر Gemini السحابي دائماً. القارئ المحلي يقرأ النص فقط ولا يصف الصور.",
+                    text = "وصف المشهد يحتاج Gemini واتصالًا بالإنترنت؛ PP-OCRv5 مخصص لقراءة النص فقط.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
-                    text = "نماذج القراءة المحلية مضمّنة داخل التطبيق. لا يوجد ما تنزّله أو تثبّته.",
+                    text = "ملفات PP-OCRv5 مضمّنة داخل التطبيق، ولا تحتاج إلى تنزيل أو إعداد إضافي.",
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                 )
@@ -228,16 +228,14 @@ fun SettingsScreen(
                 // setting means a screen-reader user walking the list never discovers it exists,
                 // which is exactly how this one went missing.
                 Text(
-                    text = "دقة القراءة المحلية",
+                    text = "جودة OCR على الجهاز",
                     style = MaterialTheme.typography.titleSmall,
                 )
                 Text(
                     text = if (state.settings.useLocalOcr) {
-                        "كلما ارتفعت الدقة رأى المحرك تفاصيل أدق في الخط الصغير والبعيد، " +
-                            "وزاد زمن قراءة الصفحة. الافتراضي متوازن."
+                        "تؤثر الجودة في وضوح الخط الصغير والبعيد وسرعة القراءة. الخيار الموصى به: متوازن."
                     } else {
-                        "يسري عند تشغيل القراءة المحلية بالمفتاح أعلاه. كلما ارتفعت الدقة رأى " +
-                            "المحرك تفاصيل أدق في الخط الصغير والبعيد، وزاد زمن القراءة."
+                        "يُطبّق هذا الإعداد عند تشغيل PP-OCRv5. الجودة الأعلى تقرأ تفاصيل أدق، لكنها تحتاج وقتًا أطول."
                     },
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -246,15 +244,15 @@ fun SettingsScreen(
                     val label = when (quality) {
                         LocalReadingQuality.FAST -> "سريع"
                         LocalReadingQuality.BALANCED -> "متوازن"
-                        LocalReadingQuality.MAXIMUM -> "أقصى دقة"
+                        LocalReadingQuality.MAXIMUM -> "أعلى دقة"
                     }
                     val detail = when (quality) {
                         LocalReadingQuality.FAST ->
-                            "الأسرع. للنص الكبير والمتحرك والترجمات."
+                            "أسرع استجابة للنص الكبير والمتحرك."
                         LocalReadingQuality.BALANCED ->
-                            "يرى ضعف تفاصيل السريع تقريباً. مناسب لأغلب الشاشات."
+                            "توازن بين السرعة والدقة، ومناسب لمعظم الاستخدامات."
                         LocalReadingQuality.MAXIMUM ->
-                            "يستخدم كل تفاصيل اللقطة. للخط الدقيق واللافتات البعيدة والمستندات الكثيفة، وهو الأبطأ."
+                            "أفضل للخط الصغير واللافتات البعيدة والمستندات الكثيفة، لكنه أبطأ."
                     }
                     OutlinedButton(
                         onClick = { onLocalReadingQualityChange(quality) },
@@ -272,7 +270,7 @@ fun SettingsScreen(
                 }
 
                 if (state.settings.mode == AnalysisMode.TEXT_READING) {
-                    SectionTitle("طريقة التقاط النص")
+                    SectionTitle("أسلوب التقاط النص")
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -285,35 +283,35 @@ fun SettingsScreen(
                                 .weight(1f)
                                 .height(56.dp)
                                 .semantics {
-                                    contentDescription = "التقاط ثابت ودقيق، ينتظر استقرار الصورة قبل القراءة"
+                                    contentDescription = "ثابت ودقيق. ينتظر ثبات الصورة قبل بدء القراءة"
                                 },
                         )
                         FilterChip(
                             selected = state.settings.captureProfile == CaptureProfile.FAST_TEXT,
                             onClick = { onCaptureProfileChange(CaptureProfile.FAST_TEXT) },
-                            label = { Text("نص متحرك سريع") },
+                            label = { Text("سريع للنص المتحرك") },
                             modifier = Modifier
                                 .weight(1f)
                                 .height(56.dp)
                                 .semantics {
-                                    contentDescription = "التقاط سريع للنصوص المتحركة والترجمات والشريط الإخباري"
+                                    contentDescription = "سريع للنص المتحرك والترجمات والشريط الإخباري"
                                 },
                         )
                     }
                     Text(
                         if (state.settings.captureProfile == CaptureProfile.FAST_TEXT) {
-                            "الوضع السريع يلتقط التغير فوراً، ويرسل صورة أخف إلى Gemini ويحتفظ بأحدث لقطة فقط."
+                            "يقرأ التغييرات بسرعة ويحتفظ بأحدث لقطة فقط. الأنسب للترجمات والشريط الإخباري."
                         } else {
-                            "الوضع الثابت يحافظ على أعلى دقة للنصوص الصغيرة والمستندات واللافتات."
+                            "ينتظر ثبات الصورة قبل القراءة. الأنسب للمستندات واللافتات والنصوص الصغيرة."
                         },
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     AccessibleSwitchRow(
-                        title = "بوابة الثقة قبل العرض والنطق",
+                        title = "التحقق من موثوقية OCR",
                         description = if (state.settings.trustGateEnabled) {
-                            "ترفض النص غير الواضح أو المستنتج، وتنطق تنبيهاً بدلاً من الصمت."
+                            "يرفض النتائج غير الواضحة أو التي تتضمن تخمينًا، ويعرض تنبيهًا بدلًا منها."
                         } else {
-                            "موقفة. تبدأ القراءة أسرع، لكن قد تزيد احتمالية الخطأ أو التأليف."
+                            "معطّل. قد تبدأ القراءة أسرع، لكن احتمال الخطأ أو التخمين يكون أعلى."
                         },
                         checked = state.settings.trustGateEnabled,
                         onCheckedChange = onTrustGateChange,
@@ -321,7 +319,7 @@ fun SettingsScreen(
                 }
 
                 if (state.settings.mode == AnalysisMode.SCENE_DESCRIPTION) {
-                    SectionTitle("طول وصف المشهد")
+                    SectionTitle("تفصيل وصف المشهد")
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -329,27 +327,27 @@ fun SettingsScreen(
                         FilterChip(
                             selected = state.settings.sceneDescriptionStyle == SceneDescriptionStyle.COMPREHENSIVE,
                             onClick = { onSceneDescriptionStyleChange(SceneDescriptionStyle.COMPREHENSIVE) },
-                            label = { Text("وصف شامل") },
+                            label = { Text("مفصل") },
                             modifier = Modifier
                                 .weight(1f)
                                 .height(56.dp)
-                                .semantics { contentDescription = "وصف شامل يحافظ على التفاصيل الحالية" },
+                                .semantics { contentDescription = "وصف مفصل للمشهد والعناصر الظاهرة" },
                         )
                         FilterChip(
                             selected = state.settings.sceneDescriptionStyle == SceneDescriptionStyle.BRIEF,
                             onClick = { onSceneDescriptionStyleChange(SceneDescriptionStyle.BRIEF) },
-                            label = { Text("وصف موجز") },
+                            label = { Text("موجز") },
                             modifier = Modifier
                                 .weight(1f)
                                 .height(56.dp)
-                                .semantics { contentDescription = "وصف موجز سريع بحد أقصى ثمان وعشرين كلمة" },
+                                .semantics { contentDescription = "وصف موجز وسريع للمشهد" },
                         )
                     }
                     Text(
                         if (state.settings.sceneDescriptionStyle == SceneDescriptionStyle.BRIEF) {
-                            "الوصف الموجز يستخدم صورة أخف ودقة وسائط أقل لبدء الاستجابة بأقصى سرعة."
+                            "يعطي وصفًا مباشرًا وقصيرًا بأسرع استجابة ممكنة."
                         } else {
-                            "الوصف الشامل يستخدم دقة متوسطة وتفاصيل أكثر، مع استمرار النطق المتدفق."
+                            "يذكر تفاصيل أكثر عن الاتجاهات والأشخاص والأشياء والنص المهم."
                         },
                         style = MaterialTheme.typography.bodyMedium,
                     )
@@ -357,19 +355,19 @@ fun SettingsScreen(
 
                 SectionTitle("النطق")
                 AccessibleSwitchRow(
-                    title = "النطق التلقائي",
-                    description = "ينطق النتائج بنفس تسلسل المقاطع العربية والإنجليزية الظاهر في النص.",
+                    title = "نطق النتائج تلقائيًا",
+                    description = "ينطق النص بالترتيب الظاهر، مع التبديل تلقائيًا بين العربية والإنجليزية.",
                     checked = state.settings.speechEnabled,
                     onCheckedChange = onSpeechChange,
                 )
                 AccessibleSwitchRow(
-                    title = "إيقاف النطق القديم عند تغيير النظرة",
-                    description = "عند الانتقال الواضح إلى صورة أو نص آخر، يوقف الكلام السابق فوراً ويتجه إلى النتيجة الجديدة.",
+                    title = "إيقاف النطق عند تغيّر المحتوى",
+                    description = "يوقف النتيجة الحالية عند الانتقال إلى محتوى مختلف، ثم ينطق أحدث نتيجة.",
                     checked = state.settings.interruptSpeechOnVisualChange,
                     onCheckedChange = onInterruptSpeechChange,
                 )
                 Text(
-                    "سرعة النطق: ${(speechRateDraft * 100).roundToInt()} بالمئة",
+                    "سرعة النطق: ${(speechRateDraft * 100).roundToInt()}٪",
                     style = MaterialTheme.typography.titleMedium,
                 )
                 Slider(
@@ -382,20 +380,20 @@ fun SettingsScreen(
                         .fillMaxWidth()
                         .semantics {
                             contentDescription =
-                                "التحكم بسرعة النطق، الحالية ${(speechRateDraft * 100).roundToInt()} بالمئة"
+                                "التحكم بسرعة النطق. السرعة الحالية ${(speechRateDraft * 100).roundToInt()} بالمئة"
                         },
                 )
-                Text("النطاق من 60 إلى 180 بالمئة. تُطبق السرعة على المقطع التالي مباشرة.")
+                Text("يمكن ضبط السرعة من 60٪ إلى 180٪، ويُطبّق التغيير على النطق التالي.")
 
                 SectionTitle("الاتصال والتشخيص")
                 AccessibleSwitchRow(
-                    title = "إجبار طلبات Gemini على البيانات الخلوية",
-                    description = "يستخدم شبكة الجوال لطلبات الذكاء الاصطناعي فقط، ولا يغيّر اتصال بقية الهاتف.",
+                    title = "استخدام بيانات الجوال لطلبات Gemini",
+                    description = "يوجّه طلبات Gemini عبر بيانات الجوال فقط، من دون تغيير اتصال بقية التطبيقات.",
                     checked = state.settings.forceCellular,
                     onCheckedChange = onForceCellularChange,
                 )
                 Text(
-                    "التشخيص يسجل تلقائياً وبلا صور، ولا يحتاج تعليم لحظة المشكلة.",
+                    "يسجل VisionBridge بيانات التشخيص تلقائيًا من دون صور، بما يشمل التوقيتات ونتائج OCR وGemini وحالة النطق.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Button(
@@ -405,10 +403,10 @@ fun SettingsScreen(
                         .height(56.dp)
                         .semantics {
                             contentDescription =
-                                "مشاركة سجل التشخيص التلقائي الشامل، بلا صور، مع البصمات البصرية والتوقيتات والنصوص"
+                                "مشاركة ملف التشخيص من دون صور، ويشمل التوقيتات ونتائج OCR وGemini وحالة النطق"
                         },
                 ) {
-                    Text("مشاركة التشخيص التلقائي")
+                    Text("مشاركة ملف التشخيص")
                 }
 
                 Spacer(Modifier.height(24.dp))

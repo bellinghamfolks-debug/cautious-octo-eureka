@@ -33,16 +33,16 @@ class PaddleOcrEngine(
     private val context: Context,
 ) {
     class NotPackagedException : IllegalStateException(
-        "هذه النسخة من التطبيق لا تتضمن ملفات القارئ المحلي. ثبّت نسخة APK كاملة من البناء الرسمي."
+        "هذه النسخة لا تتضمن ملفات PP-OCRv5. ثبّت APK الكامل الصادر من البناء الرسمي."
     )
 
     class LoadFailedException(cause: Throwable) : IllegalStateException(
-        "تعذر تشغيل القارئ المحلي على هذا الجهاز.",
+        "تعذر تشغيل PP-OCRv5 على هذا الجهاز.",
         cause,
     )
 
     class DictionaryMissingException(model: String) : IllegalStateException(
-        "النموذج $model لا يحمل قاموس محارفه بداخله، فلا يمكن فك ترميز مخرجاته."
+        "ملف PP-OCRv5 ($model) لا يتضمن قاموس المحارف المطلوب لفك النتائج."
     )
 
     private class Sessions(

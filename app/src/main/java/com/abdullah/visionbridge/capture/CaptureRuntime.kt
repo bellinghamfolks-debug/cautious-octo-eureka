@@ -10,15 +10,15 @@ class CaptureRuntime {
     private val mutableState = MutableStateFlow(CaptureState())
     val state: StateFlow<CaptureState> = mutableState.asStateFlow()
 
-    fun started() = update { copy(isRunning = true, status = "الالتقاط يعمل", error = null) }
+    fun started() = update { copy(isRunning = true, status = "مشاركة الشاشة فعّالة", error = null) }
     fun processing(active: Boolean) = update { copy(isProcessing = active) }
     fun result(value: AnalysisResult) = update {
-        copy(lastResult = value, status = if (value.urgent) "تنبيه مهم" else "تم التحليل", error = null)
+        copy(lastResult = value, status = if (value.urgent) "تنبيه عاجل" else "اكتمل التحليل", error = null)
     }
     fun notice(message: String) = update {
         copy(status = message, error = null, isProcessing = false)
     }
-    fun error(message: String) = update { copy(error = message, status = "حدث خطأ", isProcessing = false) }
+    fun error(message: String) = update { copy(error = message, status = "تعذر إكمال التحليل", isProcessing = false) }
     fun stopped(reason: String = "متوقف") = update {
         copy(isRunning = false, isProcessing = false, status = reason)
     }

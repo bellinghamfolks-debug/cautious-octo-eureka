@@ -329,7 +329,7 @@ class TextImageEnhancer {
 
     private fun compress(source: Bitmap, format: Bitmap.CompressFormat, quality: Int): ByteArray =
         ByteArrayOutputStream().use { output ->
-            check(source.compress(format, quality, output)) { "تعذر تجهيز إطار الصورة" }
+            check(source.compress(format, quality, output)) { "تعذر تجهيز الصورة للتحليل" }
             output.toByteArray()
         }
 
