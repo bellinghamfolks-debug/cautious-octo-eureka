@@ -586,3 +586,76 @@ class BidiRunTest {
         assertEquals("البطارية 80%", BidiTextOrder.toLogicalOrder("80% ةيراطبلا"))
     }
 }
+
+/**
+ * A page held in the hand is never level. Verified end to end against rendered pages: a page tilted
+ * four degrees read as "Rotated dument ineber" before this and exactly afterwards.
+ */
+class LineSkewTest {
+
+    private fun line(centerX: Int, centerY: Int) =
+        TextBox(centerX - 200, centerY - 20, centerX + 200, centerY + 20, 0.9f)
+
+    /** Built by rotating a vertical stack, which is what a tilted page's lines are. */
+    private fun tiltedStack(degrees: Double, count: Int = 8): List<TextBox> {
+        val radians = Math.toRadians(degrees)
+        return (0 until count).map { index ->
+            val y = index * 100.0
+            line(
+                centerX = (600 + y * Math.tan(radians)).toInt(),
+                centerY = (300 + y).toInt(),
+            )
+        }
+    }
+
+    @Test
+    fun `a level page needs no correction`() {
+        assertEquals(0f, LineSkew.pageDegrees((0 until 8).map { line(600, 300 + it * 100) }), 0.001f)
+    }
+
+    @Test
+    fun `a tilted page reports the rotation that would level it`() {
+        // Lines drifting right as they descend means the page leans one way; the correction is the
+        // other way, and its size matches the tilt.
+        val correction = LineSkew.pageDegrees(tiltedStack(4.0))
+        assertEquals(-4f, correction, 0.5f)
+        assertEquals(4f, LineSkew.pageDegrees(tiltedStack(-4.0)), 0.5f)
+    }
+
+    @Test
+    fun `a barely perceptible tilt is left alone`() {
+        assertEquals(0f, LineSkew.pageDegrees(tiltedStack(0.4)), 0.001f)
+    }
+
+    /** Beyond this it is not a tilted page, and rotating by its slope would make things worse. */
+    @Test
+    fun `an extreme angle is refused`() {
+        assertEquals(0f, LineSkew.pageDegrees(tiltedStack(40.0)), 0.001f)
+    }
+
+    @Test
+    fun `too few lines to be sure of anything`() {
+        assertEquals(0f, LineSkew.pageDegrees(tiltedStack(4.0, count = 2)), 0.001f)
+    }
+
+    /**
+     * A menu or a poster has lines of wildly different widths, so their centres do not form a
+     * straight stack. Rotating a page on that evidence would be acting on a coincidence.
+     */
+    @Test
+    fun `ragged centres are not mistaken for tilt`() {
+        val ragged = listOf(
+            TextBox(100, 0, 900, 40, 0.9f),
+            TextBox(100, 100, 300, 140, 0.9f),
+            TextBox(100, 200, 1200, 240, 0.9f),
+            TextBox(100, 300, 250, 340, 0.9f),
+            TextBox(100, 400, 800, 440, 0.9f),
+        )
+        assertEquals(0f, LineSkew.pageDegrees(ragged), 0.001f)
+    }
+
+    @Test
+    fun `a single line has no slope to measure`() {
+        assertEquals(0f, LineSkew.degrees(listOf(line(600, 300))), 0.001f)
+    }
+}

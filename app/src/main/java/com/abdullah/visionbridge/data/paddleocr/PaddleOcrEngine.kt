@@ -225,7 +225,21 @@ class PaddleOcrEngine(
 
         withContext(Dispatchers.Default) {
             val started = SystemClock.elapsedRealtimeNanos()
-            val boxes = detect(active, bitmap, quality)
+            var page = bitmap
+            var boxes = detect(active, page, quality)
+
+            // Deskew the page, then detect again. Straightening each crop instead pads a wide strip
+            // vertically until the text is a sliver of the crop's height, which reads worse than
+            // the tilt did: on a page tilted four degrees it produced no readable lines at all,
+            // while deskewing the page and re-detecting read every line exactly.
+            val deskew = LineSkew.pageDegrees(TextLineOrdering.groupIntoLines(boxes).map(::bounds))
+            if (deskew != 0f) {
+                val straight = OcrImagePreprocessor.rotate(page, deskew)
+                if (straight !== page) {
+                    page = straight
+                    boxes = detect(active, page, quality)
+                }
+            }
             val detectMs = (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0
             DiagnosticHub.record(
                 "PPOCR_DETECTION_COMPLETED",
@@ -234,6 +248,7 @@ class PaddleOcrEngine(
                     "boxCount" to boxes.size,
                     "sourceWidth" to bitmap.width,
                     "sourceHeight" to bitmap.height,
+                    "deskewDegrees" to deskew,
                     "quality" to quality.name,
                     "detectionLongEdge" to quality.detectionLongEdge,
                     "xnnpack" to xnnpackEnabled,
@@ -244,6 +259,8 @@ class PaddleOcrEngine(
             val recognitionStarted = SystemClock.elapsedRealtimeNanos()
             // Merge before recognizing. Letterspaced type arrives as one blob per glyph, and a
             // recognizer shown a single letter has nothing to condition on.
+            // Skew is measured from a line's own boxes before they are merged, because merging
+            // collapses the very arrangement the angle is read from.
             val grouped = TextLineOrdering.groupIntoLines(boxes).map(TextLineOrdering::mergeAdjacent)
             DiagnosticHub.record(
                 "PPOCR_BOXES_MERGED",
@@ -266,7 +283,7 @@ class PaddleOcrEngine(
                     return@mapNotNull null
                 }
                 cropsRead += line.size
-                readLine(active, bitmap, line, quality)
+                readLine(active, page, line, quality)
             }
             if (capped) {
                 DiagnosticHub.record(
@@ -285,9 +302,19 @@ class PaddleOcrEngine(
                     "meanConfidence" to PageAssembler.meanConfidence(lines),
                 ),
             )
+            if (page !== bitmap) page.recycle()
             PaddleOcrResult(text, PageAssembler.meanConfidence(lines), lines.size)
         }
     }
+
+    /** The rectangle enclosing a whole line, which is what page skew is measured from. */
+    private fun bounds(line: List<TextBox>): TextBox = TextBox(
+        left = line.minOf { it.left },
+        top = line.minOf { it.top },
+        right = line.maxOf { it.right },
+        bottom = line.maxOf { it.bottom },
+        confidence = line.maxOf { it.confidence },
+    )
 
     private fun detect(
         active: Sessions,

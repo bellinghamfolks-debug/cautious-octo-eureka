@@ -68,7 +68,12 @@ object OcrImagePreprocessor {
      * A bitmap is returned rather than a tensor because the orientation classifier has to see the
      * crop before the recognizer does, and may hand back a rotated one.
      */
-    fun cropLine(source: Bitmap, box: TextBox, targetHeight: Int, maxWidth: Int): Bitmap? {
+    fun cropLine(
+        source: Bitmap,
+        box: TextBox,
+        targetHeight: Int,
+        maxWidth: Int,
+    ): Bitmap? {
         val left = box.left.coerceIn(0, source.width - 1)
         val top = box.top.coerceIn(0, source.height - 1)
         val width = box.width.coerceAtMost(source.width - left)
@@ -135,6 +140,19 @@ object OcrImagePreprocessor {
             }
         }
         return Tensor(data, paddedWidth, height)
+    }
+
+    /**
+     * Straightens a tilted page before detection.
+     *
+     * Applied to the whole frame rather than to a line crop. A wide strip rotated on its own gains
+     * so much vertical padding that the text becomes a sliver of the crop's height and reads worse
+     * than the tilt did; the page keeps its proportions.
+     */
+    fun rotate(bitmap: Bitmap, degrees: Float): Bitmap {
+        if (degrees == 0f) return bitmap
+        val matrix = android.graphics.Matrix().apply { postRotate(-degrees) }
+        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
     }
 
     /** Rotates a crop by 180 degrees, for lines the orientation classifier reports upside down. */
