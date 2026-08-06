@@ -413,8 +413,10 @@ fun SettingsScreen(
                         "مُفعّل. تُحفظ صورة الشاشة الكاملة في لحظات الفشل فقط، بحد أقصى ٤٠ صورة، " +
                             "وتُرسل داخل ملف التشخيص. أطفئه بعد إعادة إنتاج المشكلة."
                     } else {
-                        "مطفأ. ملف التشخيص لا يحوي أي صورة. فعّله فقط أثناء إعادة إنتاج مشكلة " +
-                            "قراءة، لأن الصورة وحدها تفرّق بين نص لم يُكتشف ونص اكتُشف ثم رُمي."
+                        "مطفأ. لا تُحفظ لقطات جديدة. فعّله فقط أثناء إعادة إنتاج مشكلة قراءة، " +
+                            "لأن الصورة وحدها تفرّق بين نص لم يُكتشف ونص اكتُشف ثم رُمي. " +
+                            "اللقطات التي حُفظت سابقاً تبقى حتى تحذفها من الزر أدناه، " +
+                            "وعددها مذكور في اسم ملف التشخيص."
                     },
                     checked = state.settings.captureFailureEvidence,
                     onCheckedChange = onCaptureFailureEvidenceChange,
@@ -431,12 +433,15 @@ fun SettingsScreen(
                 // The switch above is unreachable at the only moment it matters: reaching it means
                 // leaving the shared view, which ends the capture that was failing. These two rows
                 // are how it is reached without leaving.
+                val notificationActionLabel = if (state.settings.captureFailureEvidence) {
+                    "إيقاف حفظ اللقطات"
+                } else {
+                    "تشغيل حفظ اللقطات"
+                }
                 Text(
                     text = "تشغيله وإيقافه أثناء الاستخدام: زر إمكانية الوصول العائم، أو زر " +
-                        "«${
-                            if (state.settings.captureFailureEvidence) "إيقاف حفظ اللقطات" else "تشغيل حفظ اللقطات"
-                        }» داخل إشعار VisionBridge. كلاهما ينطق الوضع الجديد بعد الضغط، " +
-                        "فلا حاجة لمغادرة تطبيق eSight.",
+                        "«$notificationActionLabel» داخل إشعار VisionBridge. كلاهما ينطق الوضع " +
+                        "الجديد بعد الضغط، فلا حاجة لمغادرة تطبيق eSight.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 OutlinedButton(
