@@ -2,13 +2,16 @@
 <!--
     A button, and nothing else.
 
-    accessibilityEventTypes is typeNone and canRetrieveWindowContent is false, so this service is
-    never delivered a single word of what is on the screen. That is deliberate and it is the reason
-    it is reasonable to ask a blind user — who is already running TalkBack — to enable a second
-    accessibility service: this one cannot read anything, it can only be pressed.
+    `accessibilityEventTypes` is deliberately absent. It has no "none" flag — `typeNone` is an
+    AccessibilityServiceInfo constant, not a resource value, and aapt rejects it — and omitting the
+    attribute is exactly how a service subscribes to no event at all: the mask defaults to zero and
+    the system delivers nothing. Together with canRetrieveWindowContent="false", this service is
+    never handed a single word of what is on the screen.
+
+    That is the reason it is reasonable to ask a blind user — who is already running TalkBack — to
+    enable a second accessibility service: this one cannot read anything, it can only be pressed.
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeNone"
     android:accessibilityFeedbackType="feedbackSpoken"
     android:accessibilityFlags="flagRequestAccessibilityButton"
     android:canRetrieveWindowContent="false"

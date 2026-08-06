@@ -31,8 +31,10 @@ leaving a silence to be interpreted.
 
 ### What the service is allowed to do
 
-`accessibilityEventTypes="typeNone"`, `canRetrieveWindowContent="false"`. It is delivered no events
-and can read no window content. This is not politeness — asking someone who depends on TalkBack to
+No `accessibilityEventTypes` at all — the attribute has no "none" flag, and leaving it out is how a
+service subscribes to nothing: the mask defaults to zero. With `canRetrieveWindowContent="false"`
+alongside it, the service is delivered no events and can read no window content. This is not
+politeness — asking someone who depends on TalkBack to
 enable a *second* accessibility service is a real cost, and it is only reasonable if the second one
 demonstrably cannot see anything. It receives a button press and nothing else.
 
@@ -108,11 +110,35 @@ noise the rest of this release removes.
 
 ## What was verified, and what was not
 
-Verified: 158 unit tests, including 8 for the shortcut's decision and announcement, 10 for the
-finding budget, 9 for the detection census, and 11 new verdict-rule cases covering both firing and —
-just as importantly — staying silent on healthy sessions.
+**The whole unit suite: 240 tests, all passing.** That includes 8 for the shortcut's decision and
+its announcement, 10 for the finding budget, 9 for the detection census, and 11 new verdict-rule
+cases — each of which checks both that the rule fires on the timeline it was derived from *and* that
+it stays silent on a healthy one, because a rule that fires on everything is worse than no rule.
 
-**Not verified on a device.** No adb, no emulator. The accessibility service's registration with the
-button controller, the notification action's round trip through `PendingIntent`, and the spoken
-confirmation reaching the user over a live capture are all unexercised outside CI's compiler. They
-are the first things to check on hardware.
+These were run outside Gradle. The build environment for this change could not reach
+`dl.google.com`, so neither the Android SDK nor any AndroidX artifact was available and
+`assembleDebug` could not run. Compiling against `org.robolectric:android-all:15-…` from Maven
+Central gives a real Android 15 framework to type-check against, which covers every file that does
+not import AndroidX:
+
+- **Compiled against the real framework**: `DiagnosticHub`, `DiagnosticRecorder`, `EvidenceStore`,
+  `FindingBudget`, `SessionVerdict`, `CellularNetworkManager`, `PaddleOcrEngine`, `DbPostProcessor`,
+  the vision and speech packages, and — the one whose Android API usage was least obvious —
+  `EvidenceCaptureShortcutService`, including `AccessibilityButtonController`, its callback
+  overrides, and the service lifecycle methods.
+- **Not compiled anywhere yet**: `MediaProjectionService`, `MainActivity`, `MainViewModel`,
+  `SettingsScreen`, and the real `VisionBridgeApp` — all of which import AndroidX or the generated
+  `R`. Their new code was read line by line and the symbols it reaches for were verified to exist
+  (`Settings.ACTION_ACCESSIBILITY_SETTINGS`, `Toast.makeText`, `AppSettings` being a data class, the
+  two new string resources), but reading is not compiling and should not be reported as such.
+
+The gap in that harness showed itself immediately: it type-checks Kotlin and cannot link resources,
+so it passed a `res/xml` file whose `accessibilityEventTypes="typeNone"` aapt rejects outright —
+`typeNone` is an `AccessibilityServiceInfo` constant, not a resource flag, and subscribing to
+nothing is done by omitting the attribute. Only the real build caught it. Anything under `res/` is
+outside what can be checked here.
+
+**Not verified on a device.** No adb, no emulator. The service's registration with the button
+controller at runtime, the notification action's round trip through `PendingIntent`, and the spoken
+confirmation reaching the user over a live capture are all unexercised. They are the first things to
+check on hardware.
