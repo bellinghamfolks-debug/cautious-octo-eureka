@@ -71,6 +71,9 @@ class DiagnosticRecorder(context: Context) {
     private var lastDurableSyncNanos = 0L
     private var eventsSinceDurableSync = 0
 
+    /** Guarded by [mutex], like every other write path here. */
+    private val findingBudget = FindingBudget()
+
     init {
         runCatching { purgeLegacyImagesWithoutLock() }
     }
@@ -83,6 +86,7 @@ class DiagnosticRecorder(context: Context) {
             sessionId = id
             sessionDir = dir
             eventSequence = 0L
+            findingBudget.reset()
             writeDeviceFileLocked(dir, id, settings)
             openWriterLocked()
             appendLocked("SESSION_START", mapOf("settings" to settings), forceDurable = true)
@@ -107,6 +111,7 @@ class DiagnosticRecorder(context: Context) {
     suspend fun endSession(reason: String) = withContext(Dispatchers.IO) {
         mutex.withLock {
             ensureSessionLocked()
+            appendFindingBudgetSummaryLocked()
             appendLocked("SESSION_END", mapOf("reason" to reason), forceDurable = true)
             durableSyncLocked()
         }
@@ -353,6 +358,11 @@ class DiagnosticRecorder(context: Context) {
 
         if (deriveFindings && type != "AUTO_DIAGNOSTIC_FINDING") {
             deriveFindings(type, fields).forEach { finding ->
+                // The same observation repeated two thousand times is one observation. What is left
+                // out is counted and reported once at the end rather than dropped silently.
+                if (!findingBudget.admit(findingKey(finding), findingSeverity(finding), findingValue(finding))) {
+                    return@forEach
+                }
                 appendLocked(
                     type = "AUTO_DIAGNOSTIC_FINDING",
                     fields = finding + mapOf(
@@ -364,6 +374,53 @@ class DiagnosticRecorder(context: Context) {
                 )
             }
         }
+    }
+
+    /** What makes two findings the same observation: the code plus whichever stage it names. */
+    private fun findingKey(finding: Map<String, Any?>): String {
+        val details = finding["details"] as? Map<*, *>
+        val discriminator = details?.get("timingField")
+            ?: details?.get("reason")
+            ?: details?.get("stage")
+            ?: details?.get("engineEvent")
+        return "${finding["code"]}|${discriminator ?: ""}"
+    }
+
+    private fun findingSeverity(finding: Map<String, Any?>): String =
+        finding["severity"]?.toString() ?: "warning"
+
+    private fun findingValue(finding: Map<String, Any?>): Double? {
+        val details = finding["details"] as? Map<*, *> ?: return null
+        return (details["valueMs"] as? Number)?.toDouble()
+            ?: (details["durationMs"] as? Number)?.toDouble()
+    }
+
+    /**
+     * The one line that replaces the repetition, written before the session closes so it lands in
+     * the same file as the findings it accounts for.
+     */
+    private fun appendFindingBudgetSummaryLocked() {
+        val suppressions = findingBudget.suppressions()
+        if (suppressions.isEmpty()) return
+        appendLocked(
+            type = "AUTO_FINDING_REPETITION_SUPPRESSED",
+            fields = mapOf(
+                "totalSuppressed" to findingBudget.totalSuppressed(),
+                "distinctKinds" to suppressions.size,
+                "warningBurst" to FindingBudget.WARNING_BURST,
+                "criticalBurst" to FindingBudget.CRITICAL_BURST,
+                "escalationFactor" to FindingBudget.ESCALATION,
+                "kinds" to suppressions.map { suppression ->
+                    mapOf(
+                        "key" to suppression.key,
+                        "suppressedCount" to suppression.suppressedCount,
+                        "worstValue" to suppression.worstValue,
+                    )
+                },
+            ),
+            forceDurable = true,
+            deriveFindings = false,
+        )
     }
 
     private fun deriveFindings(type: String, fields: Map<String, Any?>): List<Map<String, Any?>> {
@@ -985,7 +1042,9 @@ class DiagnosticRecorder(context: Context) {
                 .replace(
                     "- لا توجد صور شاشة.",
                     "- توجد $evidenceFrames صورة شاشة في مجلد evidence/، كل واحدة باسم سبب الفشل " +
-                        "الذي حفظها. أطفئ الخيار من الإعدادات لتعود الحزم بلا صور.",
+                        "الذي حفظها. إيقاف الحفظ (من زر إمكانية الوصول العائم، أو من إشعار " +
+                        "VisionBridge، أو من الإعدادات) يوقف حفظ لقطات جديدة ويُبقي المحفوظ؛ " +
+                        "«حذف اللقطات المحفوظة» في الإعدادات يمسحها فتعود الحزم بلا صور.",
                 )
         }
 

@@ -26,6 +26,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.abdullah.visionbridge.R
 import com.abdullah.visionbridge.VisionBridgeApp
+import com.abdullah.visionbridge.accessibility.EvidenceShortcut
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
 import com.abdullah.visionbridge.domain.model.AnalysisMode
@@ -97,6 +98,9 @@ class MediaProjectionService : Service() {
     private var lastResizeAtElapsedMs = 0L
     private var lastSurfaceRecoveryAtElapsedMs = 0L
 
+    /** Rebuilding the notification before it exists is a no-op that logs a warning; this avoids it. */
+    private var foregroundStarted = false
+
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
             DiagnosticHub.record("PROJECTION_SYSTEM_STOPPED")
@@ -133,7 +137,13 @@ class MediaProjectionService : Service() {
                     DiagnosticHub.record("SETTINGS_CHANGED", settingsMap(newSettings))
                 }
                 DiagnosticHub.setEvidenceCapture(newSettings.captureFailureEvidence)
+                val evidenceChanged =
+                    newSettings.captureFailureEvidence != activeSettings.captureFailureEvidence
                 activeSettings = newSettings
+                // The notification action carries the state in its label, and that label is the
+                // only readout a user gets who reaches the switch through the shade rather than
+                // through the accessibility button.
+                if (evidenceChanged && foregroundStarted) startAsForeground()
             }
         }
         DiagnosticHub.record("CAPTURE_SERVICE_CREATED")
@@ -162,6 +172,7 @@ class MediaProjectionService : Service() {
                 DiagnosticHub.record("PROBLEM_MARKED_FROM_NOTIFICATION")
                 container.runtime.notice("تم تسجيل لحظة المشكلة في ملف التشخيص")
             }
+            ACTION_TOGGLE_EVIDENCE -> toggleEvidenceCapture()
             ACTION_STOP -> {
                 releaseProjection(stopProjection = true, reason = "user_stopped_capture")
                 container.runtime.stopped()
@@ -799,6 +810,20 @@ class MediaProjectionService : Service() {
             stopIntent(this),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        // The same switch as the accessibility button, on a surface that needs no setup. The shade
+        // is reachable from inside eSight's shared view too, and it is already a place TalkBack
+        // users navigate confidently.
+        val evidenceIntent = PendingIntent.getService(
+            this,
+            4,
+            toggleEvidenceIntent(this),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val evidenceLabel = if (activeSettings.captureFailureEvidence) {
+            R.string.notification_evidence_off
+        } else {
+            R.string.notification_evidence_on
+        }
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(getString(R.string.notification_title))
@@ -807,6 +832,7 @@ class MediaProjectionService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .addAction(0, getString(evidenceLabel), evidenceIntent)
             .addAction(0, getString(R.string.notification_mark_problem), problemIntent)
             .addAction(0, getString(R.string.notification_stop), stopIntent)
             .build()
@@ -817,6 +843,38 @@ class MediaProjectionService : Service() {
             notification,
             if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION else 0,
         )
+        foregroundStarted = true
+    }
+
+    /**
+     * Flips failure-frame capture from the notification, with the same wording and the same spoken
+     * confirmation as the accessibility button, because they are the same action.
+     */
+    private fun toggleEvidenceCapture() {
+        val action = EvidenceShortcut.press(
+            currentlyEnabled = activeSettings.captureFailureEvidence,
+            framesAlreadyHeld = container.diagnostics.evidenceStore.frameCount(),
+            captureRunning = container.runtime.state.value.isRunning,
+        )
+        DiagnosticHub.setEvidenceCapture(action.enable)
+        if (action.markProblem) {
+            DiagnosticHub.markProblemAsync("شُغّل حفظ اللقطات من إشعار VisionBridge")
+        }
+        DiagnosticHub.record(
+            "EVIDENCE_SHORTCUT_PRESSED",
+            mapOf(
+                "source" to "notification",
+                "applied" to true,
+                "enabled" to action.enable,
+                "captureRunning" to container.runtime.state.value.isRunning,
+                "framesHeld" to container.diagnostics.evidenceStore.frameCount(),
+            ),
+        )
+        container.tts.speakUrgentNotice(action.announcement)
+        container.runtime.notice(action.announcement)
+        serviceScope.launch {
+            container.settingsRepository.setCaptureFailureEvidence(action.enable)
+        }
     }
 
     private fun createNotificationChannel() {
@@ -849,6 +907,7 @@ class MediaProjectionService : Service() {
         private const val EXTRA_RESULT_DATA = "result_data"
         private const val ACTION_START = "com.abdullah.visionbridge.START_CAPTURE"
         private const val ACTION_MARK_PROBLEM = "com.abdullah.visionbridge.MARK_DIAGNOSTIC_PROBLEM"
+        private const val ACTION_TOGGLE_EVIDENCE = "com.abdullah.visionbridge.TOGGLE_EVIDENCE_CAPTURE"
         private const val ACTION_STOP = "com.abdullah.visionbridge.STOP_CAPTURE"
 
         private const val STABLE_FRAME_INTERVAL_MS = 400L
@@ -924,6 +983,11 @@ class MediaProjectionService : Service() {
         fun markProblemIntent(context: Context) = Intent(context, MediaProjectionService::class.java).apply {
             action = ACTION_MARK_PROBLEM
         }
+
+        fun toggleEvidenceIntent(context: Context) =
+            Intent(context, MediaProjectionService::class.java).apply {
+                action = ACTION_TOGGLE_EVIDENCE
+            }
 
         fun stopIntent(context: Context) = Intent(context, MediaProjectionService::class.java).apply {
             action = ACTION_STOP

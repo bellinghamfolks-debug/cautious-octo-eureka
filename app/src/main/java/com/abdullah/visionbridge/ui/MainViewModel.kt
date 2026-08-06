@@ -46,6 +46,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         container.settingsRepository.setCaptureFailureEvidence(enabled)
     }
 
+    /**
+     * Switching capture off no longer deletes what it caught, because the shortcut workflow is
+     * "on, reproduce, off, export". Changing one's mind about the images is therefore an action of
+     * its own rather than a side effect, and it says how many were removed.
+     */
+    fun discardEvidenceFrames() {
+        val held = DiagnosticHub.evidenceFrameCount()
+        DiagnosticHub.discardEvidence()
+        message.value = if (held == 0) {
+            "لا توجد لقطات محفوظة."
+        } else {
+            "حُذفت $held لقطة. ملف التشخيص القادم لن يحتوي أي صورة."
+        }
+    }
+
     fun setUseLocalOcr(enabled: Boolean) = viewModelScope.launch {
         container.settingsRepository.setUseLocalOcr(enabled)
         if (!enabled) container.localOcrEngine.release("user_disabled_local_reader")

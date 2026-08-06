@@ -245,7 +245,8 @@ class PaddleOcrEngine(
             val started = SystemClock.elapsedRealtimeNanos()
             var page = bitmap
             val scale = resolutionFor(bitmap, quality, subjectScale)
-            var boxes = detect(active, page, scale.detectionLongEdge)
+            var detection = detect(active, page, scale.detectionLongEdge)
+            var boxes = detection.boxes
 
             // Deskew the page, then detect again. Straightening each crop instead pads a wide strip
             // vertically until the text is a sliver of the crop's height, which reads worse than
@@ -257,7 +258,8 @@ class PaddleOcrEngine(
                 val straight = OcrImagePreprocessor.rotate(page, deskew)
                 if (straight !== page) {
                     page = straight
-                    boxes = detect(active, page, scale.detectionLongEdge)
+                    detection = detect(active, page, scale.detectionLongEdge)
+                    boxes = detection.boxes
                 }
             }
             val detectMs = (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0
@@ -286,7 +288,7 @@ class PaddleOcrEngine(
                     "quality" to quality.name,
                     "detectionLongEdge" to scale.detectionLongEdge,
                     "xnnpack" to xnnpackEnabled,
-                ),
+                ) + detection.census.fields(),
             )
             if (boxes.isEmpty()) {
                 lastTextHeight = null
@@ -421,7 +423,7 @@ class PaddleOcrEngine(
         active: Sessions,
         bitmap: Bitmap,
         detectionLongEdge: Int,
-    ): List<TextBox> {
+    ): DbPostProcessor.Detection {
         val input = OcrImagePreprocessor.prepareForDetection(bitmap, detectionLongEdge)
         val tensor = input.tensor
         return runTensor(
@@ -433,7 +435,7 @@ class PaddleOcrEngine(
             // DB emits [1, 1, H, W]; the last two dimensions are the probability map.
             val mapHeight = shape[shape.size - 2].toInt()
             val mapWidth = shape[shape.size - 1].toInt()
-            DbPostProcessor.extractBoxes(
+            DbPostProcessor.extract(
                 probability = output,
                 mapWidth = mapWidth,
                 mapHeight = mapHeight,

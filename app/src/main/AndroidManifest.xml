@@ -40,6 +40,24 @@
                 android:resource="@xml/diagnostic_file_paths" />
         </provider>
 
+        <!--
+            The one control that has to be reachable without leaving the app being captured.
+            BIND_ACCESSIBILITY_SERVICE is required by the platform for any accessibility service;
+            what this one is allowed to observe is narrowed to nothing in its configuration.
+        -->
+        <service
+            android:name=".accessibility.EvidenceCaptureShortcutService"
+            android:exported="true"
+            android:label="@string/evidence_shortcut_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/evidence_shortcut_service" />
+        </service>
+
         <service
             android:name=".capture.MediaProjectionService"
             android:exported="false"

@@ -125,14 +125,37 @@ object DiagnosticHub {
         )
     }
 
-    /** Turns failure-frame capture on or off. Off is the only default. */
+    /**
+     * Turns failure-frame capture on or off. Off is the only default.
+     *
+     * Switching off stops capture and keeps what was already captured. It used to delete it, which
+     * was defensible while the switch lived on a settings screen and meant "I do not want images in
+     * my bundle" — but the switch is now a shortcut pressed from inside the app being captured, and
+     * the whole workflow is *on, reproduce the failure, off, export*. Deleting on the third step
+     * would throw away the only thing the first two were for. What keeps this safe is unchanged:
+     * nothing is captured unless the user switched it on, the count is declared in the manifest and
+     * in the archive name, and [discardEvidence] deletes on demand.
+     */
     fun setEvidenceCapture(enabled: Boolean) {
         val store = evidence ?: return
         if (store.enabled == enabled) return
         store.enabled = enabled
-        if (!enabled) store.clear()
-        record("EVIDENCE_CAPTURE_SETTING", mapOf("enabled" to enabled))
+        record(
+            "EVIDENCE_CAPTURE_SETTING",
+            mapOf("enabled" to enabled, "framesHeld" to store.frameCount()),
+        )
     }
+
+    /** Deletes every stored failure frame. The user's own answer to changing their mind. */
+    fun discardEvidence() {
+        val store = evidence ?: return
+        val held = store.frameCount()
+        store.clear()
+        record("EVIDENCE_FRAMES_DISCARDED", mapOf("framesDeleted" to held))
+    }
+
+    /** How many failure frames are currently held, for anything that has to say so out loud. */
+    fun evidenceFrameCount(): Int = evidence?.frameCount() ?: 0
 
     /**
      * Keeps the frame behind a named failure, when the user has switched capture on.

@@ -76,9 +76,15 @@ object SessionVerdict {
             suppressedButNeverSpoken(events),
             cloudNeverSucceeded(events),
             detectedButDiscarded(events),
+            detectorRejectedLargeRegions(events),
+            boundNetworkNeverValidated(events),
+            resolutionNeverSettled(events),
             analysisStarved(events),
-        )
-        return findings.sortedBy { it.severity.ordinal }
+        ).sortedBy { it.severity.ordinal }
+
+        // Last, and only when there is something it would have settled: a pointer at the one
+        // control that turns the next bundle from an argument into a measurement.
+        return findings + listOfNotNull(noPixelsToSettleIt(events, findings))
     }
 
     // region rules
@@ -349,6 +355,126 @@ object SessionVerdict {
         )
     }
 
+    /**
+     * The detector found something large and this pipeline threw it away before anyone could read
+     * it — which is the difference between "the text was never seen" and "the text was seen and
+     * discarded", and those two need opposite repairs.
+     *
+     * A big prominent word going unread was the complaint that motivated this rule, and the bundle
+     * of the day could not answer it: four `continue` statements decided the outcome and counted
+     * nothing. Now every rejected region is counted and the largest is described, so the answer is
+     * arithmetic rather than a guess.
+     */
+    private fun detectorRejectedLargeRegions(events: List<Event>): Finding? {
+        val frames = events.filter { it.type == "PPOCR_DETECTION_COMPLETED" }
+        if (frames.size < MIN_DETECTION_FRAMES) return null
+
+        val barren = frames.filter { frame ->
+            (frame.number("accepted")?.toInt() ?: -1) == 0 &&
+                (frame.number("regionsFound")?.toInt() ?: 0) > 0
+        }
+        if (barren.size < frames.size * BARREN_FRAME_RATIO) return null
+
+        val worst = barren.maxByOrNull { frame ->
+            val width = frame.number("largestRejectedWidthFraction") ?: 0.0
+            val height = frame.number("largestRejectedHeightFraction") ?: 0.0
+            width * height
+        } ?: return null
+        val area = (worst.number("largestRejectedWidthFraction") ?: 0.0) *
+            (worst.number("largestRejectedHeightFraction") ?: 0.0)
+        if (area < LARGE_REGION_AREA) return null
+
+        val reasons = barren.mapNotNull { it.text("largestRejectedReason") }
+        val dominant = reasons.groupingBy { it }.eachCount().maxByOrNull { it.value }
+        return Finding(
+            code = "DETECTOR_REJECTED_LARGE_REGIONS",
+            severity = Severity.MAJOR,
+            headline = "الكاشف يجد نصاً كبيراً ثم يرميه قبل القراءة.",
+            measurement = "${barren.size} إطاراً من ${frames.size} انتهى بصفر مربع مقبول رغم وجود " +
+                "مناطق فوق العتبة. أكبر منطقة مرميّة تشغل ${percent(area)} من الإطار، " +
+                "بسبب ${dominant?.key ?: "غير مسجَّل"} (${dominant?.value ?: 0} إطاراً)، " +
+                "ودرجتها ${worst.number("largestRejectedScore")?.let { "%.2f".format(it) } ?: "غير مسجَّلة"} " +
+                "مقابل عتبة القبول.",
+            evidence = listOf("PPOCR_DETECTION_COMPLETED"),
+        )
+    }
+
+    /**
+     * Cellular was forced and the network it bound to was never proven to carry traffic.
+     *
+     * Five field sessions all ran with cellular forced, so "cellular freezes the app" had no control
+     * group and stayed a correlation. What settles it is not another session — it is what the bound
+     * network could actually do, recorded at the moment of binding, next to what the default network
+     * could do at the same moment.
+     */
+    private fun boundNetworkNeverValidated(events: List<Event>): Finding? {
+        val acquired = events.filter { it.type == "CELLULAR_NETWORK_ACQUIRED" }
+        if (acquired.size < MIN_ACQUISITIONS) return null
+        val unvalidated = acquired.count { it.flag("boundValidated") == false }
+        if (unvalidated < acquired.size * UNVALIDATED_RATIO) return null
+
+        val fallbacks = events.count { it.type == "CELLULAR_NETWORK_VALIDATION_FALLBACK" }
+        val defaultWasValidated = acquired.count { it.flag("defaultValidated") == true }
+        val captive = acquired.count { it.flag("boundCaptivePortal") == true }
+        return Finding(
+            code = "BOUND_NETWORK_NEVER_VALIDATED",
+            severity = Severity.MAJOR,
+            headline = "طلبات Gemini مربوطة بشبكة لم يثبت أنها تنقل بيانات.",
+            measurement = "$unvalidated من ${acquired.size} ربطاً على شبكة غير مُتحقَّق منها، " +
+                "و$fallbacks مرة سقط الطلب إلى المسار غير المتحقَّق، بينما كانت الشبكة الافتراضية " +
+                "متحقَّقة في $defaultWasValidated منها" +
+                if (captive > 0) "، و$captive منها خلف بوابة تسجيل دخول." else ".",
+            evidence = listOf("CELLULAR_NETWORK_ACQUIRED", "CELLULAR_NETWORK_VALIDATION_FALLBACK"),
+        )
+    }
+
+    /**
+     * The adaptive resolution controller never found text to solve for, so it spent the session
+     * bracketing instead of reading. Distinct from "there was no text": the controller says which
+     * of the two it believed, and this rule reports that it never stopped believing the first.
+     */
+    private fun resolutionNeverSettled(events: List<Event>): Finding? {
+        val decisions = events
+            .filter { it.type == "PPOCR_DETECTION_COMPLETED" }
+            .mapNotNull { it.text("resolutionReason") }
+        if (decisions.size < MIN_DETECTION_FRAMES) return null
+        val searching = decisions.count { it.startsWith("nothing_found") }
+        if (searching < decisions.size * SEARCHING_RATIO) return null
+
+        return Finding(
+            code = "READING_RESOLUTION_NEVER_SETTLED",
+            severity = Severity.MINOR,
+            headline = "لم يستقر اختيار دقة القراءة على قياس، فبقي يبحث.",
+            measurement = "$searching من ${decisions.size} قراراً بلا قياس لارتفاع النص " +
+                "(${percent(searching.toDouble() / decisions.size)}). إما أن الإطارات بلا نص، " +
+                "أو أن النص أصغر من أن يُكتشف عند أي درجة على السلّم.",
+            evidence = listOf("PPOCR_DETECTION_COMPLETED"),
+        )
+    }
+
+    /**
+     * Not a defect — an instruction. When something went wrong and no frame was kept, the next
+     * bundle can settle it outright, and the control that does so is reachable without leaving the
+     * app being captured.
+     */
+    private fun noPixelsToSettleIt(events: List<Event>, found: List<Finding>): Finding? {
+        if (found.none { it.severity != Severity.MINOR }) return null
+        if (events.any { it.type == "EVIDENCE_FRAME_CAPTURED" }) return null
+        if (events.none { it.type == "PPOCR_DETECTION_COMPLETED" || it.type == "CLOUD_ANALYSIS_COMPLETED" }) {
+            return null
+        }
+        return Finding(
+            code = "NO_FRAME_KEPT_TO_SETTLE_IT",
+            severity = Severity.MINOR,
+            headline = "لا توجد لقطة واحدة تُثبت ما الذي كان أمام الكاميرا وقت الخلل.",
+            measurement = "لتشخيص أدق في المرة القادمة: أثناء وجودك داخل eSight، اضغط زر إمكانية " +
+                "الوصول العائم — أو زر «تشغيل حفظ اللقطات» في إشعار VisionBridge — قبل النص الذي " +
+                "لا يُقرأ مباشرة، ثم اضغطه ثانية بعد المحاولة. تُحفظ لحظات الفشل فقط، وسيُنطق الوضع " +
+                "بعد كل ضغطة.",
+            evidence = listOf("EVIDENCE_SHORTCUT_PRESSED"),
+        )
+    }
+
     /** Frames arriving far faster than they are analysed, which is throughput, not correctness. */
     private fun analysisStarved(events: List<Event>): Finding? {
         val acquired = events.count { it.type == "FRAME_ACQUIRED" }
@@ -390,4 +516,12 @@ object SessionVerdict {
     private const val DISCARD_CEILING = 0.5
     private const val MIN_FRAMES = 200
     private const val ANALYSIS_FLOOR = 0.05
+    private const val MIN_DETECTION_FRAMES = 10
+    private const val BARREN_FRAME_RATIO = 0.3
+
+    /** Two per cent of the frame. A word held up to be read is far bigger than this. */
+    private const val LARGE_REGION_AREA = 0.02
+    private const val MIN_ACQUISITIONS = 3
+    private const val UNVALIDATED_RATIO = 0.5
+    private const val SEARCHING_RATIO = 0.6
 }

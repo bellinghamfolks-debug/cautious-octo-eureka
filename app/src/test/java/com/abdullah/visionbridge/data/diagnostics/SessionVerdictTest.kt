@@ -272,4 +272,148 @@ class SessionVerdictTest {
     fun `an empty timeline is handled`() {
         assertEquals(emptyList<String>(), codes(emptyList()))
     }
+
+    // region what the detector threw away
+
+    private fun barrenDetection(areaWidth: Double, areaHeight: Double, reason: String) = event(
+        "PPOCR_DETECTION_COMPLETED",
+        "regionsFound" to 4,
+        "accepted" to 0,
+        "rejectedLowScore" to 3,
+        "largestRejectedReason" to reason,
+        "largestRejectedWidthFraction" to areaWidth,
+        "largestRejectedHeightFraction" to areaHeight,
+        "largestRejectedScore" to 0.41,
+        "resolutionReason" to "matched_text_height",
+    )
+
+    /**
+     * The perfume question, answered by arithmetic: a region a fifth of the frame wide was found
+     * and discarded, which is not the same defect as never finding it.
+     */
+    @Test
+    fun `a large region found and discarded is named`() {
+        val events = (1..14).map { barrenDetection(0.35, 0.12, "mean_probability_below_threshold") }
+        val finding = SessionVerdict.analyse(events).firstOrNull { it.code == "DETECTOR_REJECTED_LARGE_REGIONS" }
+        assertNotNull(finding)
+        assertEquals(SessionVerdict.Severity.MAJOR, finding!!.severity)
+        assertTrue(finding.measurement.contains("mean_probability_below_threshold"))
+    }
+
+    /** A bottle's edges produce specks. Discarding specks is the stage working, not failing. */
+    @Test
+    fun `discarding only tiny regions is not a finding`() {
+        val events = (1..14).map { barrenDetection(0.02, 0.01, "below_minimum_side") }
+        assertTrue("DETECTOR_REJECTED_LARGE_REGIONS" !in codes(events))
+    }
+
+    /** Frames that did produce boxes are the normal case and must stay silent. */
+    @Test
+    fun `frames that accepted boxes are not counted as barren`() {
+        val events = (1..20).map {
+            event(
+                "PPOCR_DETECTION_COMPLETED",
+                "regionsFound" to 12,
+                "accepted" to 9,
+                "resolutionReason" to "held",
+            )
+        }
+        assertEquals(emptyList<String>(), codes(events))
+    }
+
+    // endregion
+
+    // region the network the request was actually bound to
+
+    @Test
+    fun `binding to an unvalidated network is named`() {
+        val events = buildList {
+            repeat(6) {
+                add(event("CELLULAR_NETWORK_VALIDATION_FALLBACK", "reason" to "timeout"))
+                add(
+                    event(
+                        "CELLULAR_NETWORK_ACQUIRED",
+                        "boundValidated" to false,
+                        "boundCellular" to true,
+                        "defaultValidated" to true,
+                        "boundCaptivePortal" to true,
+                    ),
+                )
+            }
+        }
+        val finding = SessionVerdict.analyse(events).firstOrNull { it.code == "BOUND_NETWORK_NEVER_VALIDATED" }
+        assertNotNull(finding)
+        assertTrue("the control group belongs in the sentence", finding!!.measurement.contains("6"))
+        assertTrue(finding.measurement.contains("بوابة تسجيل دخول"))
+    }
+
+    @Test
+    fun `a validated cellular binding says nothing`() {
+        val events = (1..6).map {
+            event("CELLULAR_NETWORK_ACQUIRED", "boundValidated" to true, "defaultValidated" to true)
+        }
+        assertTrue("BOUND_NETWORK_NEVER_VALIDATED" !in codes(events))
+    }
+
+    // endregion
+
+    // region the resolution controller
+
+    @Test
+    fun `a controller that never finds text to measure is named`() {
+        val events = (1..20).map {
+            event("PPOCR_DETECTION_COMPLETED", "accepted" to 0, "resolutionReason" to "nothing_found_bracketing")
+        }
+        assertTrue("READING_RESOLUTION_NEVER_SETTLED" in codes(events))
+    }
+
+    @Test
+    fun `a controller that settles says nothing`() {
+        val events = (1..20).map {
+            event("PPOCR_DETECTION_COMPLETED", "accepted" to 6, "resolutionReason" to "held")
+        }
+        assertTrue("READING_RESOLUTION_NEVER_SETTLED" !in codes(events))
+    }
+
+    // endregion
+
+    // region the pointer at the shortcut
+
+    /** Guidance, and only where it would have changed the answer. */
+    @Test
+    fun `a session with a real failure and no frames points at the shortcut`() {
+        val events = buildList {
+            repeat(50) { add(event("PPOCR_PAGE_READ", "characters" to 95)) }
+            repeat(3) { add(event("TTS_UTTERANCE_DONE", "text" to "BLEU")) }
+            repeat(12) { add(event("PPOCR_DETECTION_COMPLETED", "accepted" to 4, "resolutionReason" to "held")) }
+        }
+        val found = SessionVerdict.analyse(events)
+        assertTrue("NO_FRAME_KEPT_TO_SETTLE_IT" in found.map { it.code })
+        assertEquals("guidance belongs last", "NO_FRAME_KEPT_TO_SETTLE_IT", found.last().code)
+    }
+
+    /** Nothing went wrong, so there is nothing to advise about. Advice with no defect is noise. */
+    @Test
+    fun `a healthy session is not told to capture frames`() {
+        val events = buildList {
+            repeat(10) { add(event("PPOCR_PAGE_READ", "characters" to 60, "sinceCaptureMs" to 800.0)) }
+            repeat(12) { add(event("TTS_UTTERANCE_DONE", "text" to "a".repeat(55))) }
+            repeat(12) { add(event("PPOCR_DETECTION_COMPLETED", "accepted" to 4, "resolutionReason" to "held")) }
+        }
+        assertEquals(emptyList<String>(), codes(events))
+    }
+
+    /** The frames are already there, so the advice would be wrong as well as unwanted. */
+    @Test
+    fun `a session that already captured frames is not told to capture frames`() {
+        val events = buildList {
+            repeat(50) { add(event("PPOCR_PAGE_READ", "characters" to 95)) }
+            repeat(3) { add(event("TTS_UTTERANCE_DONE", "text" to "BLEU")) }
+            repeat(12) { add(event("PPOCR_DETECTION_COMPLETED", "accepted" to 4, "resolutionReason" to "held")) }
+            add(event("EVIDENCE_FRAME_CAPTURED", "reason" to "recognition_returned_nothing"))
+        }
+        assertTrue("NO_FRAME_KEPT_TO_SETTLE_IT" !in codes(events))
+    }
+
+    // endregion
 }

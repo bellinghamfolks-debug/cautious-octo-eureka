@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.os.Build
 import android.os.SystemClock
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
@@ -23,7 +24,10 @@ class CellularNetworkManager(context: Context) {
         if (!forceCellular) {
             DiagnosticHub.record(
                 "CELLULAR_NETWORK_ACQUISITION_SKIPPED",
-                trace.fieldsOrEmpty(mapOf("analysisBudgetMs" to ANALYSIS_BUDGET_MS)),
+                trace.fieldsOrEmpty(
+                    mapOf<String, Any?>("analysisBudgetMs" to ANALYSIS_BUDGET_MS) +
+                        describeNetwork(null, "default"),
+                ),
             )
             return runWithinAnalysisBudget(trace) { block(null) }
         }
@@ -56,11 +60,17 @@ class CellularNetworkManager(context: Context) {
         DiagnosticHub.record(
             "CELLULAR_NETWORK_ACQUIRED",
             trace.fieldsOrEmpty(
-                mapOf(
+                mapOf<String, Any?>(
                     "durationMs" to
                         (SystemClock.elapsedRealtimeNanos() - acquisitionStarted) / 1_000_000.0,
                     "networkHandle" to lease.network.networkHandle,
-                ),
+                ) +
+                    // Both sides of the comparison, at the moment of binding. Five field sessions
+                    // ran with cellular forced and none without, so "cellular caused the freeze"
+                    // could not be told from "the session froze"; recording what the bound network
+                    // could actually do — and what the default network could — is what turns the
+                    // next bundle into evidence instead of another correlation.
+                    describeNetwork(lease.network, "bound") + describeNetwork(null, "default"),
             ),
         )
         return try {
@@ -198,6 +208,47 @@ class CellularNetworkManager(context: Context) {
             }
             connectivityManager.requestNetwork(request, callback, timeout.toInt())
         }
+
+    /**
+     * Everything the platform will say about one network, flattened under a [prefix].
+     *
+     * Deliberately capability-level rather than identity-level: transports, whether the network has
+     * been validated, whether it is suspended or behind a captive portal, and the bandwidth the
+     * system believes it has. No carrier name, no subscriber identity, no addresses — none of which
+     * would help a diagnosis and all of which would be a cost to carry in a file the user sends.
+     *
+     * A null [network] describes the process default, which is the network everything would have
+     * used had cellular not been forced.
+     */
+    private fun describeNetwork(network: Network?, prefix: String): Map<String, Any?> {
+        val target = network ?: connectivityManager?.activeNetwork
+        val capabilities = target?.let { connectivityManager?.getNetworkCapabilities(it) }
+            ?: return mapOf("${prefix}NetworkPresent" to false)
+        return mapOf(
+            "${prefix}NetworkPresent" to true,
+            "${prefix}Handle" to target.networkHandle,
+            "${prefix}Cellular" to
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR),
+            "${prefix}Wifi" to capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI),
+            "${prefix}Vpn" to capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN),
+            "${prefix}Validated" to
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
+            "${prefix}Internet" to
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET),
+            // A captive portal is the failure that looks exactly like a slow model from inside the
+            // app: the socket connects, the request is swallowed, and nothing errors.
+            "${prefix}CaptivePortal" to
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL),
+            "${prefix}NotSuspended" to
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED),
+            "${prefix}NotMetered" to
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED),
+            "${prefix}DownstreamKbps" to capabilities.linkDownstreamBandwidthKbps,
+            "${prefix}UpstreamKbps" to capabilities.linkUpstreamBandwidthKbps,
+            "${prefix}SignalStrength" to
+                if (Build.VERSION.SDK_INT >= 29) capabilities.signalStrength else null,
+        )
+    }
 
     private fun DiagnosticTrace?.fieldsOrEmpty(
         extra: Map<String, Any?> = emptyMap(),

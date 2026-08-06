@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -85,6 +86,10 @@ class MainActivity : ComponentActivity() {
                         onUseLocalOcrChange = viewModel::setUseLocalOcr,
                         onLocalReadingQualityChange = viewModel::setLocalReadingQuality,
                         onCaptureFailureEvidenceChange = viewModel::setCaptureFailureEvidence,
+                        onDiscardEvidenceFrames = viewModel::discardEvidenceFrames,
+                        onOpenAccessibilityShortcutSettings = {
+                            this@MainActivity.openAccessibilityShortcutSettings()
+                        },
                         onExportDiagnostics = {
                             viewModel.exportDiagnostics { file ->
                                 this@MainActivity.shareDiagnosticFile(file)
@@ -109,6 +114,30 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+    }
+
+    /**
+     * Sends the user to where the accessibility button is assigned.
+     *
+     * There is no API to assign a shortcut on the user's behalf, and there should not be: an app
+     * that could grant itself an accessibility service would be a different kind of app. The list
+     * this opens is one TalkBack users already know how to navigate.
+     */
+    private fun openAccessibilityShortcutSettings() {
+        val opened = runCatching {
+            startActivity(
+                Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }.isSuccess
+        DiagnosticHub.record("ACCESSIBILITY_SETTINGS_OPENED", mapOf("opened" to opened))
+        if (!opened) {
+            Toast.makeText(
+                this,
+                "تعذر فتح إعدادات إمكانية الوصول على هذا الجهاز. افتحها يدويًا ثم فعّل خدمة VisionBridge.",
+                Toast.LENGTH_LONG,
+            ).show()
         }
     }
 

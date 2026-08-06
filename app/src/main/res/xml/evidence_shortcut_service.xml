@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    A button, and nothing else.
+
+    accessibilityEventTypes is typeNone and canRetrieveWindowContent is false, so this service is
+    never delivered a single word of what is on the screen. That is deliberate and it is the reason
+    it is reasonable to ask a blind user — who is already running TalkBack — to enable a second
+    accessibility service: this one cannot read anything, it can only be pressed.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeNone"
+    android:accessibilityFeedbackType="feedbackSpoken"
+    android:accessibilityFlags="flagRequestAccessibilityButton"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/evidence_shortcut_description"
+    android:notificationTimeout="0"
+    android:summary="@string/evidence_shortcut_summary" />

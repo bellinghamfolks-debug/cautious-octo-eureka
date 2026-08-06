@@ -76,6 +76,8 @@ fun SettingsScreen(
     onUseLocalOcrChange: (Boolean) -> Unit,
     onLocalReadingQualityChange: (LocalReadingQuality) -> Unit,
     onCaptureFailureEvidenceChange: (Boolean) -> Unit,
+    onDiscardEvidenceFrames: () -> Unit,
+    onOpenAccessibilityShortcutSettings: () -> Unit,
     onExportDiagnostics: () -> Unit,
     onBack: () -> Unit,
     onMessageConsumed: () -> Unit,
@@ -424,6 +426,45 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                     )
+                }
+
+                // The switch above is unreachable at the only moment it matters: reaching it means
+                // leaving the shared view, which ends the capture that was failing. These two rows
+                // are how it is reached without leaving.
+                Text(
+                    text = "تشغيله وإيقافه أثناء الاستخدام: زر إمكانية الوصول العائم، أو زر " +
+                        "«${
+                            if (state.settings.captureFailureEvidence) "إيقاف حفظ اللقطات" else "تشغيل حفظ اللقطات"
+                        }» داخل إشعار VisionBridge. كلاهما ينطق الوضع الجديد بعد الضغط، " +
+                        "فلا حاجة لمغادرة تطبيق eSight.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                OutlinedButton(
+                    onClick = onOpenAccessibilityShortcutSettings,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .semantics {
+                            contentDescription =
+                                "فتح إعدادات إمكانية الوصول لإسناد زر VisionBridge إلى الزر العائم. " +
+                                    "الخدمة لا تقرأ محتوى الشاشة، ووظيفتها الوحيدة استقبال الضغطة."
+                        },
+                ) {
+                    Text("إسناد الزر العائم لحفظ اللقطات")
+                }
+
+                OutlinedButton(
+                    onClick = onDiscardEvidenceFrames,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .semantics {
+                            contentDescription =
+                                "حذف كل لقطات الفشل المحفوظة الآن، قبل مشاركة ملف التشخيص"
+                        },
+                ) {
+                    Icon(Icons.Filled.Delete, contentDescription = null)
+                    Text("  حذف اللقطات المحفوظة")
                 }
 
                 Button(
