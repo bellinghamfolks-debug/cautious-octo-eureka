@@ -19,12 +19,21 @@ class LocalReadingQualityTest {
     private fun detectedHeight(quality: LocalReadingQuality, onScreen: Int): Float =
         onScreen * (quality.detectionLongEdge.toFloat() / maxOf(captureWidth, captureHeight))
 
+    /** AUTO is not a rung on this ladder — it solves for one — so the ordering is over the rest. */
+    private val fixedLevels = LocalReadingQuality.entries.filterNot { it.adaptive }
+
     @Test
     fun `higher quality always gives the detector more to look at`() {
-        val edges = LocalReadingQuality.entries.map { it.detectionLongEdge }
+        val edges = fixedLevels.map { it.detectionLongEdge }
         assertEquals(edges.sorted(), edges)
-        val widths = LocalReadingQuality.entries.map { it.recognitionMaxWidth }
+        val widths = fixedLevels.map { it.recognitionMaxWidth }
         assertEquals(widths.sorted(), widths)
+    }
+
+    /** Exactly one level solves for its own resolution; the others are fixed points on the curve. */
+    @Test
+    fun `only AUTO is adaptive`() {
+        assertEquals(listOf(LocalReadingQuality.AUTO), LocalReadingQuality.entries.filter { it.adaptive })
     }
 
     /**
@@ -59,10 +68,16 @@ class LocalReadingQualityTest {
         assertEquals(1f, squash(LocalReadingQuality.BALANCED, 900, 40), 0.001f)
     }
 
+    /**
+     * The default is now the one that decides for itself. Someone who never opens settings gets a
+     * resolution matched to what they are looking at, which is the whole point; someone who chose a
+     * fixed level keeps it.
+     */
     @Test
-    fun `an unknown stored value falls back to balanced rather than to the slowest`() {
-        assertEquals(LocalReadingQuality.BALANCED, LocalReadingQuality.fromStored(null))
-        assertEquals(LocalReadingQuality.BALANCED, LocalReadingQuality.fromStored("NONSENSE"))
+    fun `an unset value falls back to the adaptive level`() {
+        assertEquals(LocalReadingQuality.AUTO, LocalReadingQuality.fromStored(null))
+        assertEquals(LocalReadingQuality.AUTO, LocalReadingQuality.fromStored("NONSENSE"))
         assertEquals(LocalReadingQuality.MAXIMUM, LocalReadingQuality.fromStored("MAXIMUM"))
+        assertEquals(LocalReadingQuality.FAST, LocalReadingQuality.fromStored("FAST"))
     }
 }

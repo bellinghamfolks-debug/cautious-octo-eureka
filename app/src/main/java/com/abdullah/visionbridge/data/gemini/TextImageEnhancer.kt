@@ -3,6 +3,9 @@ package com.abdullah.visionbridge.data.gemini
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.SystemClock
+import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
+import com.abdullah.visionbridge.data.paddleocr.OcrImagePreprocessor
+import com.abdullah.visionbridge.data.paddleocr.TextScaleProbe
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.CaptureProfile
 import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
@@ -227,15 +230,55 @@ class TextImageEnhancer {
         return Bitmap.createBitmap(source, 0, safeTop, source.width, remaining)
     }
 
+    /**
+     * Sizes the upload from how big the text actually is, not from a constant.
+     *
+     * The cap exists because a model reads small text better with more pixels — but a label held
+     * close carries no small text, and sending 2,400 pixels of it costs seconds of cellular upload
+     * for detail nothing uses. The same projection-profile probe that starts the local reader off
+     * answers the question here: measure the line height, keep enough resolution to leave it legible
+     * to the model, and stop there. Text too small to measure keeps the full cap, because that is
+     * the case the cap was for.
+     */
     private fun scaleForAccurateText(source: Bitmap): Bitmap {
         val largest = maxOf(source.width, source.height)
+        val cap = textAwareCap(source, largest)
         val target = when {
             largest < MIN_ACCURATE_TEXT_EDGE -> (largest * ACCURATE_TEXT_UPSCALE_FACTOR).roundToInt()
                 .coerceAtMost(MIN_ACCURATE_TEXT_EDGE)
-            largest > MAX_ACCURATE_TEXT_EDGE -> MAX_ACCURATE_TEXT_EDGE
+            largest > cap -> cap
             else -> largest
         }
         return scaleToEdge(source, target)
+    }
+
+    /**
+     * The smallest upload that still leaves the text comfortably legible, or the full cap when the
+     * text cannot be measured.
+     */
+    private fun textAwareCap(source: Bitmap, largest: Int): Int {
+        val estimate = runCatching {
+            val plane = OcrImagePreprocessor.probePlane(source, PROBE_LONG_EDGE)
+            TextScaleProbe.estimate(
+                plane = plane,
+                sourceScale = largest.toFloat() / maxOf(plane.width, plane.height),
+            )
+        }.getOrNull() ?: return MAX_ACCURATE_TEXT_EDGE
+
+        val needed = (largest * CLOUD_TARGET_TEXT_HEIGHT / estimate.textHeightPixels).roundToInt()
+        val cap = needed.coerceIn(MIN_ACCURATE_TEXT_EDGE, MAX_ACCURATE_TEXT_EDGE)
+        DiagnosticHub.record(
+            "CLOUD_UPLOAD_SCALE_CHOSEN",
+            mapOf(
+                "measuredTextHeight" to estimate.textHeightPixels,
+                "lineCount" to estimate.lineCount,
+                "confidence" to estimate.confidence,
+                "cap" to cap,
+                "hardCap" to MAX_ACCURATE_TEXT_EDGE,
+                "sourceLongEdge" to largest,
+            ),
+        )
+        return cap
     }
 
     private fun scaleForFastText(source: Bitmap): Bitmap {
@@ -339,6 +382,16 @@ class TextImageEnhancer {
     private companion object {
         const val MIN_ACCURATE_TEXT_EDGE = 2_000
         const val MAX_ACCURATE_TEXT_EDGE = 2_400
+
+        /**
+         * How tall a line should be in the uploaded image. Generous next to the detector's 22,
+         * because a vision-language model is doing the reading and the upload is the only chance it
+         * gets — but far below sending everything for a label held at arm's length.
+         */
+        const val CLOUD_TARGET_TEXT_HEIGHT = 34f
+
+        /** Long edge of the plane the text-size probe works on. */
+        const val PROBE_LONG_EDGE = 512
         const val ACCURATE_TEXT_UPSCALE_FACTOR = 1.5
         const val ACCURATE_TEXT_JPEG_QUALITY = 94
 

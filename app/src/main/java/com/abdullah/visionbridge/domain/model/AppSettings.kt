@@ -12,7 +12,7 @@ data class AppSettings(
     /** Read text with the on-device PP-OCR engine instead of Gemini. Describing stays cloud-only. */
     val useLocalOcr: Boolean = false,
     /** How much of the captured image the on-device reader uses. Speed against fine print. */
-    val localReadingQuality: LocalReadingQuality = LocalReadingQuality.BALANCED,
+    val localReadingQuality: LocalReadingQuality = LocalReadingQuality.AUTO,
     /**
      * Store the actual frame behind a failure in the diagnostic bundle.
      *

@@ -234,26 +234,31 @@ fun SettingsScreen(
                 )
                 Text(
                     text = if (state.settings.useLocalOcr) {
-                        "تؤثر الجودة في وضوح الخط الصغير والبعيد وسرعة القراءة. الخيار الموصى به: متوازن."
+                        "الوضع التلقائي يقيس حجم النص أمامك كل لقطة ويختار الدقة بنفسه. " +
+                            "اختر مستوى ثابتاً فقط إن أردت التحكم بنفسك."
                     } else {
-                        "يُطبّق هذا الإعداد عند تشغيل PP-OCRv5. الجودة الأعلى تقرأ تفاصيل أدق، لكنها تحتاج وقتًا أطول."
+                        "يُطبّق هذا الإعداد عند تشغيل PP-OCRv5."
                     },
                     style = MaterialTheme.typography.bodyMedium,
                 )
-                LocalReadingQuality.entries.forEach { quality ->
+                LocalReadingQuality.entries.sortedBy { if (it.adaptive) 0 else 1 }.forEach { quality ->
                     val selected = state.settings.localReadingQuality == quality
                     val label = when (quality) {
+                        LocalReadingQuality.AUTO -> "تلقائي"
                         LocalReadingQuality.FAST -> "سريع"
                         LocalReadingQuality.BALANCED -> "متوازن"
                         LocalReadingQuality.MAXIMUM -> "أعلى دقة"
                     }
                     val detail = when (quality) {
+                        LocalReadingQuality.AUTO ->
+                            "الموصى به. يقيس ارتفاع النص في كل لقطة ويحسب الدقة اللازمة له: " +
+                                "سريع للقريب الكبير، وأعلى دقة للبعيد الصغير، من دون أن تختار."
                         LocalReadingQuality.FAST ->
-                            "أسرع استجابة للنص الكبير والمتحرك."
+                            "ثابت. أسرع استجابة للنص الكبير والمتحرك."
                         LocalReadingQuality.BALANCED ->
-                            "توازن بين السرعة والدقة، ومناسب لمعظم الاستخدامات."
+                            "ثابت. توازن بين السرعة والدقة."
                         LocalReadingQuality.MAXIMUM ->
-                            "أفضل للخط الصغير واللافتات البعيدة والمستندات الكثيفة، لكنه أبطأ."
+                            "ثابت. للخط الصغير واللافتات البعيدة، لكنه أبطأ دائماً حتى مع النص الكبير."
                     }
                     OutlinedButton(
                         onClick = { onLocalReadingQualityChange(quality) },

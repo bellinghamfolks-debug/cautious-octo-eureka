@@ -74,6 +74,13 @@ class PaddleOcrEngine(
     private val lifecycleMutex = Mutex()
     private val inferenceMutex = Mutex()
 
+    /** Resolution controller and the measurement that feeds it, both owned by the read path. */
+    private var scaleController: AdaptiveReadingScale? = null
+    private var scaleControllerSource = 0
+
+    @Volatile
+    private var lastTextHeight: Float? = null
+
     @Volatile
     private var sessions: Sessions? = null
 
@@ -163,6 +170,8 @@ class PaddleOcrEngine(
             }.recoverCatching { error ->
                 DiagnosticHub.failure("PPOCR_LOAD", error)
                 sessions = null
+                scaleController = null
+                lastTextHeight = null
                 throw when (error) {
                     is NotPackagedException, is DictionaryMissingException -> error
                     else -> LoadFailedException(error)
@@ -208,6 +217,8 @@ class PaddleOcrEngine(
             inferenceMutex.withLock {
                 val current = sessions ?: return@withLock
                 sessions = null
+                scaleController = null
+                lastTextHeight = null
                 withContext(Dispatchers.IO) {
                     current.close()
                     DiagnosticHub.record("PPOCR_RELEASED", mapOf("reason" to reason))
@@ -216,17 +227,25 @@ class PaddleOcrEngine(
         }
     }
 
-    /** Reads every text line in [bitmap] and returns the page in visual reading order. */
+    /**
+     * Reads every text line in [bitmap] and returns the page in visual reading order.
+     *
+     * @param subjectScale how much the subject grew since the previous frame, from the visual
+     *   tracker. Used to anticipate a zoom so the resolution follows a moving hand rather than
+     *   trailing it by a frame.
+     */
     suspend fun read(
         bitmap: Bitmap,
-        quality: LocalReadingQuality = LocalReadingQuality.BALANCED,
+        quality: LocalReadingQuality = LocalReadingQuality.AUTO,
+        subjectScale: Double = 1.0,
     ): PaddleOcrResult = inferenceMutex.withLock {
         val active = sessions ?: throw NotPackagedException()
 
         withContext(Dispatchers.Default) {
             val started = SystemClock.elapsedRealtimeNanos()
             var page = bitmap
-            var boxes = detect(active, page, quality)
+            val scale = resolutionFor(bitmap, quality, subjectScale)
+            var boxes = detect(active, page, scale.detectionLongEdge)
 
             // Deskew the page, then detect again. Straightening each crop instead pads a wide strip
             // vertically until the text is a sliver of the crop's height, which reads worse than
@@ -238,7 +257,7 @@ class PaddleOcrEngine(
                 val straight = OcrImagePreprocessor.rotate(page, deskew)
                 if (straight !== page) {
                     page = straight
-                    boxes = detect(active, page, quality)
+                    boxes = detect(active, page, scale.detectionLongEdge)
                 }
             }
             val detectMs = (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0
@@ -250,6 +269,13 @@ class PaddleOcrEngine(
                     "sourceWidth" to bitmap.width,
                     "sourceHeight" to bitmap.height,
                     "deskewDegrees" to deskew,
+                    // The controller's reasoning, so a bundle shows why this resolution was used
+                    // rather than only which one.
+                    "adaptiveResolution" to quality.adaptive,
+                    "resolutionReason" to scale.reason,
+                    "measuredTextHeight" to scale.estimatedTextHeight,
+                    "idealLongEdge" to scale.idealLongEdge,
+                    "subjectScale" to subjectScale,
                     // Recorded alongside the correction so a bundle can be argued with rather than
                     // guessed at: two page reads in the field were rotated by nearly 24 degrees and
                     // the events gave no way to tell a genuine tilt from a coincidental column.
@@ -258,11 +284,22 @@ class PaddleOcrEngine(
                     "skewLineCount" to skew.lineCount,
                     "skewAnchor" to skew.anchor,
                     "quality" to quality.name,
-                    "detectionLongEdge" to quality.detectionLongEdge,
+                    "detectionLongEdge" to scale.detectionLongEdge,
                     "xnnpack" to xnnpackEnabled,
                 ),
             )
-            if (boxes.isEmpty()) return@withContext PaddleOcrResult("", 0f, 0)
+            if (boxes.isEmpty()) {
+                lastTextHeight = null
+                return@withContext PaddleOcrResult("", 0f, 0)
+            }
+
+            // The measurement that drives the next frame's resolution, straight from the boxes
+            // this pass produced. Median, so one oversized heading cannot move it.
+            lastTextHeight = boxes
+                .map { (it.bottom - it.top).toFloat() }
+                .filter { it > 0f }
+                .sorted()
+                .let { heights -> if (heights.isEmpty()) null else heights[heights.size / 2] }
 
             val recognitionStarted = SystemClock.elapsedRealtimeNanos()
             // Merge before recognizing. Letterspaced type arrives as one blob per glyph, and a
@@ -291,7 +328,7 @@ class PaddleOcrEngine(
                     return@mapNotNull null
                 }
                 cropsRead += line.size
-                readLine(active, page, line, quality)
+                readLine(active, page, line, scale.recognitionMaxWidth)
             }
             if (capped) {
                 DiagnosticHub.record(
@@ -324,12 +361,68 @@ class PaddleOcrEngine(
         confidence = line.maxOf { it.confidence },
     )
 
+    /**
+     * The resolution to detect at, solved from the size of the text rather than chosen from a menu.
+     *
+     * On the first frame of a subject there is no measurement yet, so a projection-profile probe
+     * over a small working plane estimates the line height directly from the image. That is what
+     * stops a distant sign from spending several frames climbing the ladder before it is legible.
+     */
+    private fun resolutionFor(
+        bitmap: Bitmap,
+        quality: LocalReadingQuality,
+        subjectScale: Double,
+    ): AdaptiveReadingScale.Decision {
+        if (!quality.adaptive) {
+            return AdaptiveReadingScale.Decision(
+                detectionLongEdge = quality.detectionLongEdge,
+                recognitionMaxWidth = quality.recognitionMaxWidth,
+                reason = "fixed_by_user",
+                estimatedTextHeight = null,
+                idealLongEdge = null,
+            )
+        }
+        val sourceLongEdge = maxOf(bitmap.width, bitmap.height)
+        val controller = adaptiveScale(sourceLongEdge)
+        val measured = lastTextHeight ?: probeTextHeight(bitmap, sourceLongEdge)
+        return controller.next(measured, subjectScale)
+    }
+
+    /** One controller per capture geometry; a resize starts the solve again from the middle. */
+    private fun adaptiveScale(sourceLongEdge: Int): AdaptiveReadingScale {
+        val existing = scaleController
+        if (existing != null && scaleControllerSource == sourceLongEdge) return existing
+        val fresh = AdaptiveReadingScale(sourceLongEdge)
+        scaleController = fresh
+        scaleControllerSource = sourceLongEdge
+        return fresh
+    }
+
+    /** Estimates the text height from the image itself, for the frames no measurement covers. */
+    private fun probeTextHeight(bitmap: Bitmap, sourceLongEdge: Int): Float? {
+        val plane = runCatching { OcrImagePreprocessor.probePlane(bitmap, PROBE_LONG_EDGE) }
+            .getOrNull() ?: return null
+        val estimate = TextScaleProbe.estimate(
+            plane = plane,
+            sourceScale = sourceLongEdge.toFloat() / maxOf(plane.width, plane.height),
+        ) ?: return null
+        DiagnosticHub.record(
+            "PPOCR_TEXT_SCALE_PROBED",
+            mapOf(
+                "textHeightPixels" to estimate.textHeightPixels,
+                "lineCount" to estimate.lineCount,
+                "confidence" to estimate.confidence,
+            ),
+        )
+        return estimate.textHeightPixels
+    }
+
     private fun detect(
         active: Sessions,
         bitmap: Bitmap,
-        quality: LocalReadingQuality,
+        detectionLongEdge: Int,
     ): List<TextBox> {
-        val input = OcrImagePreprocessor.prepareForDetection(bitmap, quality.detectionLongEdge)
+        val input = OcrImagePreprocessor.prepareForDetection(bitmap, detectionLongEdge)
         val tensor = input.tensor
         return runTensor(
             active.environment,
@@ -357,12 +450,12 @@ class PaddleOcrEngine(
         active: Sessions,
         bitmap: Bitmap,
         line: List<TextBox>,
-        quality: LocalReadingQuality,
+        maxCropWidth: Int,
     ): List<LineReading>? {
         // Box and reading stay paired. Recognition drops boxes it cannot read, so ordering the boxes
         // separately and matching them back up by position would shift every word after the first
         // failure onto the wrong box.
-        val read = line.mapNotNull { box -> readBox(active, bitmap, box, quality)?.let { box to it } }
+        val read = line.mapNotNull { box -> readBox(active, bitmap, box, maxCropWidth)?.let { box to it } }
         if (read.isEmpty()) return null
 
         val joined = read.joinToString(" ") { it.second.text }
@@ -374,14 +467,14 @@ class PaddleOcrEngine(
         active: Sessions,
         bitmap: Bitmap,
         box: TextBox,
-        quality: LocalReadingQuality,
+        maxCropWidth: Int,
     ): LineReading? {
         val padded = box.expanded(BOX_PADDING_PIXELS, bitmap.width, bitmap.height)
         val cropped = OcrImagePreprocessor.cropLine(
             source = bitmap,
             box = padded,
             targetHeight = RECOGNITION_HEIGHT,
-            maxWidth = quality.recognitionMaxWidth,
+            maxWidth = maxCropWidth,
         ) ?: return null
 
         val upright = uprightCrop(active, cropped)
@@ -535,6 +628,9 @@ class PaddleOcrEngine(
          * at the highest quality could hold the reader for tens of seconds. Reading most of a page
          * promptly serves a listener better than reading all of it far too late.
          */
+        /** Long edge of the plane the text-height probe works on. Cheap, and enough to count lines. */
+        const val PROBE_LONG_EDGE = 512
+
         const val MAX_CROPS_PER_FRAME = 120
 
         /** The orientation classifier's fixed input, and PaddleOCR's own 0.9 decision threshold. */

@@ -19,6 +19,26 @@ import kotlin.math.roundToInt
  */
 object OcrImagePreprocessor {
 
+    /**
+     * A small luminance plane for measuring text size, not for recognising anything.
+     *
+     * Separate from the detection path because it answers a different question — how big is the
+     * text — and answering it needs far fewer pixels than reading it does.
+     */
+    fun probePlane(source: Bitmap, longEdge: Int): com.abdullah.visionbridge.capture.vision.ImagePlane {
+        val scale = longEdge.toFloat() / maxOf(source.width, source.height)
+        val width = (source.width * scale).toInt().coerceAtLeast(1)
+        val height = (source.height * scale).toInt().coerceAtLeast(1)
+        val scaled = Bitmap.createScaledBitmap(source, width, height, true)
+        return try {
+            val pixels = IntArray(width * height)
+            scaled.getPixels(pixels, 0, width, 0, 0, width, height)
+            com.abdullah.visionbridge.capture.vision.ImagePlane.fromArgb(width, height, pixels)
+        } finally {
+            if (scaled !== source) scaled.recycle()
+        }
+    }
+
     /** The detector's input side must be a multiple of this. */
     private const val SIZE_MULTIPLE = 32
 

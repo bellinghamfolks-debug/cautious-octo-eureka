@@ -31,10 +31,29 @@ enum class LocalReadingQuality(
     BALANCED(detectionLongEdge = 1440, recognitionMaxWidth = 1280),
 
     /** Everything the capture has. For fine print, distant signs, and dense documents. */
-    MAXIMUM(detectionLongEdge = 1920, recognitionMaxWidth = 2048);
+    MAXIMUM(detectionLongEdge = 1920, recognitionMaxWidth = 2048),
+
+    /**
+     * Solved per frame instead of chosen.
+     *
+     * The three levels above are three points on one curve, and the curve has a closed form: a
+     * detector finds text reliably at a known height in its own input, so the resolution that puts
+     * the text there is `capture x targetHeight / textHeight`. The app measures the text height
+     * every frame and evaluates it — see
+     * [AdaptiveReadingScale][com.abdullah.visionbridge.data.paddleocr.AdaptiveReadingScale] — so a
+     * label held close is read at the speed of FAST and a sign across a room at the reach of
+     * MAXIMUM, without anyone deciding which case they are in.
+     *
+     * The fixed levels stay available. Someone who knows their situation better than a measurement
+     * does should be able to say so, and taking that away would be its own regression.
+     */
+    AUTO(detectionLongEdge = 1440, recognitionMaxWidth = 1600);
+
+    /** True when the resolution is solved per frame rather than fixed here. */
+    val adaptive: Boolean get() = this == AUTO
 
     companion object {
         fun fromStored(value: String?): LocalReadingQuality =
-            entries.firstOrNull { it.name == value } ?: BALANCED
+            entries.firstOrNull { it.name == value } ?: AUTO
     }
 }
