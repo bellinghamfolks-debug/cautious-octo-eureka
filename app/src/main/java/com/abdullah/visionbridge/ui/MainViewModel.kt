@@ -59,6 +59,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setLocalReadingQuality(quality: LocalReadingQuality) = viewModelScope.launch {
         container.settingsRepository.setLocalReadingQuality(quality)
         message.value = when (quality) {
+            LocalReadingQuality.AUTO ->
+                "جودة OCR على الجهاز: تلقائي. يقيس التطبيق حجم النص ويختار الدقة في كل لقطة."
             LocalReadingQuality.FAST -> "جودة OCR على الجهاز: سريع"
             LocalReadingQuality.BALANCED -> "جودة OCR على الجهاز: متوازن"
             LocalReadingQuality.MAXIMUM -> "جودة OCR على الجهاز: أعلى دقة. قد تستغرق القراءة وقتًا أطول."
