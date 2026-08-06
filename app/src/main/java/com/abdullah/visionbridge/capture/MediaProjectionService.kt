@@ -742,6 +742,9 @@ class MediaProjectionService : Service() {
             if (stopProjection) runCatching { projection.stop() }
         }
         mediaProjection = null
+        // Once the projection is gone this service may no longer post a mediaProjection-typed
+        // foreground notification, so nothing may rebuild it after this point.
+        foregroundStarted = false
         resetFrameState()
         container.coordinator.stopSpeech()
 
@@ -872,6 +875,11 @@ class MediaProjectionService : Service() {
         )
         container.tts.speakUrgentNotice(action.announcement)
         container.runtime.notice(action.announcement)
+        // Applied to the in-memory copy at once so the notification's label follows the press
+        // rather than the DataStore write, and so a second press a moment later reads the state the
+        // first one left rather than the one it replaced.
+        activeSettings = activeSettings.copy(captureFailureEvidence = action.enable)
+        if (foregroundStarted) startAsForeground()
         serviceScope.launch {
             container.settingsRepository.setCaptureFailureEvidence(action.enable)
         }
