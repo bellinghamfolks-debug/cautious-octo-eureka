@@ -7,6 +7,7 @@ import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
 import com.abdullah.visionbridge.data.gemini.OcrTrustRejectedException
 import com.abdullah.visionbridge.data.gemini.StreamingSpeechBuffer
 import com.abdullah.visionbridge.data.speech.BilingualTtsEngine
+import com.abdullah.visionbridge.data.speech.DocumentSpeechPolicy
 import com.abdullah.visionbridge.data.speech.ReadingDeliveryTracker
 import com.abdullah.visionbridge.data.speech.ReadingLedger
 import com.abdullah.visionbridge.domain.model.AnalysisMode
@@ -88,6 +89,10 @@ class FrameAnalysisCoordinator(
 
     @Volatile
     private var lastTextAnalysisAtElapsedMs = 0L
+
+    /** True when the previous pass over the current target produced nothing worth speaking. */
+    @Volatile
+    private var lastTextAnalysisYieldedNothing = false
 
     private var lastCloudOcrAt = 0L
     private var lastSceneAt = 0L
@@ -495,6 +500,12 @@ class FrameAnalysisCoordinator(
                 if (frame.mode == AnalysisMode.TEXT_READING) {
                     lastTextAnalysisGeneration = frame.visualGeneration
                     lastTextAnalysisAtElapsedMs = SystemClock.elapsedRealtime()
+                    // Whether this pass found anything decides how soon the same motionless
+                    // subject may be tried again. Nothing found is a reason to look again sooner,
+                    // not a reason to stop looking.
+                    lastTextAnalysisYieldedNothing =
+                        !DocumentSpeechPolicy.isSpeakable(result.text) ||
+                            DocumentSpeechPolicy.readableLines(result.text).isEmpty()
                 }
                 publishIfCurrent(result, frame.settings, frame.visualGeneration, frame.trace)
                 if (frame.mode == AnalysisMode.TEXT_READING) {
@@ -829,11 +840,24 @@ class FrameAnalysisCoordinator(
 
         // Second gate for the speech-disabled case, where no reading is ever "in progress". A
         // motionless screen still must not be sent to the model twice per five seconds.
+        //
+        // Unless the last pass over this same target produced nothing. Holding an object still in
+        // front of the glasses is precisely how someone asks to have it read, and a bundle from the
+        // field shows what the unconditional version of this gate does with that: 788 deferrals
+        // under this rule in one session, while the user held a jar of cream in view for ten
+        // seconds and heard silence. A target that has been read has nothing left to contribute; a
+        // target that yielded nothing has everything left to contribute, and the two were being
+        // treated as the same thing. Retry it on the shorter interval instead.
         val sinceLastAnalysisMs = SystemClock.elapsedRealtime() - lastTextAnalysisAtElapsedMs
+        val interval = if (lastTextAnalysisYieldedNothing) {
+            EMPTY_TEXT_RETRY_INTERVAL_MS
+        } else {
+            STATIC_TEXT_REANALYSIS_INTERVAL_MS
+        }
         if (
             generationAtCapture == lastTextAnalysisGeneration &&
             lastTextAnalysisAtElapsedMs > 0L &&
-            sinceLastAnalysisMs < STATIC_TEXT_REANALYSIS_INTERVAL_MS
+            sinceLastAnalysisMs < interval
         ) {
             DiagnosticHub.record(
                 "TEXT_READING_DEFERRED",
@@ -842,7 +866,8 @@ class FrameAnalysisCoordinator(
                         "reason" to "static_target_reanalysis_interval",
                         "visualGeneration" to generationAtCapture,
                         "sinceLastAnalysisMs" to sinceLastAnalysisMs,
-                        "intervalMs" to STATIC_TEXT_REANALYSIS_INTERVAL_MS,
+                        "intervalMs" to interval,
+                        "previousPassWasEmpty" to lastTextAnalysisYieldedNothing,
                     ),
                 ),
             )
@@ -1118,6 +1143,7 @@ class FrameAnalysisCoordinator(
         activeReadingGeneration = Long.MIN_VALUE
         lastTextAnalysisGeneration = Long.MIN_VALUE
         lastTextAnalysisAtElapsedMs = 0L
+        lastTextAnalysisYieldedNothing = false
         readingLedger.reset()
         deliveryTracker.reset()
         synchronized(cloudQueueLock) {
@@ -1165,6 +1191,13 @@ class FrameAnalysisCoordinator(
          * changed on screen, so a genuine page turn is still read immediately.
          */
         const val STATIC_TEXT_REANALYSIS_INTERVAL_MS = 15_000L
+
+        /**
+         * How soon a motionless subject that yielded nothing is tried again. Short enough that
+         * holding a jar of cream up feels like it is being looked at, long enough that a genuinely
+         * blank wall is not analysed continuously.
+         */
+        const val EMPTY_TEXT_RETRY_INTERVAL_MS = 1_800L
 
         /**
          * Bounds for one request, ordered so each is the backstop for the one before it.

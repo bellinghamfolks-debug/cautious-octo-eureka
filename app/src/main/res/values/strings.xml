@@ -9,7 +9,7 @@
     <string name="notification_stop">إيقاف</string>
     <string name="notification_evidence_on">تشغيل حفظ اللقطات</string>
     <string name="notification_evidence_off">إيقاف حفظ اللقطات</string>
-    <string name="evidence_shortcut_label">VisionBridge: حفظ لقطات التشخيص</string>
-    <string name="evidence_shortcut_summary">زر يشغّل ويوقف حفظ صورة الشاشة عند فشل القراءة، من داخل أي تطبيق</string>
-    <string name="evidence_shortcut_description">يضيف VisionBridge إلى زر إمكانية الوصول العائم. كل ضغطة تشغّل أو توقف حفظ صورة الشاشة في لحظات فشل القراءة، ويُنطق الوضع الجديد بعد كل ضغطة. هذه الخدمة لا تقرأ محتوى الشاشة ولا تتلقى أي حدث منها؛ وظيفتها الوحيدة استقبال ضغطة الزر.</string>
+    <string name="evidence_shortcut_label">VisionBridge: تبديل الوضع</string>
+    <string name="evidence_shortcut_summary">زر يبدّل بين وصف المشهد وقراءة النص والإيقاف، من داخل أي تطبيق</string>
+    <string name="evidence_shortcut_description">يضيف VisionBridge إلى زر إمكانية الوصول العائم. الضغطة الأولى: وصف المشهد. الثانية: قراءة النص. الثالثة: إيقاف. ثم تعود الدورة من جديد، ويُنطق الوضع بعد كل ضغطة فلا حاجة لمغادرة التطبيق المفتوح. هذه الخدمة لا تقرأ محتوى الشاشة ولا تتلقى أي حدث منها؛ وظيفتها الوحيدة استقبال ضغطة الزر.</string>
 </resources>

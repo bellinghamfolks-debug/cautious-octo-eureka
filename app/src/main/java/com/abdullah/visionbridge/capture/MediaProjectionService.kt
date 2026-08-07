@@ -27,6 +27,7 @@ import androidx.core.app.ServiceCompat
 import com.abdullah.visionbridge.R
 import com.abdullah.visionbridge.VisionBridgeApp
 import com.abdullah.visionbridge.accessibility.EvidenceShortcut
+import com.abdullah.visionbridge.capture.vision.Viewport
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
 import com.abdullah.visionbridge.domain.model.AnalysisMode
@@ -100,6 +101,10 @@ class MediaProjectionService : Service() {
 
     /** Rebuilding the notification before it exists is a no-op that logs a warning; this avoids it. */
     private var foregroundStarted = false
+
+    /** The live region of the mirrored screen, or null while the whole screen is the subject. */
+    private var activeViewport: Viewport.Rect? = null
+    private var lastViewportProbeAtElapsedMs = 0L
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -331,6 +336,14 @@ class MediaProjectionService : Service() {
             settings.captureProfile == CaptureProfile.FAST_TEXT -> FAST_FRAME_INTERVAL_MS
             else -> STABLE_FRAME_INTERVAL_MS
         }
+        // The shortcut's stopped position. Checked before any measurement, so "stopped" costs
+        // nothing and cannot be heard: no detection, no tracking, no model, no speech.
+        if (!container.runtime.analysing.value) {
+            recordDroppedFrame(bitmap, trace, "analysis_stopped_by_user", emptyMap())
+            bitmap.recycle()
+            return
+        }
+
         val intervalSincePrevious = if (lastFrameAt == 0L) Long.MAX_VALUE else now - lastFrameAt
         if (intervalSincePrevious < minimumInterval) {
             recordDroppedFrame(
@@ -425,6 +438,12 @@ class MediaProjectionService : Service() {
         }
         unavailableFeedSince = 0L
         lastFrameAt = now
+
+        // Everything below this line works on the live camera image rather than on the mirrored
+        // screen that carries it. Done here, before the tracker, so the subject's motion, its
+        // measured text height, its fingerprint and the frame the model is shown are all about the
+        // same thing — the view — and none of them are about eSight's own controls.
+        val bitmap = cropToViewport(bitmap, trace)
 
         val scene = settings.mode == AnalysisMode.SCENE_DESCRIPTION
         val tracker = if (scene) sceneTargetTracker else textTargetTracker
@@ -780,6 +799,57 @@ class MediaProjectionService : Service() {
         }
     }
 
+    /**
+     * Narrows a mirrored screen down to the live camera image inside it.
+     *
+     * Returns the source unchanged when there is nothing inert to trim, which is the normal answer
+     * for an ordinary phone screen. When a crop is applied the source is recycled here, because
+     * from this point on nothing may refer to the screen again — the whole point is that the rest
+     * of the pipeline never sees the surrounding app.
+     *
+     * The measurement is throttled rather than repeated per frame: the letterbox does not move
+     * while the user stays inside one app, and re-deciding it on every frame would let a moment of
+     * darkness in the view change the geometry underneath the tracker.
+     */
+    private fun cropToViewport(source: Bitmap, trace: DiagnosticTrace): Bitmap {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastViewportProbeAtElapsedMs >= VIEWPORT_PROBE_INTERVAL_MS) {
+            lastViewportProbeAtElapsedMs = now
+            val measured = runCatching { Viewport.detect(BitmapFrames.aspectPlane(source)) }
+                .onFailure { DiagnosticHub.failure("VIEWPORT_DETECTION", it, trace.fields()) }
+                .getOrNull()
+            if (measured != activeViewport) {
+                DiagnosticHub.record(
+                    "VIEWPORT_CHANGED",
+                    trace.fields(
+                        (measured?.fields() ?: mapOf("viewportArea" to null)) + mapOf(
+                            "applied" to (measured != null),
+                            "sourceWidth" to source.width,
+                            "sourceHeight" to source.height,
+                        ),
+                    ),
+                )
+            }
+            activeViewport = measured
+        }
+
+        val rect = activeViewport ?: return source
+        val left = (rect.left * source.width).toInt().coerceIn(0, source.width - 1)
+        val top = (rect.top * source.height).toInt().coerceIn(0, source.height - 1)
+        val width = (rect.width * source.width).toInt().coerceIn(1, source.width - left)
+        val height = (rect.height * source.height).toInt().coerceIn(1, source.height - top)
+        if (width == source.width && height == source.height) return source
+
+        return runCatching {
+            Bitmap.createBitmap(source, left, top, width, height).also { cropped ->
+                if (cropped !== source) source.recycle()
+            }
+        }.getOrElse {
+            DiagnosticHub.failure("VIEWPORT_CROP", it, trace.fields())
+            source
+        }
+    }
+
     private fun settingsMap(settings: AppSettings): Map<String, Any?> = mapOf(
         "mode" to settings.mode.name,
         "model" to settings.model,
@@ -971,6 +1041,13 @@ class MediaProjectionService : Service() {
          */
         /** Cooldown between capture-surface rebuilds, so a genuinely dark room is not thrashed. */
         private const val SURFACE_RECOVERY_COOLDOWN_MS = 20_000L
+
+        /**
+         * How often the live region is re-measured. The letterbox does not move while the user
+         * stays inside one app, and re-deciding it every frame would let a dark moment in the
+         * view move the geometry underneath the tracker.
+         */
+        private const val VIEWPORT_PROBE_INTERVAL_MS = 3_000L
 
         private const val VISUAL_FEED_RECOVERING_MESSAGE =
             "الصورة الواردة سوداء. يعيد VisionBridge تهيئة مشاركة الشاشة الآن. إن استمرت المشكلة، أوقف Share Your View ثم فعّله من جديد."

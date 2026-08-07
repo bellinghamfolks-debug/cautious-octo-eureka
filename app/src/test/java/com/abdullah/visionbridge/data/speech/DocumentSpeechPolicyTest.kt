@@ -64,4 +64,61 @@ class DocumentSpeechPolicyTest {
         val lines = DocumentSpeechPolicy.readableLines("أول\n..\n \nثاني\n...\nثالث")
         assertEquals(listOf("أول", "ثاني", "ثالث"), lines)
     }
+
+    // region interface glyphs mistaken for text
+
+    /**
+     * The exact sequence from a device bundle. `NIVEA` and `BLEU DE CHANEL` were recognised across
+     * seven pages and spoken zero times, because the frame also contained eSight's own controls and
+     * the recogniser rendered them as `0`, `O`, `D`, `V` and `A` — single characters that are
+     * substrings of almost every real line, so the continuation rules matched them against
+     * everything and reported each page as already heard.
+     */
+    @Test
+    fun `a brand name beside interface glyphs is not suppressed`() {
+        val first = "\u2467\nNIVEA 0"
+        val heard = DocumentSpeechPolicy.newContent(alreadySpoken = "", current = first)
+        assertTrue("the first sight of a page is always new, got: $heard", heard.contains("NIVEA"))
+    }
+
+    @Test
+    fun `single character lines are never spoken`() {
+        val lines = DocumentSpeechPolicy.readableLines("0\nBLEU\nDE\nCHANEL\nV")
+        assertEquals(listOf("BLEU", "DE", "CHANEL"), lines)
+    }
+
+    /**
+     * The mechanism itself: a one-character line must not count as "already heard" just because its
+     * character occurs inside some longer line the user did hear.
+     */
+    @Test
+    fun `a stray character does not match a real line by containment`() {
+        val remaining = DocumentSpeechPolicy.newContent(
+            alreadySpoken = "CHANEL",
+            current = "BLEU DE",
+        )
+        assertEquals("BLEU DE", remaining)
+    }
+
+    /** The rule it must not break: a genuine repeat of a page is still recognised as heard. */
+    @Test
+    fun `a real repeat is still suppressed`() {
+        val remaining = DocumentSpeechPolicy.newContent(
+            alreadySpoken = "BLEU DE CHANEL\nEAU DE PARFUM",
+            current = "BLEU DE CHANEL\nEAU DE PARFUM",
+        )
+        assertEquals("", remaining)
+    }
+
+    /** And a longer line still absorbs the shorter one it genuinely contains. */
+    @Test
+    fun `substantial containment still counts`() {
+        val remaining = DocumentSpeechPolicy.newContent(
+            alreadySpoken = "نمط الطيران متوقف",
+            current = "نمط الطيران",
+        )
+        assertEquals("", remaining)
+    }
+
+    // endregion
 }

@@ -19,6 +19,19 @@ import kotlin.coroutines.resumeWithException
 class CellularNetworkManager(context: Context) {
     private val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
 
+    /**
+     * Downstream kilobits per second the network the last request bound to reported for itself,
+     * or null when nothing was bound.
+     *
+     * Published rather than returned because the encoder that needs it sits several layers below
+     * the call that binds. It is the one number that separates "the network is broken" from "the
+     * network is carrying 14 kbps and the picture is too big for it" — a distinction one field
+     * session turned on entirely.
+     */
+    @Volatile
+    var boundLinkKbps: Int? = null
+        private set
+
     suspend fun <T> withNetwork(forceCellular: Boolean, block: suspend (Network?) -> T): T {
         val trace = currentCoroutineContext()[DiagnosticTrace]
         if (!forceCellular) {
@@ -29,6 +42,7 @@ class CellularNetworkManager(context: Context) {
                         describeNetwork(null, "default"),
                 ),
             )
+            boundLinkKbps = null
             return runWithinAnalysisBudget(trace) { block(null) }
         }
 
@@ -73,9 +87,14 @@ class CellularNetworkManager(context: Context) {
                     describeNetwork(lease.network, "bound") + describeNetwork(null, "default"),
             ),
         )
+        boundLinkKbps = connectivityManager
+            ?.getNetworkCapabilities(lease.network)
+            ?.linkDownstreamBandwidthKbps
+            ?.takeIf { it > 0 }
         return try {
             runWithinAnalysisBudget(trace) { block(lease.network) }
         } finally {
+            boundLinkKbps = null
             val releaseStarted = SystemClock.elapsedRealtimeNanos()
             val released = runCatching {
                 connectivityManager.unregisterNetworkCallback(lease.callback)

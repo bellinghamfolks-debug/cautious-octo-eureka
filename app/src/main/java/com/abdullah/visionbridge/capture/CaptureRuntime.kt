@@ -10,7 +10,27 @@ class CaptureRuntime {
     private val mutableState = MutableStateFlow(CaptureState())
     val state: StateFlow<CaptureState> = mutableState.asStateFlow()
 
-    fun started() = update { copy(isRunning = true, status = "مشاركة الشاشة فعّالة", error = null) }
+    private val mutableAnalysing = MutableStateFlow(true)
+
+    /**
+     * Whether frames are being analysed at all.
+     *
+     * Separate from [state]'s `isRunning`, which is about the screen-share permission. The
+     * accessibility button's third position turns analysis and speech off while deliberately
+     * keeping the projection: consent can only be granted from an activity, so a stop that dropped
+     * it would force the next start to happen from inside the app — which is the trip the button
+     * exists to save.
+     */
+    val analysing: StateFlow<Boolean> = mutableAnalysing.asStateFlow()
+
+    fun setAnalysing(value: Boolean) {
+        mutableAnalysing.value = value
+    }
+
+    fun started() = update {
+        mutableAnalysing.value = true
+        copy(isRunning = true, status = "مشاركة الشاشة فعّالة", error = null)
+    }
     fun processing(active: Boolean) = update { copy(isProcessing = active) }
     fun result(value: AnalysisResult) = update {
         copy(lastResult = value, status = if (value.urgent) "تنبيه عاجل" else "اكتمل التحليل", error = null)

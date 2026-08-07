@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.SystemClock
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
+import com.abdullah.visionbridge.data.network.UploadBudget
 import com.abdullah.visionbridge.data.paddleocr.OcrImagePreprocessor
 import com.abdullah.visionbridge.data.paddleocr.TextScaleProbe
 import com.abdullah.visionbridge.domain.model.AnalysisMode
@@ -34,18 +35,69 @@ class TextImageEnhancer {
         val highPercentile: Int,
     )
 
+    /**
+     * @param maxBytes an upper bound the encoded image must respect because the network cannot
+     *   carry more before the request's deadline, or null when the link is not the constraint.
+     */
     fun prepare(
         source: Bitmap,
         mode: AnalysisMode,
         captureProfile: CaptureProfile,
         sceneDescriptionStyle: SceneDescriptionStyle,
-    ): EncodedImage = when (mode) {
-        AnalysisMode.TEXT_READING -> if (captureProfile == CaptureProfile.FAST_TEXT) {
-            prepareFastText(source)
-        } else {
-            prepareAccurateText(source)
+        maxBytes: Int? = null,
+    ): EncodedImage {
+        val prepared = when (mode) {
+            AnalysisMode.TEXT_READING -> if (captureProfile == CaptureProfile.FAST_TEXT) {
+                prepareFastText(source)
+            } else {
+                prepareAccurateText(source)
+            }
+            AnalysisMode.SCENE_DESCRIPTION -> prepareScene(source, sceneDescriptionStyle)
         }
-        AnalysisMode.SCENE_DESCRIPTION -> prepareScene(source, sceneDescriptionStyle)
+        return fitToLink(source, prepared, maxBytes)
+    }
+
+    /**
+     * Re-encodes smaller when the link cannot carry what the quality profile produced.
+     *
+     * Stepping the resolution down rather than only the JPEG quality is deliberate: past about
+     * quality 55 a further drop buys little size and destroys exactly the fine strokes that text
+     * recognition depends on, while halving the long edge quarters the byte count outright. The
+     * loop is bounded and each attempt is measured, so a bundle shows what the link forced.
+     */
+    private fun fitToLink(source: Bitmap, prepared: EncodedImage, maxBytes: Int?): EncodedImage {
+        if (maxBytes == null || prepared.bytes.size <= maxBytes) return prepared
+        var edge = UploadBudget.longEdgeFor(maxBytes)
+        var attempt = prepared
+        repeat(FIT_ATTEMPTS) {
+            val scaled = scaleToLongEdge(source, edge)
+            try {
+                val bytes = compress(scaled, Bitmap.CompressFormat.JPEG, LINK_LIMITED_JPEG_QUALITY)
+                attempt = prepared.copy(
+                    bytes = bytes,
+                    outputWidth = scaled.width,
+                    outputHeight = scaled.height,
+                    quality = LINK_LIMITED_JPEG_QUALITY,
+                )
+                if (bytes.size <= maxBytes) return attempt
+            } finally {
+                if (scaled !== source) scaled.recycle()
+            }
+            edge = (edge * FIT_STEP).toInt().coerceAtLeast(MIN_FIT_EDGE)
+        }
+        return attempt
+    }
+
+    private fun scaleToLongEdge(source: Bitmap, longEdge: Int): Bitmap {
+        val current = maxOf(source.width, source.height).coerceAtLeast(1)
+        if (current <= longEdge) return source
+        val factor = longEdge.toDouble() / current
+        return Bitmap.createScaledBitmap(
+            source,
+            (source.width * factor).toInt().coerceAtLeast(1),
+            (source.height * factor).toInt().coerceAtLeast(1),
+            true,
+        )
     }
 
     /**
@@ -420,5 +472,11 @@ class TextImageEnhancer {
         const val CROP_SAFETY_MARGIN_FRACTION = 0.012
         const val MIN_REMAINING_CONTENT_FRACTION = 0.45
         const val MIN_REMOVED_FRACTION = 0.08
+
+        /** Quality used only when the network, not the profile, is choosing the size. */
+        const val LINK_LIMITED_JPEG_QUALITY = 62
+        const val FIT_ATTEMPTS = 3
+        const val FIT_STEP = 0.7
+        const val MIN_FIT_EDGE = 288
     }
 }

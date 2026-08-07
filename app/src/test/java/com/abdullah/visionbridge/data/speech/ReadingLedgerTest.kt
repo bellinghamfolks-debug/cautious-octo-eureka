@@ -125,6 +125,14 @@ class ReadingLedgerTest {
     /**
      * The rule that replaced the character count. Loose glyphs off a bottle's shoulder are not
      * words, and they were the actual jitter in the device log: "O", "D", "0", "=", "c", "X".
+     *
+     * They are now discarded a step earlier, by the line filter, rather than caught here — a device
+     * bundle showed those same glyphs coming from an interface inside the captured frame, and
+     * letting them reach the continuation rules at all is what suppressed `NIVEA` and
+     * `BLEU DE CHANEL` seven times. So the page arrives here with nothing added and is reported as
+     * fully read, which is both the same outcome for the user and the more accurate description.
+     * The assertion is on the outcome; the reason is asserted as whichever of the two suppressing
+     * answers it is, because either is correct and neither is silence.
      */
     @Test
     fun `loose glyphs between two reads of a page are still suppressed`() {
@@ -134,9 +142,20 @@ class ReadingLedgerTest {
         val decision = ledger.evaluate("BLEU\nCHANEL\nPARFUM\nO\nD\n=", now = 2_000L)
         assertTrue(decision is ReadingLedger.Decision.Skip)
         assertEquals(
-            "continuation_is_recognition_jitter",
+            "already_read_completely",
             (decision as ReadingLedger.Decision.Skip).reason,
         )
+    }
+
+    /** The other half of that rule: a real word arriving beside the glyphs must still be spoken. */
+    @Test
+    fun `a new word arriving beside loose glyphs is still spoken`() {
+        val ledger = ReadingLedger()
+        ledger.recordDelivered("", "BLEU\nCHANEL", now = 0L)
+
+        val decision = ledger.evaluate("BLEU\nCHANEL\nO\nPARFUM\nD", now = 2_000L)
+        assertTrue("expected the new word to survive, got $decision", decision is ReadingLedger.Decision.Speak)
+        assertEquals("PARFUM", (decision as ReadingLedger.Decision.Speak).text)
     }
 
     /**

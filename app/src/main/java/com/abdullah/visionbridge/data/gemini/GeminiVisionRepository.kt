@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.os.SystemClock
 import android.util.Base64
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
+import com.abdullah.visionbridge.data.network.UploadBudget
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
 import com.abdullah.visionbridge.data.network.CellularNetworkManager
 import com.abdullah.visionbridge.data.network.DiagnosticNetworkEventListener
@@ -98,6 +99,27 @@ class GeminiVisionRepository(
                     ),
                 )
 
+                // What the bound link says it can carry, not what the image would like to be.
+                // On a cellular network reporting 14 kbps a full-size photograph cannot reach the
+                // model before the deadline under any timeout, so it is encoded to fit or the
+                // attempt is abandoned honestly instead of expiring in silence.
+                val linkKbps = networkManager.boundLinkKbps
+                if (UploadBudget.isUnusable(linkKbps)) {
+                    DiagnosticHub.record(
+                        "CLOUD_LINK_TOO_SLOW",
+                        trace.fieldsOrEmpty(
+                            mapOf(
+                                "linkKbps" to linkKbps,
+                                "unusableBelowKbps" to UploadBudget.UNUSABLE_KBPS,
+                            ),
+                        ),
+                    )
+                    throw IllegalStateException(
+                        "شبكة بيانات الجوال بطيئة جدًا الآن ولا تكفي لإرسال الصورة. " +
+                            "جرّب الواي فاي، أو استخدم القراءة على الجهاز.",
+                    )
+                }
+                val uploadBudgetBytes = UploadBudget.bytesFor(linkKbps, UPLOAD_DEADLINE_MS)
                 val encodeStarted = SystemClock.elapsedRealtimeNanos()
                 val encodedImage = withContext(Dispatchers.Default) {
                     imageEnhancer.prepare(
@@ -105,6 +127,7 @@ class GeminiVisionRepository(
                         mode = mode,
                         captureProfile = captureProfile,
                         sceneDescriptionStyle = sceneDescriptionStyle,
+                        maxBytes = uploadBudgetBytes,
                     )
                 }
                 DiagnosticHub.record(
@@ -129,6 +152,8 @@ class GeminiVisionRepository(
                             "mode" to mode.name,
                             "captureProfile" to captureProfile.name,
                             "sceneDescriptionStyle" to sceneDescriptionStyle.name,
+                            "linkKbps" to linkKbps,
+                            "uploadBudgetBytes" to uploadBudgetBytes,
                         ),
                     ),
                 )
@@ -585,6 +610,9 @@ class GeminiVisionRepository(
         this?.fields(extra) ?: extra
 
     private companion object {
+        /** The window a request has to upload, think and answer within. */
+        private const val UPLOAD_DEADLINE_MS = 24_000L
+
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         const val SCENE_TEMPERATURE = 0.1
 

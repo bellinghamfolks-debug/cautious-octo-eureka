@@ -19,6 +19,12 @@ object DocumentSpeechPolicy {
     private const val MIN_LINE_TOKENS_FOR_FUZZY_MATCH = 2
 
     /**
+     * Shortest normalised line whose presence inside another line proves anything. Four characters
+     * is roughly the point at which a fragment stops occurring by accident.
+     */
+    private const val MIN_SUBSTRING_LENGTH = 4
+
+    /**
      * Returns the lines of [current] that are not already covered by [alreadySpoken], preserving the
      * original visual reading order and the original characters.
      */
@@ -81,14 +87,30 @@ object DocumentSpeechPolicy {
         return 1.0 - (remaining.size.toDouble() / currentLines.size)
     }
 
-    /** Speech-worthy lines: trimmed, non-blank, and containing at least one letter or digit. */
+    /**
+     * Speech-worthy lines: trimmed, non-blank, and carrying at least [MIN_LINE_CHARACTERS] letters
+     * or digits.
+     *
+     * The length floor is not tidiness. A device bundle recorded a session whose most frequently
+     * "recognised lines" were `0` (34 times), `D` (25), `O` (19) and `V` (7) — an interface's
+     * control glyphs, read as text because they were inside the captured frame. Two things follow
+     * from letting them through, and both were observed: the user is read a stream of single
+     * letters, and — far worse — those letters are substrings of almost every real line, so the
+     * continuation rules match them against anything and suppress the words around them. `NIVEA`
+     * and `BLEU DE CHANEL` were recognised seven times between them and spoken zero times.
+     *
+     * One character is never a word in either language this app reads. Two can be, in Arabic.
+     */
     fun readableLines(value: String): List<String> = value
         .replace("\r\n", "\n")
         .replace('\r', '\n')
         .lineSequence()
         .map(String::trim)
-        .filter { line -> line.any(Char::isLetterOrDigit) }
+        .filter { line -> line.count(Char::isLetterOrDigit) >= MIN_LINE_CHARACTERS }
         .toList()
+
+    /** Below this a line is a stray mark or an icon, not something anyone asked to hear. */
+    const val MIN_LINE_CHARACTERS = 2
 
     /** True when a block carries something worth speaking rather than stray separators. */
     fun isSpeakable(value: String): Boolean = value.any(Char::isLetterOrDigit)
@@ -100,7 +122,17 @@ object DocumentSpeechPolicy {
         fun matches(other: LineKey): Boolean {
             if (normalized.isEmpty() || other.normalized.isEmpty()) return false
             if (normalized == other.normalized) return true
-            if (normalized.contains(other.normalized) || other.normalized.contains(normalized)) return true
+            // Substring containment only means something when the shorter side is substantial.
+            // "0" is a substring of half the lines on a screen, and treating that as "already
+            // heard" is how a recognised brand name was silently suppressed seven times running.
+            // The floor is on the *shorter* line, because that is the one making the claim.
+            val shorter = minOf(normalized.length, other.normalized.length)
+            if (
+                shorter >= MIN_SUBSTRING_LENGTH &&
+                (normalized.contains(other.normalized) || other.normalized.contains(normalized))
+            ) {
+                return true
+            }
             if (tokens.size < MIN_LINE_TOKENS_FOR_FUZZY_MATCH ||
                 other.tokens.size < MIN_LINE_TOKENS_FOR_FUZZY_MATCH
             ) {
