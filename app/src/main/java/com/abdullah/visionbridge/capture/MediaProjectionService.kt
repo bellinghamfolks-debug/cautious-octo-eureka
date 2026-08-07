@@ -443,12 +443,12 @@ class MediaProjectionService : Service() {
         // screen that carries it. Done here, before the tracker, so the subject's motion, its
         // measured text height, its fingerprint and the frame the model is shown are all about the
         // same thing — the view — and none of them are about eSight's own controls.
-        val bitmap = cropToViewport(bitmap, trace)
+        val view = cropToViewport(bitmap, trace)
 
         val scene = settings.mode == AnalysisMode.SCENE_DESCRIPTION
         val tracker = if (scene) sceneTargetTracker else textTargetTracker
         val trackingStarted = SystemClock.elapsedRealtimeNanos()
-        val targetDecision = tracker.evaluate(BitmapFrames.trackedFrame(bitmap))
+        val targetDecision = tracker.evaluate(BitmapFrames.trackedFrame(view))
         val trackingMs = (SystemClock.elapsedRealtimeNanos() - trackingStarted) / 1_000_000.0
         val visualTargetChanged = targetDecision.targetChanged
         DiagnosticHub.record(
@@ -485,7 +485,7 @@ class MediaProjectionService : Service() {
         }
 
         DiagnosticHub.frame(
-            bitmap = bitmap,
+            bitmap = view,
             frameId = frameId,
             stage = "selected_input",
             metadata = trace.fields(
@@ -499,7 +499,7 @@ class MediaProjectionService : Service() {
             ),
         )
         DiagnosticHub.record("FRAME_SELECTED_FOR_ANALYSIS", trace.fields())
-        submitLatestFrame(PendingFrame(bitmap, trace))
+        submitLatestFrame(PendingFrame(view, trace))
     }
 
     private fun observeVisualFeedHealth(
