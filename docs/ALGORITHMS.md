@@ -1,12 +1,12 @@
 # VisionBridge — Algorithms and Techniques
 
-**Version 2.7.0 (build 25) · 15,993 lines of Kotlin · 78 source files · 273 unit tests**
+**Version 3.0.0 (build 26) · ~16,600 lines of Kotlin · 80 source files · 286 unit tests + 4 on-device tests**
 
 A reference for technical review. Every technique actually in the shipped code is listed, with its
 provenance and an honest assessment of whether it is current practice, deliberately classical, or a
 known weak point. Nothing aspirational is included.
 
-Platform: native Android (Kotlin), minSdk 26, targetSdk 35. **No C++, no JNI, no CMake, no OpenCV.**
+Platform: native Android (Kotlin), minSdk 26, compileSdk/targetSdk 36, AGP 8.13, Gradle 8.14.3. **No C++, no JNI, no CMake, no OpenCV.**
 The only native binaries in the APK are ONNX Runtime's own `.so` files.
 
 ---
@@ -78,7 +78,7 @@ bottle still.
 | Technique | Notes | Assessment |
 | --- | --- | --- |
 | Y′CbCr planes (luma + 2 chroma) | A red label replaced by a blue one with the same layout is invisible in grayscale; it is obvious in chroma. | **Current** |
-| Image pyramid, 4 levels, box-filter halving, min level 32 px | Coarse-to-fine search. Min level raised from 16 after measuring that a 16×16 level reported a 2.98-cell shift where truth was 0.375. | **Classical** (Burt & Adelson 1983). A Gaussian pyramid would be marginally better than box; the difference is immaterial at these sizes. |
+| Image pyramid, 4 levels, separable **Burt–Adelson** `[1 4 6 4 1]/16` halving, min level 32 px | Coarse-to-fine search. Replaced a 2×2 box average: a box filter's side lobes fold energy above the new Nyquist limit back as aliasing, and on text that aliasing is *stable between frames* — something a tracker can lock onto instead of the text. | **Classical and correct** (Burt & Adelson 1983). |
 
 ### 3.2 Dense registration
 
@@ -101,7 +101,7 @@ Measured accuracy against synthetic ground truth: **translation 0.02 px, rotatio
 | **Oriented BRIEF** descriptors, 256-bit, over a scale space | Calonder et al. ECCV 2010; Rublee et al. (ORB) ICCV 2011 | **Classical.** This is essentially a hand-rolled ORB. Modern learned descriptors (SuperPoint 2018, DISK 2020) are stronger but cost a neural network per frame. **Deliberate simplification.** |
 | 5×5 box blur before descriptor sampling | Own fix | Without it only 7 of 200 matches survived a 15° rotation — below the 8 a homography needs. Detection still runs on the sharp plane. |
 | **Lowe ratio test** (0.82) + cross-check | Lowe, IJCV 2004 | **Classical**, still standard. |
-| **RANSAC** with adaptive termination (confidence 0.999) | Fischler & Bolles 1981 | **Classical.** MAGSAC++ (2020) or LO-RANSAC would be more robust; not worth the complexity at this match count. **Deliberate simplification.** |
+| **RANSAC**, locally optimised, quality ordered, marginally scored | Fischler & Bolles 1981; LO-RANSAC (Chum 2003); PROSAC (Chum & Matas 2005); MAGSAC++ (Barath 2020) | **Current.** PROSAC ordering draws early samples from the best matches; LO-RANSAC refits a promising minimal model over its own inliers before scoring; a smooth residual-decayed quality replaces the hard inlier count, so the answer no longer hinges on one threshold. Full VSAC's SPRT verification is still absent — unwarranted at tens of matches. |
 | **Normalised DLT** (Hartley conditioning) for homography | Hartley, PAMI 1997 | **Classical, mandatory.** Unnormalised DLT is numerically indefensible. |
 | 4-point minimal solve (direct 8×8) | standard | **Classical** |
 
@@ -112,7 +112,7 @@ Measured homography reprojection error on synthetic data: **1e-6**.
 | Technique | Assessment |
 | --- | --- |
 | Gaussian elimination with partial pivoting | **Classical.** Correct for 6×6 and 8×8. |
-| Inverse power iteration for the smallest eigenvector | **Classical.** For a 9×9 in RANSAC this is fine; full SVD would be more robust and is the textbook choice. **Minor weak point** — acceptable because the matrix is well conditioned after Hartley normalisation. |
+| **One-sided Jacobi SVD** for the smallest singular vector | **Current.** Replaced inverse power iteration on `MᵀM`, which squared the condition number and gave back most of what Hartley normalisation buys. Jacobi never forms the normal equations and resolves small singular values to high *relative* accuracy — the property that matters when the answer *is* the smallest one. |
 
 ### 3.5 Change decision
 
@@ -141,7 +141,7 @@ current design is defensible.
 | `PP-OCRv5` English/Latin recognition | same | **2025 — current** |
 | `PP-OCRv4` text-line orientation classifier | same | 2023 — current enough; v5 has no separate cls export |
 
-Runtime: **ONNX Runtime Android AAR 1.20.0**, with the **XNNPACK** execution provider registered
+Runtime: **ONNX Runtime Android AAR 1.28.0**, with the **XNNPACK** execution provider registered
 best-effort. Models are pinned by SHA-256 checksum and fetched at build time; the checksum check is
 not relaxable. Dictionaries are read from each model's own ONNX metadata (`character` key), which
 structurally prevents pairing a dictionary with the wrong weights — a failure mode that produces
@@ -167,7 +167,7 @@ Tesseract (clearly obsolete for this), TrOCR or a small VLM (far heavier, better
 | Technique | Provenance | Assessment |
 | --- | --- | --- |
 | **CRNN**-style recognition head | Shi, Bai & Yao, PAMI 2017 | **Classical, still the mobile standard.** |
-| **CTC** greedy decoding (collapse repeats, drop blank at index 0) | Graves et al., ICML 2006 | **Classical.** Beam search with a language model would improve short/ambiguous strings — **deliberate simplification**, and a defensible upgrade path. |
+| **CTC** decoding: greedy, then **prefix beam search** when the greedy reading is uncertain | Graves et al., ICML 2006; Graves & Jaitly, ICML 2014 | **Current.** Greedy maximises the best single alignment; CTC defines a string's probability as the sum over every alignment that collapses to it, and the two disagree exactly where a reading is most likely to be wrong. The beam runs only below a confidence floor, so a clean page still decodes at greedy cost. A lexicon/LM score is still absent. |
 | Confidence = mean probability of **kept** characters only | own | Blank steps dominate; including them makes a wrong reading look confident. |
 | Dual-head selection: Arabic head first, English specialist when any Latin appears | own | Rests on the Arabic head being multilingual, which is verified at load time by reading its own dictionary rather than assumed. |
 | 180° orientation classifier with a high threshold | PP-OCR cls | Asymmetric cost: leaving a line alone costs one bad line; rotating a correct one costs a good line. |
@@ -180,7 +180,7 @@ Tesseract (clearly obsolete for this), TrOCR or a small VLM (far heavier, better
 | Line grouping by vertical overlap, then horizontal merge of adjacent boxes | classical | Letterspaced type arrives as one blob per glyph; a recogniser shown a single letter has nothing to condition on. |
 | **Skew estimation by least squares** over box centres, then page rotation and re-detection | classical | Deskewing the *page* and re-detecting beats straightening each crop: padding a wide strip vertically makes the text a sliver of the crop height and reads worse than the tilt did. |
 | **Projection-profile** line segmentation (for text-height probing) | classical, 1990s document analysis | **Classical.** Simple, fast, and adequate because it only estimates a scale, never a transcription. |
-| **Bidi reordering** — reverse once, then reverse each LTR run back | subset of UAX #9 (Unicode Bidirectional Algorithm) | **Correct and necessary.** CTC alignment is monotonic in image columns, so no Arabic model can emit logical order; undoing it is the caller's job. Without it "نقطة الاتصال المحمولة" arrives as "ةلومحملالاصتالاةطقن". This is a *subset*, not the full UAX #9 — sufficient for the mixed Arabic/Latin lines this app sees. |
+| **Bidi reordering** via `java.text.Bidi` | Full UAX #9, backed by ICU | **Current.** Replaced a hand-written subset that recognised LTR runs from a character set assembled from cases that had already gone wrong — no notion of European versus Arabic numbers, neutral resolution, bracket pairs or isolates. Correctness rests on the reordering being an involution at levels 1–2, which is stated in the source rather than assumed; deeper nesting cannot arise from OCR output. Verified by logical→visual→logical round trips through the platform. |
 
 ---
 
@@ -216,7 +216,7 @@ exactly what section 2 fixes: the measurement is only as good as what is in the 
 
 | Technique | Notes | Assessment |
 | --- | --- | --- |
-| Gemini via **REST + SSE streaming**, OkHttp 4.12 | Sentence/phrase buffering before speech so the user does not hear network chunk boundaries. | **Current** |
+| Gemini via **REST + SSE streaming**, OkHttp 5.4.0 | Sentence/phrase buffering before speech so the user does not hear network chunk boundaries. | **Current** |
 | Per-request **network binding** (`ConnectivityManager.requestNetwork` + socket binding) | Only Gemini sockets and DNS ride the cellular network; the rest of the device is untouched. | **Current, and the correct API.** |
 | `NET_CAPABILITY_VALIDATED` requested, with a recorded fallback | A radio that is up is not a network that carries traffic. A captive portal is indistinguishable from a slow model from inside the app. | **Current** |
 | **Link-rate-aware upload budget** (2.7.0) | `linkDownstreamBandwidthKbps` at bind time sizes the JPEG. Derived from a session where 8 of 12 requests died at exactly 20.3 s on a link reporting **14 kbps** against Wi-Fi's 30,000. | **Custom.** Sound in principle; the risk is that the platform's bandwidth estimate is coarse. Instrumented so the next bundle settles it. |
@@ -256,6 +256,15 @@ are captured only when the user explicitly enables failure-frame capture, are bo
 
 Listed so a reviewer does not have to find them.
 
+0. **Not yet done, and named for a reviewer:** the detector still reduces regions to axis-aligned
+   rectangles rather than quadrilaterals; DB unclip is still uniform dilation rather than polygon
+   offsetting; the feature stack is still hand-rolled ORB rather than a learned detector/descriptor
+   (XFeat, EdgePoint2); target identity still ends at SSIM plus colour rather than a semantic
+   embedding; the OCR models are PP-OCRv5 rather than v6, and the orientation classifier is v4;
+   inference is ONNX Runtime on CPU rather than LiteRT with an NPU delegate. Each is a real upgrade
+   with a real cost — new model assets, a new runtime, or a refactor of the detection geometry — and
+   none of them is a line change.
+
 1. **Continuation/dedup heuristics (`DocumentSpeechPolicy`, `ReadingLedger`).** Hand-tuned string
    rules deciding whether a page is "the same page". This has produced two real user-visible bugs:
    a 24-character noise floor that discarded "PARFUM" 42 times, and substring matching that let
@@ -273,8 +282,11 @@ Listed so a reviewer does not have to find them.
    behind it, but the *interactions* are not documented — and the most recent serious defect was
    exactly an interaction between two individually correct components (the resolution controller
    measuring text height from interface buttons).
-7. **No device testing in CI.** 273 unit tests, all pure-JVM. Nothing has ever executed on Android
-   hardware in an automated way. Every platform behaviour is unverified until a user installs.
+7. **Device testing is new and thin.** 286 pure-JVM tests plus four on-device tests running on a
+   Gradle managed device: the models load, a page reads end to end, and the viewport geometry works
+   on a real `Bitmap`. That closes the "nothing has ever run on Android" gap, but four tests are a
+   floor, not coverage. MediaProjection itself, the foreground service, rotation, TTS interruption
+   and network switching are still unexercised.
 
 ---
 
