@@ -27,14 +27,14 @@ tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(fetchOcrModel
 
 android {
     namespace = "com.abdullah.visionbridge"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 25
-        versionName = "2.7.0"
+        targetSdk = 36
+        versionCode = 26
+        versionName = "3.0.0"
 
         // 64-bit only. ONNX Runtime's AAR ships four ABIs; abiFilters keeps arm64-v8a and drops
         // the rest at packaging time, so the APK carries no library this device cannot run.
@@ -120,11 +120,11 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp:5.4.0")
+    implementation("com.squareup.okhttp3:okhttp-sse:5.4.0")
     // On-device OCR. The AAR carries a complete Java API, so PP-OCRv5 runs with no JNI bridge
     // and no CMake in this project at all.
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
