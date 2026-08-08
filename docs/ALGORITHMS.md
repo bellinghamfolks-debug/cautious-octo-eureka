@@ -282,8 +282,10 @@ Listed so a reviewer does not have to find them.
    behind it, but the *interactions* are not documented — and the most recent serious defect was
    exactly an interaction between two individually correct components (the resolution controller
    measuring text height from interface buttons).
-7. **Device testing is new and thin.** 286 pure-JVM tests plus four on-device tests running on a
-   Gradle managed device: the models load, a page reads end to end, and the viewport geometry works
+7. **Device testing is new, thin, and infrastructure-dependent.** 286 pure-JVM tests plus four
+   on-device tests running on a Gradle managed device — the latter need KVM on the runner, which
+   the first attempt did not have. They run in their own CI job so an emulator that will not boot
+   fails the run without stopping the APK. The four are: the models load, a page reads end to end, and the viewport geometry works
    on a real `Bitmap`. That closes the "nothing has ever run on Android" gap, but four tests are a
    floor, not coverage. MediaProjection itself, the foreground service, rotation, TTS interruption
    and network switching are still unexercised.
