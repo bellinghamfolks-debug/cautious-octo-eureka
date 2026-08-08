@@ -577,6 +577,19 @@ class PaddleOcrEngine(
         val steps = shape[shape.size - 2].toInt()
         val classes = shape[shape.size - 1].toInt()
         val decoded = CtcDecoder.decode(output, steps, classes, dictionary)
+        if (decoded.beamSearched) {
+            // Recorded so a bundle shows how often the extra decoding was spent and how often it
+            // was worth spending — the only way to know whether the confidence floor is right.
+            DiagnosticHub.record(
+                "PPOCR_BEAM_DECODED",
+                mapOf(
+                    "changed" to decoded.changedByBeam,
+                    "confidence" to decoded.confidence,
+                    "script" to script.name,
+                    "characters" to decoded.text.length,
+                ),
+            )
+        }
         // The decoder emits image-column order. Arabic reads the other way, so this is where a
         // correct recognition stops being backwards.
         val text = BidiTextOrder.toLogicalOrder(decoded.text)

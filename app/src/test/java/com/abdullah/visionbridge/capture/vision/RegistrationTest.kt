@@ -245,15 +245,59 @@ class RegistrationTest {
     }
 
     @Test
-    fun `inverse iteration finds the smallest eigenvector`() {
+    fun `the decomposition finds the smallest singular vector`() {
         // Diagonal, so the answer is the axis with the smallest entry.
         val a = Array(4) { DoubleArray(4) }
         a[0][0] = 9.0
         a[1][1] = 4.0
         a[2][2] = 1e-6
         a[3][3] = 7.0
-        val v = LinearAlgebra.smallestEigenvector(a)!!
+        val v = LinearAlgebra.smallestSingularVector(a)!!
         assertTrue("expected the third axis, got ${v.toList()}", abs(v[2]) > 0.99)
+    }
+
+    /**
+     * The reason inverse iteration on the normal equations was replaced. This matrix is conditioned
+     * at about 1e7, which `MᵀM` would square to 1e14 — past what double precision carries — while
+     * the Jacobi decomposition never forms it and answers exactly.
+     */
+    @Test
+    fun `an ill conditioned system is still solved`() {
+        val scale = 1e7
+        val rows = arrayOf(
+            doubleArrayOf(scale, 0.0, 0.0),
+            doubleArrayOf(0.0, scale, 0.0),
+            doubleArrayOf(0.0, 0.0, 1.0),
+        )
+        val v = LinearAlgebra.smallestSingularVector(rows)!!
+        assertTrue("expected the third axis, got ${v.toList()}", abs(v[2]) > 0.999)
+    }
+
+    /** A genuine null vector of a rectangular system, which is the shape a homography fit hands it. */
+    @Test
+    fun `a tall system yields its exact null vector`() {
+        // Every row is orthogonal to (1, 1, 1)/sqrt(3).
+        val rows = arrayOf(
+            doubleArrayOf(1.0, -1.0, 0.0),
+            doubleArrayOf(0.0, 1.0, -1.0),
+            doubleArrayOf(2.0, -1.0, -1.0),
+            doubleArrayOf(1.0, 0.0, -1.0),
+        )
+        val v = LinearAlgebra.smallestSingularVector(rows)!!
+        val expected = 1.0 / kotlin.math.sqrt(3.0)
+        for (index in 0 until 3) {
+            assertEquals("component $index of ${v.toList()}", expected, abs(v[index]), 1e-9)
+        }
+    }
+
+    @Test
+    fun `a ragged or empty system is declined rather than guessed`() {
+        assertTrue(LinearAlgebra.smallestSingularVector(emptyArray()) == null)
+        assertTrue(
+            LinearAlgebra.smallestSingularVector(
+                arrayOf(doubleArrayOf(1.0, 2.0), doubleArrayOf(1.0)),
+            ) == null,
+        )
     }
 
     // endregion

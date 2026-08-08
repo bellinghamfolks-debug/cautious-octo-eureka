@@ -572,12 +572,23 @@ class LayoutSimulationTest {
 
 class BidiRunTest {
 
-    /** The sign belongs to the number. Trimming it off left "966+" on a real dialling code. */
+    /**
+     * The sign belongs to the number. Trimming it off left "966+" on a real dialling code.
+     *
+     * The input was corrected when decoding moved to the platform's UAX #9 implementation. It read
+     * `"3550 +966 مقرلا"`, which is not a string any correct renderer produces: under the standard
+     * a plus sign between Arabic text and a number is a neutral resolving to the paragraph
+     * direction, so it is displayed to the *right* of the digits and the visual form is
+     * `"3550 966+ مقرلا"`. The old input encoded the hand-written decoder's own convention — it
+     * treated `+` as part of the Latin run — which is precisely the class of assumption that
+     * replacing it was meant to remove. The expected output, which is what the user hears, is
+     * unchanged, and a logical → visual → logical round trip through the platform now holds for it.
+     */
     @Test
     fun `a leading sign stays with its number`() {
         assertEquals(
             "الرقم +966 3550",
-            BidiTextOrder.toLogicalOrder("3550 +966 مقرلا"),
+            BidiTextOrder.toLogicalOrder("3550 966+ مقرلا"),
         )
     }
 

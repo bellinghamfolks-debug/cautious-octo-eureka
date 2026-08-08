@@ -1,5 +1,7 @@
 package com.abdullah.visionbridge.data.paddleocr
 
+import java.text.Bidi
+
 /**
  * Turns a recognizer's visual character order into logical order.
  *
@@ -21,44 +23,66 @@ object BidiTextOrder {
      * @param visual one recognizer's output for one crop, in image-column order.
      * @return the same characters in logical order, or [visual] unchanged when the line carries no
      * right-to-left script and therefore was never reversed to begin with.
+     *
+     * The work is done by [java.text.Bidi], which is the platform's complete implementation of the
+     * Unicode Bidirectional Algorithm (UAX #9) backed by ICU. It replaced a hand-written subset
+     * that recognised left-to-right runs from a character set of its own: `A-Z`, `a-z`, digits, and
+     * the punctuation `.-:/+@#%`. That set was assembled from the cases that had gone wrong, which
+     * is exactly the wrong way to arrive at a rule — it had no notion of European versus Arabic
+     * numbers, of how a neutral between two runs resolves, of bracket pairs, or of isolate
+     * characters, and every line that used something outside the list was a defect waiting to be
+     * reported.
+     *
+     * ## Why running a *logical to visual* algorithm on visual input is correct here
+     *
+     * UAX #9 describes reordering in one direction. What arrives from a CTC recogniser is the other
+     * one: the head walks the crop left to right across image columns and emits one character per
+     * column group, so its output is in visual order and the logical string has to be recovered.
+     *
+     * For the structures this pipeline produces — one paragraph direction, with left-to-right runs
+     * such as a product name or a phone number embedded inside it — the reordering is an involution:
+     * levels are 1 and 2, and rule L2's reversals undo themselves when applied twice. So resolving
+     * levels over the visual string and applying the same reordering returns logical order, while
+     * every classification decision inside it is the standard's rather than this file's.
+     *
+     * The assumption is stated rather than hidden. A line with deeper nesting — explicit embeddings
+     * or overrides at level 3 and above — is not an involution and would not be recovered exactly.
+     * No recogniser in this app can emit one: those levels only arise from explicit formatting
+     * characters, which OCR does not produce.
      */
     fun toLogicalOrder(visual: String): String {
         if (visual.none(::isRightToLeftLetter)) return visual
 
-        val reversed = visual.reversed()
-        val result = StringBuilder(reversed.length)
-        var index = 0
-        while (index < reversed.length) {
-            if (!isLeftToRightRun(reversed[index])) {
-                result.append(mirrored(reversed[index]))
-                index++
-                continue
+        // Forced, not inferred. `DIRECTION_DEFAULT_RIGHT_TO_LEFT` takes the paragraph direction
+        // from the first strong character, and in visual order that is often a Latin word: the
+        // display of "شبكة Wi-Fi" begins, on the left, with "W". Inferring from it resolves the
+        // line as left-to-right and returns it unchanged. The gate above has already established
+        // that this line contains right-to-left script, which is what makes the direction known.
+        val bidi = Bidi(visual, Bidi.DIRECTION_RIGHT_TO_LEFT)
+        val runCount = bidi.runCount
+        if (runCount <= 0) return visual
+
+        val levels = ByteArray(runCount)
+        val runs = arrayOfNulls<Any>(runCount)
+        for (index in 0 until runCount) {
+            val level = bidi.getRunLevel(index)
+            levels[index] = level.toByte()
+            val text = visual.substring(bidi.getRunStart(index), bidi.getRunLimit(index))
+            // An odd level is a right-to-left run: its characters arrived in visual order and are
+            // flipped back, mirroring the paired punctuation as rule L4 requires.
+            runs[index] = if (level % 2 == 1) {
+                buildString(text.length) {
+                    for (position in text.length - 1 downTo 0) append(mirrored(text[position]))
+                }
+            } else {
+                text
             }
-            // A run that reads left to right even inside Arabic: Latin words, digits, and the
-            // punctuation that binds them together such as the dot in "1.2" or the dash in "Wi-Fi".
-            var end = index
-            while (end < reversed.length && isLeftToRightRun(reversed[end])) end++
-            // The binder stays inside the run and is reversed with it. Trimming it off instead
-            // stranded the sign of a phone number: "+966" came back as "966+", because in visual
-            // order the sign is the run's last character, not a leftover belonging to the Arabic.
-            result.append(reversed, index, end)
-            result.reverse(result.length - (end - index), result.length)
-            index = end
         }
-        return result.toString()
+
+        Bidi.reorderVisually(levels, 0, runs, 0, runCount)
+        return buildString(visual.length) { runs.forEach { append(it as String) } }
     }
 
-    private fun StringBuilder.reverse(from: Int, to: Int) {
-        var start = from
-        var end = to - 1
-        while (start < end) {
-            val swap = this[start]
-            this[start] = this[end]
-            this[end] = swap
-            start++
-            end--
-        }
-    }
 
     /**
      * Ranges are written as escapes rather than as literal characters on purpose. The top of the

@@ -65,7 +65,20 @@ class ImagePlane(
         return (down - up) * 0.5f
     }
 
-    /** Halves the plane with a 2×2 box filter, which is the anti-alias a pyramid needs. */
+    /**
+     * Halves the plane with a separable 5-tap Gaussian, which is the anti-alias a pyramid needs.
+     *
+     * This replaced a 2×2 box average. A box filter is a poor low-pass: its frequency response has
+     * large side lobes, so energy above the new Nyquist limit is not removed but folded back as
+     * aliasing. On a page of text — which is nothing but high-frequency structure at a regular pitch
+     * — that folding creates moiré that is *stable between frames*, and a tracker registering two
+     * such levels can lock onto the alias rather than the text. The Burt–Adelson kernel
+     * `[1 4 6 4 1]/16` is the standard answer and has been since 1983; the cost is four extra
+     * multiply-adds per output pixel, on planes of at most 128×128.
+     *
+     * Separable, so it is two one-dimensional passes rather than a 5×5 convolution: 10 taps per
+     * pixel instead of 25.
+     */
     fun halved(): ImagePlane {
         val newWidth = max(width / 2, 1)
         val newHeight = max(height / 2, 1)
@@ -73,26 +86,59 @@ class ImagePlane(
         val y = FloatArray(size)
         val cb = FloatArray(size)
         val cr = FloatArray(size)
-        for (row in 0 until newHeight) {
-            val sourceRow0 = min(row * 2, height - 1)
-            val sourceRow1 = min(row * 2 + 1, height - 1)
+
+        // Horizontal pass into a full-height, half-width intermediate.
+        val midY = FloatArray(newWidth * height)
+        val midCb = FloatArray(newWidth * height)
+        val midCr = FloatArray(newWidth * height)
+        for (row in 0 until height) {
+            val rowBase = row * width
+            val midBase = row * newWidth
             for (column in 0 until newWidth) {
-                val sourceColumn0 = min(column * 2, width - 1)
-                val sourceColumn1 = min(column * 2 + 1, width - 1)
-                val a = sourceRow0 * width + sourceColumn0
-                val b = sourceRow0 * width + sourceColumn1
-                val c = sourceRow1 * width + sourceColumn0
-                val d = sourceRow1 * width + sourceColumn1
+                val centre = column * 2
+                var sumY = 0f
+                var sumCb = 0f
+                var sumCr = 0f
+                for (tap in -2..2) {
+                    val source = rowBase + (centre + tap).coerceIn(0, width - 1)
+                    val weight = GAUSSIAN_5[tap + 2]
+                    sumY += luma[source] * weight
+                    sumCb += chromaBlue[source] * weight
+                    sumCr += chromaRed[source] * weight
+                }
+                midY[midBase + column] = sumY
+                midCb[midBase + column] = sumCb
+                midCr[midBase + column] = sumCr
+            }
+        }
+
+        // Vertical pass into the half-size result.
+        for (row in 0 until newHeight) {
+            val centre = row * 2
+            for (column in 0 until newWidth) {
+                var sumY = 0f
+                var sumCb = 0f
+                var sumCr = 0f
+                for (tap in -2..2) {
+                    val source = (centre + tap).coerceIn(0, height - 1) * newWidth + column
+                    val weight = GAUSSIAN_5[tap + 2]
+                    sumY += midY[source] * weight
+                    sumCb += midCb[source] * weight
+                    sumCr += midCr[source] * weight
+                }
                 val index = row * newWidth + column
-                y[index] = (luma[a] + luma[b] + luma[c] + luma[d]) * 0.25f
-                cb[index] = (chromaBlue[a] + chromaBlue[b] + chromaBlue[c] + chromaBlue[d]) * 0.25f
-                cr[index] = (chromaRed[a] + chromaRed[b] + chromaRed[c] + chromaRed[d]) * 0.25f
+                y[index] = sumY
+                cb[index] = sumCb
+                cr[index] = sumCr
             }
         }
         return ImagePlane(newWidth, newHeight, y, cb, cr)
     }
 
     companion object {
+        /** Burt & Adelson's binomial kernel, `[1 4 6 4 1] / 16`. */
+        private val GAUSSIAN_5 = floatArrayOf(1f / 16f, 4f / 16f, 6f / 16f, 4f / 16f, 1f / 16f)
+
         /**
          * Builds a plane from packed sRGB, converting to Y'CbCr so luminance and colour can be
          * weighed separately.
