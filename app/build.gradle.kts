@@ -95,6 +95,20 @@ android {
     }
 
     testOptions {
+        // The first automated Android execution this project has ever had. A Gradle managed device
+        // is provisioned, run and torn down by the build itself, so there is no emulator to keep
+        // alive between runs and no separate service to depend on. API 30 with the ATD image is the
+        // cheapest configuration that still runs real ART on a real ABI.
+        managedDevices {
+            localDevices {
+                create("pixel6Api30") {
+                    device = "Pixel 6"
+                    apiLevel = 30
+                    systemImageSource = "aosp-atd"
+                }
+            }
+        }
+
         unitTests.isIncludeAndroidResources = true
     }
 }
@@ -129,6 +143,8 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-tooling")

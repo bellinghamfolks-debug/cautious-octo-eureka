@@ -43,8 +43,8 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android 35 SDK
-        run: yes | sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Install Android 36 SDK
+        run: yes | sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
       - name: Verify repository structure and secrets
         run: python3 scripts/verify_project.py
@@ -69,6 +69,28 @@ jobs:
             lintDebug testDebugUnitTest assembleDebug || status=$?
           cat build.log
           exit "$status"
+
+      # The first automated execution on Android this project has had. Kept as its own job-step so
+      # a device-only failure is never mistaken for a compile failure, and allowed to fail the build
+      # because a pipeline that cannot load its own models on a real runtime is not shippable.
+      - name: On-device tests
+        shell: bash
+        run: |
+          source .github/gradle-retry.sh
+          status=0
+          gradle_with_network_retry device.log \
+            pixel6Api30DebugAndroidTest \
+            -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect || status=$?
+          cat device.log
+          exit "$status"
+
+      - name: Upload the device test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-test-report
+          path: app/build/reports/androidTests/managedDevice/
+          if-no-files-found: ignore
 
       - name: Confirm the APK carries arm64 only
         shell: bash
