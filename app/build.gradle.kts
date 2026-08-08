@@ -47,6 +47,11 @@ android {
         ndk {
             abiFilters += "arm64-v8a"
             if (project.hasProperty("visionbridge.emulatorAbi")) {
+                // Both, because the ATD image's ABI is not something the build gets to choose: the
+                // API 30 AOSP ATD image provisioned by the managed device is 32-bit `x86`, while
+                // later levels are `x86_64`. Naming only one of them reproduces the same "No
+                // matching Apks found" failure on whichever image turns up.
+                abiFilters += "x86"
                 abiFilters += "x86_64"
             }
         }
