@@ -228,6 +228,7 @@ jobs:
           status=0
           gradle_with_network_retry device.log \
             pixel6Api30DebugAndroidTest \
+            -Pvisionbridge.emulatorAbi=x86_64 \
             -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect || status=$?
           cat device.log
           exit "$status"

@@ -38,8 +38,17 @@ android {
 
         // 64-bit only. ONNX Runtime's AAR ships four ABIs; abiFilters keeps arm64-v8a and drops
         // the rest at packaging time, so the APK carries no library this device cannot run.
+        //
+        // x86_64 joins it only when the build is asked for it, which is how the instrumented tests
+        // run at all: a managed device on an ordinary CI runner is an x86 emulator, and an
+        // arm64-only APK simply does not install on one. The first attempt failed with "No matching
+        // Apks found" for exactly that reason. The published release never sets this property, so
+        // what ships is unchanged and the arm64-only check in CI still guards it.
         ndk {
             abiFilters += "arm64-v8a"
+            if (project.hasProperty("visionbridge.emulatorAbi")) {
+                abiFilters += "x86_64"
+            }
         }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
