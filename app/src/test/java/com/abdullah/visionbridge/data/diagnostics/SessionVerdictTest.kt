@@ -28,6 +28,70 @@ class SessionVerdictTest {
     private fun codes(events: List<SessionVerdict.Event>): List<String> =
         SessionVerdict.analyse(events).map { it.code }
 
+    // region work discarded before it reaches the user
+
+    /**
+     * The text session from 2026-08-10: 42 requests, 15 of them killed in flight when the object
+     * moved. That is real waste — an upload and two seconds paid for and nothing heard — and the
+     * old rule said nothing about it.
+     */
+    @Test
+    fun `requests killed in flight by a moving subject are named`() {
+        val events = buildList {
+            repeat(27) { add(event("CLOUD_ANALYSIS_COMPLETED", "text" to "abc")) }
+            repeat(15) {
+                add(event("CLOUD_ANALYSIS_CANCELLED", "reason" to "visual_target_changed"))
+            }
+            repeat(17) { add(event("VISUAL_TARGET_CHANGED", advanceMs = 1_800L)) }
+        }
+        val finding = SessionVerdict.analyse(events)
+            .first { it.code == "ANALYSIS_DISCARDED_BEFORE_DELIVERY" }
+        assertTrue(finding.measurement.contains("15"))
+        assertTrue("the cadence explains it", finding.measurement.contains("17"))
+    }
+
+    /**
+     * The scene session from the same bundle, which the old rule called FATAL: the subject changed
+     * 29 times against a 4.4-second analysis, and every one of the 36 requests was completed and
+     * delivered. A scene request outlives the frame that started it, so a fast-moving subject costs
+     * nothing and there is nothing to report.
+     */
+    @Test
+    fun `a fast changing scene that discards nothing is not a defect`() {
+        val events = buildList {
+            repeat(36) { add(event("CLOUD_ANALYSIS_COMPLETED", "text" to "a".repeat(40))) }
+            repeat(36) { add(event("TEXT_DISPLAYED", "text" to "a".repeat(40))) }
+            repeat(36) { add(event("TTS_UTTERANCE_DONE", "text" to "a".repeat(40))) }
+            repeat(29) { add(event("VISUAL_TARGET_CHANGED", advanceMs = 1_800L)) }
+            repeat(28) {
+                add(event("CLOUD_ACTIVE_REQUEST_MARKED_STALE", "requestCancelled" to false))
+            }
+        }
+        assertEquals(emptyList<String>(), codes(events))
+    }
+
+    /** A result withheld because there was no text in it is a correct outcome, not a discard. */
+    @Test
+    fun `suppressing an empty reading is not counted as waste`() {
+        val events = buildList {
+            repeat(27) { add(event("CLOUD_ANALYSIS_COMPLETED", "text" to "abc")) }
+            repeat(18) { add(event("FINAL_RESULT_SUPPRESSED", "reason" to "no_text_recognized")) }
+        }
+        assertEquals(emptyList<String>(), codes(events))
+    }
+
+    /** One cancelled request in a busy session is a moment, not a pattern. */
+    @Test
+    fun `a single cancellation is not a verdict`() {
+        val events = buildList {
+            repeat(30) { add(event("CLOUD_ANALYSIS_COMPLETED", "text" to "abc")) }
+            add(event("CLOUD_ANALYSIS_CANCELLED", "reason" to "visual_target_changed"))
+        }
+        assertEquals(emptyList<String>(), codes(events))
+    }
+
+    // endregion
+
     // region answers cut off by the token ceiling
 
     /**
@@ -159,20 +223,18 @@ class SessionVerdictTest {
     }
 
     /**
-     * The arithmetic behind the whole repair: a target declared new every 343 ms against an
-     * analysis that needs 2,231.
+     * A target that changes fast is only a defect when work is lost to it. Here 60 changes at
+     * 343 ms against a 2,231 ms analysis cost nothing, because nothing was cancelled or suppressed
+     * — and the verdict must stay quiet about arithmetic alone.
      */
     @Test
-    fun `a target changing faster than analysis can finish is named`() {
+    fun `a fast target that costs nothing is not a finding`() {
         val events = buildList {
             repeat(60) { add(event("VISUAL_TARGET_CHANGED", advanceMs = 343L)) }
             repeat(20) { add(event("PPOCR_PAGE_READ", "characters" to 40, "sinceCaptureMs" to 2231.0)) }
+            repeat(20) { add(event("TTS_UTTERANCE_DONE", "text" to "a".repeat(40))) }
         }
-        val finding = SessionVerdict.analyse(events)
-            .firstOrNull { it.code == "TARGET_CHANGES_FASTER_THAN_ANALYSIS" }
-        assertNotNull(finding)
-        assertTrue(finding!!.measurement.contains("343"))
-        assertTrue(finding.measurement.contains("2231"))
+        assertTrue("ANALYSIS_DISCARDED_BEFORE_DELIVERY" !in codes(events))
     }
 
     @Test
@@ -181,7 +243,7 @@ class SessionVerdictTest {
             repeat(20) { add(event("VISUAL_TARGET_CHANGED", advanceMs = 6_000L)) }
             repeat(20) { add(event("PPOCR_PAGE_READ", "characters" to 40, "sinceCaptureMs" to 900.0)) }
         }
-        assertTrue("TARGET_CHANGES_FASTER_THAN_ANALYSIS" !in codes(events))
+        assertTrue("ANALYSIS_DISCARDED_BEFORE_DELIVERY" !in codes(events))
     }
 
     /** 24,000 ms budget enforced at 221,605. A timer that did not run, not a slow network. */
@@ -326,7 +388,6 @@ class SessionVerdictTest {
     @Test
     fun `rules fire when numbers arrive as strings`() {
         val events = buildList {
-            repeat(60) { add(event("VISUAL_TARGET_CHANGED", advanceMs = 343L)) }
             repeat(20) {
                 add(
                     event(
@@ -336,8 +397,9 @@ class SessionVerdictTest {
                     ),
                 )
             }
+            repeat(2) { add(event("TTS_UTTERANCE_DONE", "text" to "a".repeat(40))) }
         }
-        assertTrue("TARGET_CHANGES_FASTER_THAN_ANALYSIS" in codes(events))
+        assertTrue("RECOGNISED_TEXT_NOT_DELIVERED" in codes(events))
     }
 
     @Test

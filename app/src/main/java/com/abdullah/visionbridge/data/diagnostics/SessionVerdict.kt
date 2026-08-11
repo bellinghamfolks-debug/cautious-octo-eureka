@@ -70,7 +70,7 @@ object SessionVerdict {
             answersTruncated(events),
             textNotDelivered(events),
             speechCutOff(events),
-            targetFasterThanAnalysis(events),
+            analysisDiscardedBeforeDelivery(events),
             requestOutlivedDeadline(events),
             appStoppedRunning(events),
             captureWentBlack(events),
@@ -201,33 +201,58 @@ object SessionVerdict {
     }
 
     /**
-     * The arithmetic that makes a pipeline structurally unable to finish: the target is declared
-     * new more often than a result can be produced, so every result is stale before it exists.
+     * Analyses thrown away because the subject moved on before they could finish.
+     *
+     * The rule this replaces compared two medians — the gap between target changes against the time
+     * an analysis takes — and called the pipeline structurally broken whenever the first was
+     * smaller. That arithmetic is not evidence of anything. On the 2026-08-10 scene session it
+     * declared a FATAL over 29 target changes at a median 1866 ms against a 4354 ms analysis, while
+     * the same session completed 36 requests, delivered all 36, and discarded exactly none: a
+     * scene request is allowed to outlive the frame that started it, so a shorter gap costs
+     * nothing. Meanwhile the text session in the same bundle, where 15 of 42 requests really were
+     * killed in flight, produced no finding at all. The rule was precisely inverted.
+     *
+     * What matters is not how often the subject changes — a user walking through a room changes it
+     * constantly and correctly — but whether work that had already been paid for was thrown away.
+     * So this counts the discard directly, and uses the cadence only to explain it.
      */
-    private fun targetFasterThanAnalysis(events: List<Event>): Finding? {
+    private fun analysisDiscardedBeforeDelivery(events: List<Event>): Finding? {
+        val cancelled = events.count {
+            it.type == "CLOUD_ANALYSIS_CANCELLED" && it.text("reason") == "visual_target_changed"
+        }
+        val suppressed = events.count {
+            it.type == "FINAL_RESULT_SUPPRESSED" && it.text("reason") == "stale_visual_generation"
+        }
+        val discarded = cancelled + suppressed
+        if (discarded == 0) return null
+
+        val completed = events.count {
+            it.type == "CLOUD_ANALYSIS_COMPLETED" || it.type == "PPOCR_PAGE_READ"
+        }
+        val attempted = completed + cancelled
+        if (attempted < MIN_REQUESTS) return null
+        val ratio = discarded.toDouble() / attempted
+        if (ratio < DISCARD_RATIO) return null
+
         val changes = events.filter { it.type == "VISUAL_TARGET_CHANGED" }.map { it.epochMs }
-        if (changes.size < MIN_TARGET_CHANGES) return null
         val gaps = changes.zipWithNext { a, b -> (b - a).toDouble() }.sorted()
-        if (gaps.isEmpty()) return null
-        val medianGap = gaps[gaps.size / 2]
-
-        val latencies = events
-            .filter { it.type == "PPOCR_PAGE_READ" || it.type == "CLOUD_ANALYSIS_COMPLETED" }
-            .mapNotNull { it.number("sinceCaptureMs") ?: it.number("durationMs") }
-            .sorted()
-        if (latencies.isEmpty()) return null
-        val medianLatency = latencies[latencies.size / 2]
-        if (medianGap >= medianLatency) return null
-
-        val over = medianLatency / medianGap
+        val cadence = if (gaps.isEmpty()) {
+            ""
+        } else {
+            " الهدف تغيّر ${changes.size} مرة، الوسيط بينها ${gaps[gaps.size / 2].toInt()} مللي ثانية."
+        }
         return Finding(
-            code = "TARGET_CHANGES_FASTER_THAN_ANALYSIS",
-            severity = Severity.FATAL,
-            headline = "الهدف يُعلَن جديداً أسرع مما يستطيع التحليل أن ينتهي.",
-            measurement = "${changes.size} تغيّراً، الوسيط بينها ${medianGap.toInt()} مللي ثانية، " +
-                "بينما التحليل يحتاج ${medianLatency.toInt()} — أي أن كل نتيجة تُلغى " +
-                "${"%.1f".format(over)} مرة قبل أن توجد.",
-            evidence = listOf("VISUAL_TARGET_CHANGED", "PPOCR_PAGE_READ"),
+            code = "ANALYSIS_DISCARDED_BEFORE_DELIVERY",
+            severity = if (ratio >= SEVERE_DISCARD_RATIO) Severity.FATAL else Severity.MAJOR,
+            headline = "تحليل اكتمل أو كاد، ثم أُلقي قبل أن يصل إلى المستخدم.",
+            measurement = "$discarded من $attempted (${percent(ratio)}): $cancelled أُلغيت في " +
+                "الطريق و$suppressed نتيجة وصلت متأخرة فطُرحت.$cadence " +
+                "هذا رفعٌ ووقتٌ دُفعا ولم يُسمع منهما شيء.",
+            evidence = listOf(
+                "CLOUD_ANALYSIS_CANCELLED",
+                "FINAL_RESULT_SUPPRESSED",
+                "VISUAL_TARGET_CHANGED",
+            ),
         )
     }
 
@@ -553,7 +578,11 @@ object SessionVerdict {
     private const val TRUNCATION_FLOOR = 0.25
     private const val MIN_INTERRUPTIONS = 3
     private const val INTERRUPTION_RATIO = 0.5
-    private const val MIN_TARGET_CHANGES = 8
+    /** Below this a discard is one unlucky moment; above it, work is being thrown away in bulk. */
+    private const val DISCARD_RATIO = 0.35
+
+    /** At this share the pipeline is spending most of its budget on results nobody hears. */
+    private const val SEVERE_DISCARD_RATIO = 0.6
     private const val DEADLINE_OVERRUN_FACTOR = 1.5
     private const val SILENCE_GAP_MS = 60_000L
     private const val RESIZE_CORRELATION_MS = 4_000.0
