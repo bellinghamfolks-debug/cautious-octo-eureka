@@ -45,6 +45,24 @@ class GeminiVisionRepository(
         data object Closed : StreamSignal
     }
 
+    /**
+     * The service rejected the request as malformed rather than failing to serve it. Only the code
+     * that built the request knows which optional field could have caused that, so the decision is
+     * left to it instead of being guessed here.
+     */
+    private class UnsupportedRequestFieldException(
+        val httpCode: Int,
+        cause: Throwable?,
+    ) : IllegalStateException("رفض Gemini صيغة الطلب، HTTP $httpCode", cause)
+
+    /**
+     * Set once if the service will not accept a reasoning level, so the rest of the process stops
+     * paying for a round trip that is known to fail. Reset only by restarting the app, which is the
+     * right granularity: the answer depends on the API version, not on the frame.
+     */
+    @Volatile
+    private var thinkingLevelRejected = false
+
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
     private val imageEnhancer = TextImageEnhancer()
     // Every bound sits below the 24 s analysis budget's backstop rather than far above it. A 45 s
@@ -172,44 +190,6 @@ class GeminiVisionRepository(
                     ),
                 )
 
-                val payload = GenerateContentRequest(
-                    contents = listOf(
-                        GeminiContent(
-                            parts = listOf(
-                                GeminiPart(text = promptFor(mode, sceneDescriptionStyle, trustGateEnabled)),
-                                GeminiPart(
-                                    inlineData = InlineData(
-                                        mimeType = encodedImage.mimeType,
-                                        data = base64Image,
-                                    )
-                                ),
-                            )
-                        )
-                    ),
-                    generationConfig = GenerationConfig(
-                        maxOutputTokens = maxOutputTokens(mode, sceneDescriptionStyle),
-                        temperature = if (mode == AnalysisMode.TEXT_READING) 0.0 else SCENE_TEMPERATURE,
-                        mediaResolution = mediaResolution(mode, captureProfile, sceneDescriptionStyle),
-                    ),
-                )
-
-                val serializationStarted = SystemClock.elapsedRealtimeNanos()
-                val payloadJson = json.encodeToString(GenerateContentRequest.serializer(), payload)
-                val payloadBytes = payloadJson.toByteArray(Charsets.UTF_8).size
-                DiagnosticHub.record(
-                    "GEMINI_PAYLOAD_SERIALIZED",
-                    trace.fieldsOrEmpty(
-                        mapOf(
-                            "durationMs" to
-                                (SystemClock.elapsedRealtimeNanos() - serializationStarted) / 1_000_000.0,
-                            "requestUtf8Bytes" to payloadBytes,
-                            "maxOutputTokens" to maxOutputTokens(mode, sceneDescriptionStyle),
-                            "temperature" to if (mode == AnalysisMode.TEXT_READING) 0.0 else SCENE_TEMPERATURE,
-                            "mediaResolution" to mediaResolution(mode, captureProfile, sceneDescriptionStyle),
-                        ),
-                    ),
-                )
-
                 val client = if (network == null) {
                     baseClient
                 } else {
@@ -222,36 +202,121 @@ class GeminiVisionRepository(
                         .build()
                 }
 
-                val requestBuilder = Request.Builder()
-                    .url("https://generativelanguage.googleapis.com/v1beta/models/$model:streamGenerateContent?alt=sse")
-                    .header("x-goog-api-key", apiKey)
-                    .header("Accept", "text/event-stream")
-                    .post(payloadJson.toRequestBody(JSON_MEDIA_TYPE))
-                if (trace != null) requestBuilder.tag(DiagnosticTrace::class.java, trace)
-                val request = requestBuilder.build()
-
-                val requestStarted = SystemClock.elapsedRealtimeNanos()
-                DiagnosticHub.record(
-                    "HTTP_REQUEST_STARTED",
-                    trace.fieldsOrEmpty(
-                        mapOf(
-                            "host" to request.url.host,
-                            "model" to model,
-                            "method" to request.method,
-                            "forcedCellular" to forceCellular,
-                            "requestUtf8Bytes" to payloadBytes,
+                // Built as a function of the reasoning level because the request may have to be
+                // made twice: once as intended, and once without the field if this API version
+                // will not accept it. Everything expensive — the encode, the base64 — is already
+                // done and is shared by both attempts.
+                fun buildRequest(thinkingLevel: String?): Pair<Request, Int> {
+                    val payload = GenerateContentRequest(
+                        contents = listOf(
+                            GeminiContent(
+                                parts = listOf(
+                                    GeminiPart(
+                                        text = promptFor(mode, sceneDescriptionStyle, trustGateEnabled)
+                                    ),
+                                    GeminiPart(
+                                        inlineData = InlineData(
+                                            mimeType = encodedImage.mimeType,
+                                            data = base64Image,
+                                        )
+                                    ),
+                                )
+                            )
                         ),
-                    ),
-                )
-                consumeEventStream(
-                    client = client,
-                    request = request,
-                    mode = mode,
-                    trustGateEnabled = trustGateEnabled,
-                    trace = trace,
-                    requestStartedElapsedNanos = requestStarted,
-                    onSpeechChunk = onSpeechChunk,
-                )
+                        generationConfig = GenerationConfig(
+                            maxOutputTokens = TokenBudget.maxOutputTokens(mode, sceneDescriptionStyle),
+                            temperature = if (mode == AnalysisMode.TEXT_READING) 0.0 else SCENE_TEMPERATURE,
+                            mediaResolution = mediaResolution(mode, captureProfile, sceneDescriptionStyle),
+                            thinkingConfig = thinkingLevel?.let { ThinkingConfig(thinkingLevel = it) },
+                        ),
+                    )
+
+                    val serializationStarted = SystemClock.elapsedRealtimeNanos()
+                    val payloadJson = json.encodeToString(GenerateContentRequest.serializer(), payload)
+                    val payloadBytes = payloadJson.toByteArray(Charsets.UTF_8).size
+                    DiagnosticHub.record(
+                        "GEMINI_PAYLOAD_SERIALIZED",
+                        trace.fieldsOrEmpty(
+                            mapOf(
+                                "durationMs" to
+                                    (SystemClock.elapsedRealtimeNanos() - serializationStarted) / 1_000_000.0,
+                                "requestUtf8Bytes" to payloadBytes,
+                                "maxOutputTokens" to TokenBudget.maxOutputTokens(mode, sceneDescriptionStyle),
+                                "thinkingLevel" to thinkingLevel,
+                                "temperature" to
+                                    if (mode == AnalysisMode.TEXT_READING) 0.0 else SCENE_TEMPERATURE,
+                                "mediaResolution" to
+                                    mediaResolution(mode, captureProfile, sceneDescriptionStyle),
+                            ),
+                        ),
+                    )
+
+                    val builder = Request.Builder()
+                        .url(
+                            "https://generativelanguage.googleapis.com/v1beta/models/" +
+                                "$model:streamGenerateContent?alt=sse"
+                        )
+                        .header("x-goog-api-key", apiKey)
+                        .header("Accept", "text/event-stream")
+                        .post(payloadJson.toRequestBody(JSON_MEDIA_TYPE))
+                    if (trace != null) builder.tag(DiagnosticTrace::class.java, trace)
+                    return builder.build() to payloadBytes
+                }
+
+                suspend fun attempt(thinkingLevel: String?): AnalysisResult {
+                    val (request, payloadBytes) = buildRequest(thinkingLevel)
+                    val requestStarted = SystemClock.elapsedRealtimeNanos()
+                    DiagnosticHub.record(
+                        "HTTP_REQUEST_STARTED",
+                        trace.fieldsOrEmpty(
+                            mapOf(
+                                "host" to request.url.host,
+                                "model" to model,
+                                "method" to request.method,
+                                "forcedCellular" to forceCellular,
+                                "requestUtf8Bytes" to payloadBytes,
+                                "thinkingLevel" to thinkingLevel,
+                            ),
+                        ),
+                    )
+                    return consumeEventStream(
+                        client = client,
+                        request = request,
+                        mode = mode,
+                        trustGateEnabled = trustGateEnabled,
+                        trace = trace,
+                        requestStartedElapsedNanos = requestStarted,
+                        maxOutputTokens = TokenBudget.maxOutputTokens(mode, sceneDescriptionStyle),
+                        onSpeechChunk = onSpeechChunk,
+                    )
+                }
+
+                val requestedThinkingLevel =
+                    if (thinkingLevelRejected) null else TokenBudget.thinkingLevel(mode, sceneDescriptionStyle)
+                if (requestedThinkingLevel == null) {
+                    attempt(null)
+                } else {
+                    try {
+                        attempt(requestedThinkingLevel)
+                    } catch (rejected: UnsupportedRequestFieldException) {
+                        // The service will not take the reasoning level. Remember it for the rest
+                        // of the process and repeat the call without it — the token ceiling alone
+                        // still leaves room for a full reasoning pass and the answer, so the
+                        // reading completes either way.
+                        thinkingLevelRejected = true
+                        DiagnosticHub.record(
+                            "THINKING_LEVEL_UNSUPPORTED",
+                            trace.fieldsOrEmpty(
+                                mapOf(
+                                    "model" to model,
+                                    "requestedLevel" to requestedThinkingLevel,
+                                    "httpCode" to rejected.httpCode,
+                                ),
+                            ),
+                        )
+                        attempt(null)
+                    }
+                }
             }
         } catch (error: Throwable) {
             if (error is CancellationException) {
@@ -283,6 +348,7 @@ class GeminiVisionRepository(
         trustGateEnabled: Boolean,
         trace: DiagnosticTrace?,
         requestStartedElapsedNanos: Long,
+        maxOutputTokens: Int,
         onSpeechChunk: suspend (text: String, urgent: Boolean) -> Unit,
     ): AnalysisResult {
         val signals = Channel<StreamSignal>(Channel.UNLIMITED)
@@ -365,10 +431,17 @@ class GeminiVisionRepository(
                     return
                 }
 
-                val delta = parsed.candidates
+                val parts = parsed.candidates
                     .asSequence()
                     .mapNotNull { it.content }
                     .flatMap { it.parts.asSequence() }
+                    .toList()
+                // Reasoning is not an answer. It is written for no reader, it is not in the user's
+                // language, and when a response is cut short its tail arrives looking exactly like
+                // a description — which is how "Word count: under 7" was once spoken aloud.
+                val reasoningParts = parts.count { it.thought == true }
+                val delta = parts.asSequence()
+                    .filter { it.thought != true }
                     .mapNotNull { it.text }
                     .joinToString("")
                 DiagnosticHub.record(
@@ -378,9 +451,31 @@ class GeminiVisionRepository(
                             "sseSequence" to sequence,
                             "delta" to delta,
                             "deltaCharacters" to delta.length,
+                            "reasoningPartsDropped" to reasoningParts,
                         ),
                     ),
                 )
+
+                // The finish reason and the token split are the only evidence that separates a
+                // short answer from a truncated one. Recording them per response is what turns the
+                // next occurrence of this class of defect into one line of a diagnostic bundle.
+                parsed.candidates.firstOrNull()?.finishReason?.let { finishReason ->
+                    val usage = parsed.usageMetadata
+                    DiagnosticHub.record(
+                        "MODEL_FINISH_REASON",
+                        trace.fieldsOrEmpty(
+                            mapOf(
+                                "finishReason" to finishReason,
+                                "truncated" to TokenBudget.wasTruncated(finishReason),
+                                "maxOutputTokens" to maxOutputTokens,
+                                "promptTokens" to usage?.promptTokenCount,
+                                "reasoningTokens" to usage?.thoughtsTokenCount,
+                                "answerTokens" to usage?.candidatesTokenCount,
+                                "totalTokens" to usage?.totalTokenCount,
+                            ),
+                        ),
+                    )
+                }
                 if (delta.isNotEmpty()) signals.trySend(StreamSignal.Delta(delta, sequence))
             }
 
@@ -399,9 +494,15 @@ class GeminiVisionRepository(
             }
 
             override fun onFailure(eventSource: EventSource, throwable: Throwable?, response: Response?) {
-                val error = throwable ?: IllegalStateException(
-                    "انقطع بث Gemini${response?.code?.let { "، HTTP $it" }.orEmpty()}"
-                )
+                val error = if (response?.code == HTTP_BAD_REQUEST) {
+                    // The service rejected the request itself rather than failing to serve it. The
+                    // caller decides what that means: it knows which optional fields it sent.
+                    UnsupportedRequestFieldException(response.code, throwable)
+                } else {
+                    throwable ?: IllegalStateException(
+                        "انقطع بث Gemini${response?.code?.let { "، HTTP $it" }.orEmpty()}"
+                    )
+                }
                 DiagnosticHub.failure(
                     "SSE_CONNECTION_FAILURE",
                     error,
@@ -563,20 +664,6 @@ class GeminiVisionRepository(
         )
     }
 
-    private fun maxOutputTokens(
-        mode: AnalysisMode,
-        sceneDescriptionStyle: SceneDescriptionStyle,
-    ): Int = when (mode) {
-        // A dense screen of Arabic and Latin text runs well past the old 900-token ceiling, and the
-        // response was being cut off mid-page. The user then heard a partial read and the retry loop
-        // started over from the top.
-        AnalysisMode.TEXT_READING -> 3_000
-        AnalysisMode.SCENE_DESCRIPTION -> when (sceneDescriptionStyle) {
-            SceneDescriptionStyle.COMPREHENSIVE -> 360
-            SceneDescriptionStyle.BRIEF -> 96
-        }
-    }
-
     private fun mediaResolution(
         mode: AnalysisMode,
         captureProfile: CaptureProfile,
@@ -615,6 +702,9 @@ class GeminiVisionRepository(
 
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         const val SCENE_TEMPERATURE = 0.1
+
+        /** A rejected request, as opposed to a request the service failed to serve. */
+        const val HTTP_BAD_REQUEST = 400
 
         val OCR_TRUSTED_PROMPT = """
             المهمة نسخ بصري حرفي فقط، وليست فهم النص أو إكماله. اقرأ النص العربي والإنجليزي الظاهر في الصورة المحسنة.

@@ -455,6 +455,32 @@ class DiagnosticRecorder(context: Context) {
             )
         }
 
+        // A truncated answer is indistinguishable from a short one everywhere downstream: it is
+        // spoken, it is recorded as read, and the user hears a confident fragment of a sentence.
+        // The finish reason is the only thing that tells them apart, so it is read here rather
+        // than left for a human to notice in the raw log.
+        if (type == "MODEL_FINISH_REASON" && fields["truncated"] == true) {
+            val reasoning = (fields["reasoningTokens"] as? Number)?.toInt()
+            val answer = (fields["answerTokens"] as? Number)?.toInt()
+            val ceiling = (fields["maxOutputTokens"] as? Number)?.toInt()
+            output += finding(
+                code = "MODEL_OUTPUT_TRUNCATED",
+                severity = "critical",
+                explanation = "قُطعت إجابة النموذج قبل أن تكتمل لأن سقف الرموز نفد" +
+                    if (reasoning != null && answer != null && ceiling != null) {
+                        "، إذ أنفق $reasoning رمزاً في التفكير و$answer في الإجابة من سقف $ceiling"
+                    } else {
+                        ""
+                    },
+                details = mapOf(
+                    "reason" to fields["finishReason"],
+                    "maxOutputTokens" to ceiling,
+                    "reasoningTokens" to reasoning,
+                    "answerTokens" to answer,
+                ),
+            )
+        }
+
         if (type.contains("CANCELLED") || type.contains("CANCELED")) {
             output += finding(
                 code = "ANALYSIS_CANCELLED",

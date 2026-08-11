@@ -28,6 +28,88 @@ class SessionVerdictTest {
     private fun codes(events: List<SessionVerdict.Event>): List<String> =
         SessionVerdict.analyse(events).map { it.code }
 
+    // region answers cut off by the token ceiling
+
+    /**
+     * The 2026-08-10 session in miniature: every response finished on `MAX_TOKENS`, having spent
+     * some 343 tokens reasoning and 13 answering against a ceiling of 360. Nothing failed, nothing
+     * was cancelled, and the user heard a fluent fragment of a sentence each time.
+     */
+    @Test
+    fun `answers that all end on the token ceiling are named`() {
+        val events = buildList {
+            repeat(12) {
+                add(
+                    event(
+                        "MODEL_FINISH_REASON",
+                        "finishReason" to "MAX_TOKENS",
+                        "truncated" to true,
+                        "maxOutputTokens" to 360,
+                        "reasoningTokens" to 343,
+                        "answerTokens" to 13,
+                    )
+                )
+            }
+        }
+        val finding = SessionVerdict.analyse(events).first { it.code == "MODEL_ANSWERS_TRUNCATED" }
+        assertEquals(SessionVerdict.Severity.FATAL, finding.severity)
+        assertTrue("the split must be in the measurement", finding.measurement.contains("343"))
+        assertTrue(finding.measurement.contains("360"))
+    }
+
+    @Test
+    fun `answers that finish cleanly say nothing`() {
+        val events = buildList {
+            repeat(12) {
+                add(
+                    event(
+                        "MODEL_FINISH_REASON",
+                        "finishReason" to "STOP",
+                        "truncated" to false,
+                        "maxOutputTokens" to 1800,
+                        "reasoningTokens" to 200,
+                        "answerTokens" to 180,
+                    )
+                )
+            }
+        }
+        assertEquals(emptyList<String>(), codes(events))
+    }
+
+    /** One long answer hitting the ceiling is an answer, not a misconfiguration. */
+    @Test
+    fun `an occasional truncation is not a verdict`() {
+        val events = buildList {
+            add(
+                event(
+                    "MODEL_FINISH_REASON",
+                    "finishReason" to "MAX_TOKENS",
+                    "truncated" to true,
+                    "maxOutputTokens" to 4000,
+                    "reasoningTokens" to 300,
+                    "answerTokens" to 3700,
+                )
+            )
+            repeat(11) {
+                add(event("MODEL_FINISH_REASON", "finishReason" to "STOP", "truncated" to false))
+            }
+        }
+        assertEquals(emptyList<String>(), codes(events))
+    }
+
+    /** Too few responses to tell a setting from a coincidence. */
+    @Test
+    fun `a handful of responses is not enough to judge`() {
+        val events = buildList {
+            repeat(3) {
+                add(event("MODEL_FINISH_REASON", "finishReason" to "MAX_TOKENS", "truncated" to true))
+            }
+        }
+        assertEquals(emptyList<String>(), codes(events))
+    }
+
+    // endregion
+
     /** A session where nothing went wrong must produce nothing. Noise is what made the old findings useless. */
     @Test
     fun `a healthy session yields no findings`() {

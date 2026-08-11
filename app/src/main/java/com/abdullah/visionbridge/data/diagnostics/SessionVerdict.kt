@@ -67,6 +67,7 @@ object SessionVerdict {
     fun analyse(events: List<Event>): List<Finding> {
         val findings = listOfNotNull(
             projectionDied(events),
+            answersTruncated(events),
             textNotDelivered(events),
             speechCutOff(events),
             targetFasterThanAnalysis(events),
@@ -138,6 +139,47 @@ object SessionVerdict {
             measurement = "$recognised حرفاً تعرَّف عليها المحرك، و$delivered حرفاً فقط اكتمل نطقها " +
                 "(${percent(ratio)}). الخلل بعد القراءة، لا فيها.",
             evidence = listOf("PPOCR_PAGE_READ", "CLOUD_ANALYSIS_COMPLETED", "TTS_UTTERANCE_DONE"),
+        )
+    }
+
+    /**
+     * The model's answers are being cut off by the token ceiling rather than finishing.
+     *
+     * This ranks near the top because of how well it hides. A truncated answer is a real answer as
+     * far as every stage after it is concerned: it is spoken, it is recorded as delivered, and no
+     * request fails. The user hears a fluent fragment — "تق", "شخص ين" — and reasonably concludes
+     * the app saw very little, when in fact the model saw everything and was not allowed to say it.
+     *
+     * The token split is what turns that into a fix rather than a guess: it says whether the
+     * ceiling is too low for the answer, or whether reasoning ate the budget before the answer
+     * began.
+     */
+    private fun answersTruncated(events: List<Event>): Finding? {
+        val finishes = events.filter { it.type == "MODEL_FINISH_REASON" }
+        if (finishes.size < MIN_RESPONSES_TO_JUDGE) return null
+        val truncated = finishes.filter { it.flag("truncated") == true }
+        val ratio = truncated.size.toDouble() / finishes.size
+        if (ratio < TRUNCATION_FLOOR) return null
+
+        val reasoning = truncated.mapNotNull { it.number("reasoningTokens")?.toInt() }
+        val answers = truncated.mapNotNull { it.number("answerTokens")?.toInt() }
+        val ceiling = truncated.firstNotNullOfOrNull { it.number("maxOutputTokens")?.toInt() }
+        val medianReasoning = reasoning.sorted().getOrNull(reasoning.size / 2)
+        val medianAnswer = answers.sorted().getOrNull(answers.size / 2)
+
+        val split = if (medianReasoning != null && medianAnswer != null && ceiling != null) {
+            " الوسيط: $medianReasoning رمزاً للتفكير و$medianAnswer فقط للإجابة من سقف $ceiling — " +
+                "أي أن التفكير استهلك الميزانية قبل أن تبدأ الإجابة."
+        } else {
+            ""
+        }
+        return Finding(
+            code = "MODEL_ANSWERS_TRUNCATED",
+            severity = Severity.FATAL,
+            headline = "إجابات النموذج تُقطع قبل أن تكتمل، لا تأتي قصيرة.",
+            measurement = "${truncated.size} إجابة من ${finishes.size} انتهت بسبب نفاد سقف الرموز " +
+                "(${percent(ratio)}).$split ما سُمع جزء من جملة، وما بعده لم يُرسل أصلاً.",
+            evidence = listOf("MODEL_FINISH_REASON", "MODEL_OUTPUT_TRUNCATED"),
         )
     }
 
@@ -503,6 +545,12 @@ object SessionVerdict {
 
     private const val MIN_CHARACTERS_TO_JUDGE = 200
     private const val DELIVERY_FLOOR = 0.5
+
+    /** Enough responses that a run of truncations is a setting, not a long answer or two. */
+    private const val MIN_RESPONSES_TO_JUDGE = 5
+
+    /** Below this a truncation is an unusually long answer; above it, a ceiling in the wrong place. */
+    private const val TRUNCATION_FLOOR = 0.25
     private const val MIN_INTERRUPTIONS = 3
     private const val INTERRUPTION_RATIO = 0.5
     private const val MIN_TARGET_CHANGES = 8
