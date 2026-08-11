@@ -16,6 +16,7 @@ interface VisionAiRepository {
         sceneDescriptionStyle: SceneDescriptionStyle,
         captureProfile: CaptureProfile,
         trustGateEnabled: Boolean,
+        describeAlongsideText: Boolean,
         onSpeechChunk: suspend (text: String, urgent: Boolean) -> Unit,
     ): AnalysisResult
 }

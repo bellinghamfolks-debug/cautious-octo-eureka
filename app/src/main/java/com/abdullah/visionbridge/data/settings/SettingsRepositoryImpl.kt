@@ -33,6 +33,7 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
             interruptSpeechOnVisualChange = values[Keys.INTERRUPT_SPEECH_V2] ?: false,
             sceneDescriptionStyle = SceneDescriptionStyle.fromStored(values[Keys.SCENE_DESCRIPTION_STYLE]),
             useLocalOcr = values[Keys.USE_LOCAL_OCR] ?: false,
+            describeAlongsideText = values[Keys.DESCRIBE_ALONGSIDE_TEXT] ?: false,
             localReadingQuality =
                 LocalReadingQuality.fromStored(values[Keys.LOCAL_READING_QUALITY]),
             captureFailureEvidence = values[Keys.CAPTURE_FAILURE_EVIDENCE] ?: false,
@@ -59,6 +60,9 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
 
     override suspend fun setUseLocalOcr(enabled: Boolean) = update(Keys.USE_LOCAL_OCR, enabled)
 
+    override suspend fun setDescribeAlongsideText(enabled: Boolean) =
+        update(Keys.DESCRIBE_ALONGSIDE_TEXT, enabled)
+
     override suspend fun setLocalReadingQuality(quality: LocalReadingQuality) =
         update(Keys.LOCAL_READING_QUALITY, quality.name)
 
@@ -82,6 +86,7 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
         val INTERRUPT_SPEECH_V2 = booleanPreferencesKey("interrupt_speech_on_visual_change_v2")
         val SCENE_DESCRIPTION_STYLE = stringPreferencesKey("scene_description_style")
         val USE_LOCAL_OCR = booleanPreferencesKey("use_local_ocr")
+        val DESCRIBE_ALONGSIDE_TEXT = booleanPreferencesKey("describe_alongside_text")
         val LOCAL_READING_QUALITY = stringPreferencesKey("local_reading_quality")
         val CAPTURE_FAILURE_EVIDENCE = booleanPreferencesKey("capture_failure_evidence")
         val SPEECH_RATE = floatPreferencesKey("speech_rate")

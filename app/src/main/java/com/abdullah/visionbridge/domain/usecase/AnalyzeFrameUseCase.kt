@@ -17,6 +17,7 @@ class AnalyzeFrameUseCase(private val repository: VisionAiRepository) {
         sceneDescriptionStyle: SceneDescriptionStyle,
         captureProfile: CaptureProfile,
         trustGateEnabled: Boolean,
+        describeAlongsideText: Boolean,
         onSpeechChunk: suspend (text: String, urgent: Boolean) -> Unit,
     ): AnalysisResult = repository.analyzeStreaming(
         bitmap = bitmap,
@@ -27,6 +28,7 @@ class AnalyzeFrameUseCase(private val repository: VisionAiRepository) {
         sceneDescriptionStyle = sceneDescriptionStyle,
         captureProfile = captureProfile,
         trustGateEnabled = trustGateEnabled,
+        describeAlongsideText = describeAlongsideText,
         onSpeechChunk = onSpeechChunk,
     )
 }

@@ -84,6 +84,7 @@ class MainActivity : ComponentActivity() {
                         onSceneDescriptionStyleChange = viewModel::setSceneDescriptionStyle,
                         onSpeechRateChange = viewModel::setSpeechRate,
                         onUseLocalOcrChange = viewModel::setUseLocalOcr,
+                        onDescribeAlongsideTextChange = viewModel::setDescribeAlongsideText,
                         onLocalReadingQualityChange = viewModel::setLocalReadingQuality,
                         onCaptureFailureEvidenceChange = viewModel::setCaptureFailureEvidence,
                         onDiscardEvidenceFrames = viewModel::discardEvidenceFrames,

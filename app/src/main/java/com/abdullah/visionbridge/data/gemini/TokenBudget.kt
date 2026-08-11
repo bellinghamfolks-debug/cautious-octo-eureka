@@ -40,8 +40,16 @@ object TokenBudget {
      * Latin runs to well over a thousand tokens, and cutting it off leaves the user hearing half a
      * page and the retry loop starting again from the top.
      */
-    fun maxOutputTokens(mode: AnalysisMode, style: SceneDescriptionStyle): Int = when (mode) {
-        AnalysisMode.TEXT_READING -> TEXT_READING_CEILING
+    fun maxOutputTokens(
+        mode: AnalysisMode,
+        style: SceneDescriptionStyle,
+        withSceneTail: Boolean = false,
+    ): Int = when (mode) {
+        // The tail is one sentence, but it arrives *after* the page. If the ceiling does not grow
+        // with it, adding a description would silently cost the last lines of the transcription —
+        // the failure this whole class was written to make impossible.
+        AnalysisMode.TEXT_READING ->
+            if (withSceneTail) TEXT_READING_CEILING + SCENE_TAIL_ALLOWANCE else TEXT_READING_CEILING
         AnalysisMode.SCENE_DESCRIPTION -> when (style) {
             SceneDescriptionStyle.COMPREHENSIVE -> COMPREHENSIVE_CEILING
             SceneDescriptionStyle.BRIEF -> BRIEF_CEILING
@@ -87,6 +95,9 @@ object TokenBudget {
 
     /** One sentence, plus the reasoning pass — which is the part that used to not fit at all. */
     const val BRIEF_CEILING = 1_400
+
+    /** One Arabic sentence, with room for the marker and for the model to be a little generous. */
+    const val SCENE_TAIL_ALLOWANCE = 300
 
     /** Perception under a deadline. The API's own default is several times this. */
     const val LOW = "LOW"

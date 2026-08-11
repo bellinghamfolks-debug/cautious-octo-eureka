@@ -11,6 +11,16 @@ data class AppSettings(
     val sceneDescriptionStyle: SceneDescriptionStyle = SceneDescriptionStyle.COMPREHENSIVE,
     /** Read text with the on-device PP-OCR engine instead of Gemini. Describing stays cloud-only. */
     val useLocalOcr: Boolean = false,
+    /**
+     * Add one sentence about the surroundings after a reading, from the same request.
+     *
+     * Off by default, because most readings do not want it: someone pointing at a price tag is
+     * asking what the price is. When it is on, the reading is still delivered first and at the same
+     * speed — the sentence is a tail that is spoken only if the subject has not moved on, never a
+     * preamble and never a second request. Ignored when the on-device reader is in use, which has
+     * no way to describe anything.
+     */
+    val describeAlongsideText: Boolean = false,
     /** How much of the captured image the on-device reader uses. Speed against fine print. */
     val localReadingQuality: LocalReadingQuality = LocalReadingQuality.AUTO,
     /**

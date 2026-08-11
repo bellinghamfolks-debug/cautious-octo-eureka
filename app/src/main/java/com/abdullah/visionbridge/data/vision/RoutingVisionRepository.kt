@@ -41,6 +41,7 @@ class RoutingVisionRepository(
         sceneDescriptionStyle: SceneDescriptionStyle,
         captureProfile: CaptureProfile,
         trustGateEnabled: Boolean,
+        describeAlongsideText: Boolean,
         onSpeechChunk: suspend (text: String, urgent: Boolean) -> Unit,
     ): AnalysisResult {
         val trace = currentCoroutineContext()[DiagnosticTrace]
@@ -70,6 +71,7 @@ class RoutingVisionRepository(
                 sceneDescriptionStyle = sceneDescriptionStyle,
                 captureProfile = captureProfile,
                 trustGateEnabled = trustGateEnabled,
+                describeAlongsideText = describeAlongsideText,
                 onSpeechChunk = onSpeechChunk,
             )
         }
@@ -85,6 +87,9 @@ class RoutingVisionRepository(
             // The trust gate compares Gemini's own output against a second opinion. On-device
             // reading is the second opinion, so there is nothing here for it to check.
             trustGateEnabled = false,
+            // The on-device reader has no way to describe anything, so a reading routed to it is
+            // a reading only. The switch stays on; it simply has nothing to add here.
+            describeAlongsideText = false,
             onSpeechChunk = onSpeechChunk,
         )
     }

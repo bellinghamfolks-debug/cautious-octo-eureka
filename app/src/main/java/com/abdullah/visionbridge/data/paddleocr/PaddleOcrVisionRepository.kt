@@ -39,6 +39,7 @@ class PaddleOcrVisionRepository(
         sceneDescriptionStyle: SceneDescriptionStyle,
         captureProfile: CaptureProfile,
         trustGateEnabled: Boolean,
+        describeAlongsideText: Boolean,
         onSpeechChunk: suspend (text: String, urgent: Boolean) -> Unit,
     ): AnalysisResult {
         if (mode != AnalysisMode.TEXT_READING) throw SceneDescriptionUnsupportedException()

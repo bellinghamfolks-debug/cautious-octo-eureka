@@ -7,10 +7,33 @@ package com.abdullah.visionbridge.data.gemini
  */
 class GeminiStreamAccumulator(
     private val requireQualityHeader: Boolean = false,
+    /**
+     * Accept a `SCENE|` section after the transcription, and hold it back from the streamed body.
+     *
+     * This is what makes reading-with-a-description one request instead of two. The transcription
+     * still streams to speech the instant it arrives, because that is what someone pointing at a
+     * label is waiting for; the description accumulates silently behind the marker and is offered
+     * separately, so the caller can speak it as a tail, or drop it if the user has already moved
+     * on. Mixing the two into one stream is what would make the feature a jumble.
+     */
+    private val acceptSceneTail: Boolean = false,
 ) {
     private val preamble = StringBuilder()
     private val fullTextBuilder = StringBuilder()
+    private val sceneTailBuilder = StringBuilder()
     private var headerResolved = false
+
+    /**
+     * A partial marker held back until enough characters arrive to tell `SCENE|` from ordinary
+     * text that merely begins with `S`. Without this the marker would be spoken one letter at a
+     * time as it streamed in.
+     */
+    private val markerCandidate = StringBuilder()
+    private var inSceneTail = false
+
+    /** The description that followed the transcription, empty when there was none. */
+    val sceneTail: String
+        get() = sceneTailBuilder.toString().trim()
 
     var language: String = "und"
         private set
@@ -83,7 +106,7 @@ class GeminiStreamAccumulator(
     }
 
     fun finish(): String {
-        if (headerResolved || preamble.isEmpty()) return ""
+        if (headerResolved || preamble.isEmpty()) return releaseMarkerCandidate()
         headerResolved = true
         val remainder = preamble.toString()
         preamble.clear()
@@ -111,8 +134,70 @@ class GeminiStreamAccumulator(
 
     private fun appendBody(text: String): String {
         if (text.isEmpty() || !ocrAccepted) return ""
-        fullTextBuilder.append(text)
-        return text
+        if (!acceptSceneTail) {
+            fullTextBuilder.append(text)
+            return text
+        }
+        return appendSectioned(text)
+    }
+
+    /**
+     * Routes each character to the transcription or to the held-back description, splitting on the
+     * `SCENE|` marker.
+     *
+     * The marker can be delivered across any number of SSE deltas — `SC`, then `ENE|` — so a
+     * prefix of it is buffered rather than emitted. If the buffered text turns out not to be the
+     * marker after all it is released unchanged, because a page that genuinely begins a line with
+     * "SCENE" is a page, not a protocol.
+     */
+    private fun appendSectioned(text: String): String {
+        val emitted = StringBuilder()
+        for (character in text) {
+            if (inSceneTail) {
+                sceneTailBuilder.append(character)
+                continue
+            }
+
+            // The line break that ends the transcription belongs to the marker, not to the page, so
+            // it is held with it rather than emitted first and trimmed afterwards. Emitting it and
+            // then removing it from the accumulated text would break the one invariant the caller
+            // relies on: that the deltas it was handed add up to `fullText`.
+            if (markerCandidate.isEmpty() && !couldStartMarker(character)) {
+                fullTextBuilder.append(character)
+                emitted.append(character)
+                continue
+            }
+
+            markerCandidate.append(character)
+            when {
+                markerCandidate.toString().trimStart('\n', '\r') == SCENE_PREFIX -> {
+                    inSceneTail = true
+                    markerCandidate.clear()
+                }
+                isMarkerPrefix(markerCandidate) -> Unit // still could be the marker
+                else -> emitted.append(releaseMarkerCandidate())
+            }
+        }
+        return emitted.toString()
+    }
+
+    /** A line break may precede the marker, so both it and the marker's first letter open one. */
+    private fun couldStartMarker(character: Char): Boolean =
+        character == '\n' || character == '\r' || character == SCENE_PREFIX[0]
+
+    /** Newlines, then as much of `SCENE|` as has arrived, and nothing else. */
+    private fun isMarkerPrefix(candidate: CharSequence): Boolean {
+        val rest = candidate.toString().trimStart('\n', '\r')
+        return SCENE_PREFIX.startsWith(rest)
+    }
+
+    /** Whatever was still being held as a possible marker when the stream ended was ordinary text. */
+    private fun releaseMarkerCandidate(): String {
+        if (markerCandidate.isEmpty()) return ""
+        val held = markerCandidate.toString()
+        markerCandidate.clear()
+        fullTextBuilder.append(held)
+        return held
     }
 
     private fun parseMetadata(line: String) {
@@ -155,6 +240,9 @@ class GeminiStreamAccumulator(
     private companion object {
         const val META_PREFIX = "META|"
         const val QUALITY_PREFIX = "QUALITY|"
+
+        /** Starts the description that follows a transcription in reading-with-description. */
+        const val SCENE_PREFIX = "SCENE|"
         const val MIN_OCR_CONFIDENCE = 82
         const val MAX_HEADER_LENGTH = 420
     }

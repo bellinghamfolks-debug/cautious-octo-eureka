@@ -18,6 +18,7 @@ interface SettingsRepository {
     suspend fun setInterruptSpeechOnVisualChange(enabled: Boolean)
     suspend fun setSceneDescriptionStyle(style: SceneDescriptionStyle)
     suspend fun setUseLocalOcr(enabled: Boolean)
+    suspend fun setDescribeAlongsideText(enabled: Boolean)
 
     suspend fun setLocalReadingQuality(quality: LocalReadingQuality)
     /** Store the frame behind a failure in the diagnostic bundle. Off by default; see AppSettings. */

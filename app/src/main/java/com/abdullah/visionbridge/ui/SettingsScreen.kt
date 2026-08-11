@@ -74,6 +74,7 @@ fun SettingsScreen(
     onSceneDescriptionStyleChange: (SceneDescriptionStyle) -> Unit,
     onSpeechRateChange: (Float) -> Unit,
     onUseLocalOcrChange: (Boolean) -> Unit,
+    onDescribeAlongsideTextChange: (Boolean) -> Unit,
     onLocalReadingQualityChange: (LocalReadingQuality) -> Unit,
     onCaptureFailureEvidenceChange: (Boolean) -> Unit,
     onDiscardEvidenceFrames: () -> Unit,
@@ -205,6 +206,23 @@ fun SettingsScreen(
                         }
                     }
                 }
+
+                SectionTitle("القراءة مع الوصف")
+                AccessibleSwitchRow(
+                    title = "أضف جملة وصف بعد قراءة النص",
+                    description = if (state.settings.describeAlongsideText) {
+                        "بعد قراءة النص تُنطق جملة واحدة تصف ما يحمله وأين هو. " +
+                            "الطلب واحد، فالقراءة لا تتأخر، والجملة تُلغى تلقائياً إن حرّكت الكاميرا."
+                    } else {
+                        "يُقرأ النص وحده. فعّل هذا الخيار لسماع جملة قصيرة تصف ما حول النص بعده."
+                    },
+                    checked = state.settings.describeAlongsideText,
+                    onCheckedChange = onDescribeAlongsideTextChange,
+                )
+                Text(
+                    text = "تعمل مع وضع قراءة النص عبر Gemini فقط. القراءة على الجهاز لا تصف.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
 
                 SectionTitle("OCR على الجهاز")
                 AccessibleSwitchRow(

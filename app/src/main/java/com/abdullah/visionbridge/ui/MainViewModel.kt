@@ -71,6 +71,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setDescribeAlongsideText(enabled: Boolean) = viewModelScope.launch {
+        container.settingsRepository.setDescribeAlongsideText(enabled)
+        message.value = if (enabled) {
+            "بعد كل قراءة ستسمع جملة واحدة تصف ما حول النص. الطلب واحد، فالقراءة لا تتأخر."
+        } else {
+            "سيُقرأ النص وحده دون وصف."
+        }
+    }
+
     fun setLocalReadingQuality(quality: LocalReadingQuality) = viewModelScope.launch {
         container.settingsRepository.setLocalReadingQuality(quality)
         message.value = when (quality) {

@@ -17,6 +17,7 @@ import com.abdullah.visionbridge.domain.model.CaptureProfile
 import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
 import com.abdullah.visionbridge.domain.repository.ApiKeyStore
 import com.abdullah.visionbridge.domain.repository.SettingsRepository
+import com.abdullah.visionbridge.data.speech.HybridReadingPlan
 import com.abdullah.visionbridge.domain.usecase.AnalyzeFrameUseCase
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -82,6 +83,9 @@ class FrameAnalysisCoordinator(
     /** Visual generation that the reading currently being spoken belongs to. */
     @Volatile
     private var activeReadingGeneration = Long.MIN_VALUE
+
+    /** The subject whose surroundings have already been described, so they are not described twice. */
+    private var lastDescribedGeneration = Long.MIN_VALUE
 
     /** Visual generation of the last completed text analysis, and when it completed. */
     @Volatile
@@ -509,7 +513,15 @@ class FrameAnalysisCoordinator(
                 }
                 publishIfCurrent(result, frame.settings, frame.visualGeneration, frame.trace)
                 if (frame.mode == AnalysisMode.TEXT_READING) {
-                    speakDocument(result, frame.settings, frame.visualGeneration, frame.trace)
+                    val spokeNewText =
+                        speakDocument(result, frame.settings, frame.visualGeneration, frame.trace)
+                    speakSceneTail(
+                        result = result,
+                        settings = frame.settings,
+                        generationAtCapture = frame.visualGeneration,
+                        spokeNewText = spokeNewText,
+                        trace = frame.trace,
+                    )
                 }
             } catch (error: OcrTrustRejectedException) {
                 DiagnosticHub.record(
@@ -664,6 +676,7 @@ class FrameAnalysisCoordinator(
             sceneDescriptionStyle = settings.sceneDescriptionStyle,
             captureProfile = settings.captureProfile,
             trustGateEnabled = settings.trustGateEnabled,
+            describeAlongsideText = settings.describeAlongsideText,
             onSpeechChunk = speechChunk@{ streamedText, urgent ->
                 synchronized(cloudQueueLock) {
                     lastCloudProgressAtElapsedMs = SystemClock.elapsedRealtime()
@@ -882,25 +895,29 @@ class FrameAnalysisCoordinator(
      * partial blocks as they arrive: a page is a document, and half of one read out of order is
      * worse than the same page read a second later in full.
      */
+    /** @return true when new text was queued for speech; false when there was nothing new to say. */
     private suspend fun speakDocument(
         result: AnalysisResult,
         settings: AppSettings,
         generationAtCapture: Long,
         trace: DiagnosticTrace?,
-    ) {
-        if (!settings.speechEnabled || result.text.isBlank()) return
+    ): Boolean {
+        if (!settings.speechEnabled || result.text.isBlank()) return false
 
         when (val decision = readingLedger.evaluate(result.text)) {
-            is ReadingLedger.Decision.Skip -> DiagnosticHub.record(
-                "DOCUMENT_READING_SKIPPED",
-                trace.fieldsOrEmpty(
-                    mapOf(
-                        "reason" to decision.reason,
-                        "text" to result.text,
-                        "visualGeneration" to generationAtCapture,
+            is ReadingLedger.Decision.Skip -> {
+                DiagnosticHub.record(
+                    "DOCUMENT_READING_SKIPPED",
+                    trace.fieldsOrEmpty(
+                        mapOf(
+                            "reason" to decision.reason,
+                            "text" to result.text,
+                            "visualGeneration" to generationAtCapture,
+                        ),
                     ),
-                ),
-            )
+                )
+                return false
+            }
 
             is ReadingLedger.Decision.Speak -> {
                 val blocks = documentBlocks(decision.text)
@@ -916,7 +933,7 @@ class FrameAnalysisCoordinator(
                         ),
                     ),
                 )
-                if (blocks.isEmpty()) return
+                if (blocks.isEmpty()) return false
 
                 activeReadingGeneration = generationAtCapture
                 val readingId = tts.beginReading(
@@ -931,8 +948,68 @@ class FrameAnalysisCoordinator(
                 // Nothing is written to the ledger here. What the user heard is known only once the
                 // engine reports it, and on a device where the target changes every few hundred
                 // milliseconds the two answers differ by most of a page.
+                return true
             }
         }
+    }
+
+    /**
+     * Speaks the one-sentence description that came back with a reading, when it is still worth
+     * hearing.
+     *
+     * The sentence cost nothing extra to produce — it rode along on the request that read the page
+     * — but it costs the user seconds to listen to, and those are the seconds in which they are
+     * already moving on to the next thing. [HybridReadingPlan] holds the rules; this supplies the
+     * three facts only the coordinator knows and carries out the answer.
+     */
+    private suspend fun speakSceneTail(
+        result: AnalysisResult,
+        settings: AppSettings,
+        generationAtCapture: Long,
+        spokeNewText: Boolean,
+        trace: DiagnosticTrace?,
+    ) {
+        if (result.sceneTail.isBlank()) return
+
+        val plan = HybridReadingPlan.plan(
+            text = result.text,
+            description = result.sceneTail,
+            textAlreadyRead = !spokeNewText,
+            subjectAlreadyDescribed = lastDescribedGeneration == generationAtCapture,
+            subjectUnchanged = generationAtCapture == visualGeneration.get(),
+        )
+        val tail = plan.utterances.lastOrNull()?.takeIf { it.isDescription }
+
+        DiagnosticHub.record(
+            "SCENE_TAIL_PLANNED",
+            trace.fieldsOrEmpty(
+                mapOf(
+                    "reason" to plan.reason,
+                    "spoken" to (tail != null),
+                    "text" to result.sceneTail,
+                    "characters" to result.sceneTail.length,
+                    "visualGeneration" to generationAtCapture,
+                    "currentGeneration" to visualGeneration.get(),
+                ),
+            ),
+        )
+        if (tail == null) return
+
+        lastDescribedGeneration = generationAtCapture
+        if (!settings.speechEnabled) return
+        DiagnosticHub.record(
+            "TTS_REQUESTED",
+            trace.fieldsOrEmpty(
+                mapOf(
+                    "text" to tail.text,
+                    "source" to "SCENE_TAIL",
+                    "rate" to settings.speechRate,
+                    // Never interrupts: the reading it follows is the thing the user asked for.
+                    "interruptPrevious" to false,
+                ),
+            ),
+        )
+        tts.speakFeedback(text = tail.text, rate = settings.speechRate, interruptPrevious = false)
     }
 
     /** Splits an accepted page into ordered speech blocks with document-sized phrasing. */

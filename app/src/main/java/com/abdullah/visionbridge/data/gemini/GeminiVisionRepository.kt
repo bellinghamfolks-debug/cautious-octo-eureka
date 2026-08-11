@@ -87,6 +87,7 @@ class GeminiVisionRepository(
         sceneDescriptionStyle: SceneDescriptionStyle,
         captureProfile: CaptureProfile,
         trustGateEnabled: Boolean,
+        describeAlongsideText: Boolean,
         onSpeechChunk: suspend (text: String, urgent: Boolean) -> Unit,
     ): AnalysisResult {
         val trace = currentCoroutineContext()[DiagnosticTrace]
@@ -190,6 +191,11 @@ class GeminiVisionRepository(
                     ),
                 )
 
+                // Only a cloud reading can carry a description, and only when the user asked for
+                // one. Computed once here so the prompt, the token ceiling and the parser cannot
+                // disagree about whether a tail is coming.
+                val tailRequested = describeAlongsideText && mode == AnalysisMode.TEXT_READING
+
                 val client = if (network == null) {
                     baseClient
                 } else {
@@ -212,7 +218,12 @@ class GeminiVisionRepository(
                             GeminiContent(
                                 parts = listOf(
                                     GeminiPart(
-                                        text = promptFor(mode, sceneDescriptionStyle, trustGateEnabled)
+                                        text = promptFor(
+                                            mode = mode,
+                                            sceneDescriptionStyle = sceneDescriptionStyle,
+                                            trustGateEnabled = trustGateEnabled,
+                                            describeAlongsideText = tailRequested,
+                                        )
                                     ),
                                     GeminiPart(
                                         inlineData = InlineData(
@@ -224,7 +235,7 @@ class GeminiVisionRepository(
                             )
                         ),
                         generationConfig = GenerationConfig(
-                            maxOutputTokens = TokenBudget.maxOutputTokens(mode, sceneDescriptionStyle),
+                            maxOutputTokens = TokenBudget.maxOutputTokens(mode, sceneDescriptionStyle, tailRequested),
                             temperature = if (mode == AnalysisMode.TEXT_READING) 0.0 else SCENE_TEMPERATURE,
                             mediaResolution = mediaResolution(mode, captureProfile, sceneDescriptionStyle),
                             thinkingConfig = thinkingLevel?.let { ThinkingConfig(thinkingLevel = it) },
@@ -241,7 +252,7 @@ class GeminiVisionRepository(
                                 "durationMs" to
                                     (SystemClock.elapsedRealtimeNanos() - serializationStarted) / 1_000_000.0,
                                 "requestUtf8Bytes" to payloadBytes,
-                                "maxOutputTokens" to TokenBudget.maxOutputTokens(mode, sceneDescriptionStyle),
+                                "maxOutputTokens" to TokenBudget.maxOutputTokens(mode, sceneDescriptionStyle, tailRequested),
                                 "thinkingLevel" to thinkingLevel,
                                 "temperature" to
                                     if (mode == AnalysisMode.TEXT_READING) 0.0 else SCENE_TEMPERATURE,
@@ -286,7 +297,8 @@ class GeminiVisionRepository(
                         trustGateEnabled = trustGateEnabled,
                         trace = trace,
                         requestStartedElapsedNanos = requestStarted,
-                        maxOutputTokens = TokenBudget.maxOutputTokens(mode, sceneDescriptionStyle),
+                        maxOutputTokens = TokenBudget.maxOutputTokens(mode, sceneDescriptionStyle, tailRequested),
+                        acceptSceneTail = tailRequested,
                         onSpeechChunk = onSpeechChunk,
                     )
                 }
@@ -349,11 +361,15 @@ class GeminiVisionRepository(
         trace: DiagnosticTrace?,
         requestStartedElapsedNanos: Long,
         maxOutputTokens: Int,
+        acceptSceneTail: Boolean,
         onSpeechChunk: suspend (text: String, urgent: Boolean) -> Unit,
     ): AnalysisResult {
         val signals = Channel<StreamSignal>(Channel.UNLIMITED)
         val requireQualityHeader = mode == AnalysisMode.TEXT_READING && trustGateEnabled
-        val accumulator = GeminiStreamAccumulator(requireQualityHeader = requireQualityHeader)
+        val accumulator = GeminiStreamAccumulator(
+            requireQualityHeader = requireQualityHeader,
+            acceptSceneTail = acceptSceneTail,
+        )
         val speechBuffer = StreamingSpeechBuffer(
             profile = if (mode == AnalysisMode.TEXT_READING) {
                 StreamingSpeechBuffer.Profile.DOCUMENT
@@ -661,6 +677,7 @@ class GeminiVisionRepository(
             source = AnalysisSource.GEMINI,
             language = accumulator.language,
             urgent = accumulator.urgent,
+            sceneTail = accumulator.sceneTail,
         )
     }
 
@@ -685,8 +702,14 @@ class GeminiVisionRepository(
         mode: AnalysisMode,
         sceneDescriptionStyle: SceneDescriptionStyle,
         trustGateEnabled: Boolean,
+        describeAlongsideText: Boolean = false,
     ): String = when (mode) {
-        AnalysisMode.TEXT_READING -> if (trustGateEnabled) OCR_TRUSTED_PROMPT else OCR_FAST_PROMPT
+        AnalysisMode.TEXT_READING -> {
+            val base = if (trustGateEnabled) OCR_TRUSTED_PROMPT else OCR_FAST_PROMPT
+            // Appended rather than written as a third prompt, so the transcription instructions the
+            // reading depends on stay byte-identical whether or not the tail was asked for.
+            if (describeAlongsideText) base + "\n" + SCENE_TAIL_INSTRUCTION else base
+        }
         AnalysisMode.SCENE_DESCRIPTION -> when (sceneDescriptionStyle) {
             SceneDescriptionStyle.COMPREHENSIVE -> SCENE_COMPREHENSIVE_PROMPT
             SceneDescriptionStyle.BRIEF -> SCENE_BRIEF_PROMPT
@@ -732,6 +755,20 @@ class GeminiVisionRepository(
             حافظ على ترتيب القراءة البصري ومواقع العربية والإنجليزية كما تظهر.
             لا تصحح الإملاء ولا تكمل كلمة من السياق. استخدم [غير واضح] للحروف التي لا تستطيع رؤيتها.
             استخدم علامات نهاية الجمل الموجودة، ولا تضف مقدمة.
+        """.trimIndent()
+
+        /**
+         * Appended to a reading prompt when the user has asked for a description alongside it.
+         *
+         * Deliberately one sentence. The tail exists to place the text — "the bottle you are
+         * holding", "a sign on the wall to your right" — not to describe the room a second time,
+         * and a long tail would undo the reason reading is a separate mode at all.
+         */
+        val SCENE_TAIL_INSTRUCTION = """
+            بعد انتهاء النص تماماً، أضف سطراً يبدأ بـ SCENE| ثم جملة عربية واحدة فقط تصف
+            ما يحمل هذا النص وأين هو بالنسبة للمستخدم. لا تعد قراءة النص داخلها ولا تفسّره.
+            إن لم يكن في الصورة نص، اكتب SCENE| مباشرة بعد سطر META واجعل الجملة وصفاً لما أمامك.
+            لا تكتب SCENE| أكثر من مرة، ولا تضف شيئاً بعد الجملة.
         """.trimIndent()
 
         val SCENE_COMPREHENSIVE_PROMPT = """
