@@ -45,6 +45,11 @@ class BilingualTtsEngine(context: Context) {
         val flushFirst: Boolean,
         val trace: DiagnosticTrace?,
         val enqueuedAtElapsedNanos: Long,
+        /**
+         * Which live description this block belongs to, or [NOT_LIVE] for speech that keeps its
+         * value however long it waits. See [supersedeLiveSpeech].
+         */
+        val liveGeneration: Long = NOT_LIVE,
     )
 
     private class UtteranceState(
@@ -91,8 +96,25 @@ class BilingualTtsEngine(context: Context) {
     private var consecutiveTimeouts = 0
 
     /**
+     * Which live description is current. Blocks stamped with an older one are dropped rather than
+     * spoken; see [supersedeLiveSpeech] for why that is not the same as throwing away speech the
+     * user was promised.
+     */
+    private val liveGeneration = AtomicLong(1L)
+
+    /**
+     * Live blocks queued but not yet resolved. A reading has [outstandingBlocks] for this; a scene
+     * had nothing, which is why nothing upstream could tell that a description was still being
+     * spoken and stop buying the next one.
+     */
+    private val liveBlocksOutstanding = AtomicInteger(0)
+
+    /**
      * Unbounded on purpose. Backpressure is applied one level up by refusing to analyze a page that
      * is still being read, not by throwing away speech the user has already been promised.
+     *
+     * That reasoning holds for a page and fails for a live scene, which is why live blocks carry a
+     * generation. A page waits as well at minute two as at second two; a room does not.
      */
     private val requests = Channel<SpeechRequest>(Channel.UNLIMITED)
 
@@ -100,7 +122,23 @@ class BilingualTtsEngine(context: Context) {
         initializeEngine("initialization")
         scope.launch {
             for (request in requests) {
-                val outcome = if (request.generation == generation.get()) {
+                val outcome = if (request.isStaleLiveDescription()) {
+                    DiagnosticHub.record(
+                        "TTS_REQUEST_DROPPED",
+                        request.trace.fieldsOrEmpty(
+                            mapOf(
+                                "reason" to "superseded_by_newer_scene",
+                                "text" to request.text,
+                                "requestLiveGeneration" to request.liveGeneration,
+                                "currentLiveGeneration" to liveGeneration.get(),
+                                "queuedForMs" to
+                                    (SystemClock.elapsedRealtimeNanos() - request.enqueuedAtElapsedNanos) /
+                                    1_000_000.0,
+                            ),
+                        ),
+                    )
+                    SpeechOutcome.SUPERSEDED_BEFORE_START
+                } else if (request.generation == generation.get()) {
                     speakRequest(request)
                 } else {
                     DiagnosticHub.record(
@@ -120,6 +158,9 @@ class BilingualTtsEngine(context: Context) {
                 if (request.readingId != NO_READING) {
                     reportBlock(request, outcome)
                     releaseBlock()
+                }
+                if (request.liveGeneration != NOT_LIVE) {
+                    liveBlocksOutstanding.updateAndGet { if (it > 0) it - 1 else 0 }
                 }
             }
         }
@@ -238,6 +279,9 @@ class BilingualTtsEngine(context: Context) {
     fun isReadingInProgress(): Boolean =
         activeReadingId.get() != NO_READING && (readingOpen || outstandingBlocks.get() > 0)
 
+    /** True while blocks of the current live description are still queued or being spoken. */
+    fun isLiveDescriptionInProgress(): Boolean = liveBlocksOutstanding.get() > 0
+
     /** Retires one queued block, never dropping the counter below zero after an interrupt. */
     private fun releaseBlock() {
         outstandingBlocks.updateAndGet { current -> if (current > 0) current - 1 else 0 }
@@ -245,12 +289,49 @@ class BilingualTtsEngine(context: Context) {
 
     // endregion
 
-    /** One-shot content speech that is not part of a streamed reading, such as local OCR output. */
+    /**
+     * Retires every live description block that has not started yet.
+     *
+     * A scene description is a statement about where the user is standing *now*, and it is the one
+     * kind of speech this app produces that expires. A field session on 2026-08-13 shows what
+     * happens without this: the model produced a full description every 4.0 seconds, speaking one
+     * took roughly 20, and because "let speech finish" was on, each new description queued behind
+     * the last. The backlog grew all session. The user was hearing rooms they had left a median of
+     * **96 seconds** earlier, and up to 159 — walking through a kitchen while being told about a
+     * fridge two minutes behind them.
+     *
+     * Dropping those blocks is not discarding speech the user was promised; it is declining to tell
+     * a blind person that a wall is in front of them when it is not. What is already being spoken
+     * is never cut — the sentence in the air finishes — so this remains compatible with the setting
+     * that asks speech not to be interrupted. It only means the queue behind that sentence holds
+     * the newest description rather than every description since the session began.
+     *
+     * The prompt orders a description by importance, hazard first, so the part a supersession drops
+     * is the part that mattered least.
+     */
+    fun supersedeLiveSpeech(reason: String) {
+        val retired = liveGeneration.incrementAndGet()
+        DiagnosticHub.record(
+            "LIVE_SPEECH_SUPERSEDED",
+            mapOf("reason" to reason, "newLiveGeneration" to retired),
+        )
+    }
+
+    private fun SpeechRequest.isStaleLiveDescription(): Boolean =
+        liveGeneration != NOT_LIVE && liveGeneration < this@BilingualTtsEngine.liveGeneration.get()
+
+    /**
+     * One-shot content speech that is not part of a streamed reading, such as local OCR output.
+     *
+     * [live] marks a block as belonging to the current scene description, which expires when a
+     * newer one arrives. Everything else waits its turn however long that takes.
+     */
     suspend fun speak(
         text: String,
         urgent: Boolean = false,
         rate: Float = 1.0f,
         interruptPrevious: Boolean = false,
+        live: Boolean = false,
     ) {
         if (!DocumentSpeechPolicy.isSpeakable(text)) return
         val trace = currentCoroutineContext()[DiagnosticTrace]
@@ -268,6 +349,7 @@ class BilingualTtsEngine(context: Context) {
             interruptPrevious = interruptPrevious,
             readingId = NO_READING,
             trace = trace,
+            liveGeneration = if (live) liveGeneration.get() else NOT_LIVE,
         )
     }
 
@@ -442,6 +524,7 @@ class BilingualTtsEngine(context: Context) {
         readingId: Long,
         blockIndex: Int = NO_BLOCK,
         trace: DiagnosticTrace?,
+        liveGeneration: Long = NOT_LIVE,
     ) {
         val readyStarted = SystemClock.elapsedRealtimeNanos()
         if (!ensureEngineReady(trace, text)) {
@@ -460,6 +543,7 @@ class BilingualTtsEngine(context: Context) {
                 generation.get()
             }
             val enqueuedAt = SystemClock.elapsedRealtimeNanos()
+            if (liveGeneration != NOT_LIVE) liveBlocksOutstanding.incrementAndGet()
             val request = SpeechRequest(
                 text = text,
                 rate = rate.coerceIn(0.6f, 1.8f),
@@ -467,6 +551,7 @@ class BilingualTtsEngine(context: Context) {
                 readingId = readingId,
                 blockIndex = blockIndex,
                 flushFirst = interruptPrevious,
+                liveGeneration = liveGeneration,
                 trace = trace,
                 enqueuedAtElapsedNanos = enqueuedAt,
             )
@@ -744,6 +829,12 @@ class BilingualTtsEngine(context: Context) {
                 reportBlock(request, discardedOutcome)
                 releaseBlock()
             }
+            // Same reasoning for a live block: pulled off here it never reaches the worker, and an
+            // unbalanced counter would leave the coordinator believing a description is still being
+            // spoken and refusing to buy the next one — silence, from a bookkeeping slip.
+            if (request.liveGeneration != NOT_LIVE) {
+                liveBlocksOutstanding.updateAndGet { if (it > 0) it - 1 else 0 }
+            }
         }
         val activeCount = utterances.size
         utterances.forEach { (id, state) ->
@@ -803,6 +894,9 @@ class BilingualTtsEngine(context: Context) {
 
         /** Block index for speech that is not part of a reading, such as a status notice. */
         const val NO_BLOCK = -1
+
+        /** Speech that does not expire: a page, a notice, an error. Only a live scene does. */
+        const val NOT_LIVE = 0L
 
         /** The one interrupt reason that is the user's own decision rather than a new target. */
         const val EXPLICIT_STOP_REASON = "explicit_stop"

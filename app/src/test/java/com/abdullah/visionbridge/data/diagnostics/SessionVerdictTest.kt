@@ -28,6 +28,53 @@ class SessionVerdictTest {
     private fun codes(events: List<SessionVerdict.Event>): List<String> =
         SessionVerdict.analyse(events).map { it.code }
 
+    // region speech that has fallen behind the view
+
+    /**
+     * The 2026-08-13 scene session: nothing failed, every description was correct, and the median
+     * sentence described a frame 95 seconds old while the user walked through a different room.
+     */
+    @Test
+    fun `speech describing a view long gone is named`() {
+        val events = buildList {
+            repeat(20) { add(event("TTS_UTTERANCE_STARTED", "sinceCaptureMs" to 95_000.0)) }
+        }
+        val finding = SessionVerdict.analyse(events)
+            .first { it.code == "SPEECH_DESCRIBES_A_VIEW_ALREADY_GONE" }
+        assertEquals(SessionVerdict.Severity.FATAL, finding.severity)
+        assertTrue(finding.measurement.contains("95"))
+    }
+
+    /** Ordinary latency — analysis, network, queue — is not a backlog. */
+    @Test
+    fun `speech that keeps up with the view says nothing`() {
+        val events = buildList {
+            repeat(20) { add(event("TTS_UTTERANCE_STARTED", "sinceCaptureMs" to 5_000.0)) }
+        }
+        assertTrue("SPEECH_DESCRIBES_A_VIEW_ALREADY_GONE" !in codes(events))
+    }
+
+    /** One slow sentence in a short session is not a pattern worth a verdict. */
+    @Test
+    fun `a few utterances are not enough to judge`() {
+        val events = buildList {
+            repeat(4) { add(event("TTS_UTTERANCE_STARTED", "sinceCaptureMs" to 95_000.0)) }
+        }
+        assertTrue("SPEECH_DESCRIBES_A_VIEW_ALREADY_GONE" !in codes(events))
+    }
+
+    /** The median is what matters: a handful of late sentences among fresh ones is not the defect. */
+    @Test
+    fun `a minority of late sentences does not raise it`() {
+        val events = buildList {
+            repeat(16) { add(event("TTS_UTTERANCE_STARTED", "sinceCaptureMs" to 4_000.0)) }
+            repeat(4) { add(event("TTS_UTTERANCE_STARTED", "sinceCaptureMs" to 120_000.0)) }
+        }
+        assertTrue("SPEECH_DESCRIBES_A_VIEW_ALREADY_GONE" !in codes(events))
+    }
+
+    // endregion
+
     // region work discarded before it reaches the user
 
     /**

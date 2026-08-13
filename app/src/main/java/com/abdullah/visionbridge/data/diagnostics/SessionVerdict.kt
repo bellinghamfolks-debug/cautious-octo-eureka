@@ -68,6 +68,7 @@ object SessionVerdict {
         val findings = listOfNotNull(
             projectionDied(events),
             answersTruncated(events),
+            speechFallenBehindTheView(events),
             textNotDelivered(events),
             speechCutOff(events),
             analysisDiscardedBeforeDelivery(events),
@@ -180,6 +181,43 @@ object SessionVerdict {
             measurement = "${truncated.size} إجابة من ${finishes.size} انتهت بسبب نفاد سقف الرموز " +
                 "(${percent(ratio)}).$split ما سُمع جزء من جملة، وما بعده لم يُرسل أصلاً.",
             evidence = listOf("MODEL_FINISH_REASON", "MODEL_OUTPUT_TRUNCATED"),
+        )
+    }
+
+    /**
+     * The user is being told about a room they have already left.
+     *
+     * This is the defect no existing rule could see, because nothing failed. Every request
+     * succeeded, every description was correct, every sentence was spoken in full — and all of it
+     * described somewhere the user had walked away from a minute and a half earlier. On the
+     * 2026-08-13 session the median spoken sentence was about a frame **96 seconds** old, the worst
+     * 159. The arithmetic behind it is simply production against consumption: a full description
+     * every 4.0 seconds, twenty seconds to speak one, and a queue that was asked to hold the
+     * difference.
+     *
+     * For a blind user navigating by these sentences that is not a delay, it is wrong information
+     * delivered confidently, which is why it outranks almost everything else here. It is measured
+     * from the frame the words describe to the moment they were spoken, because that gap is the
+     * user's experience of it and no single component's timing shows it.
+     */
+    private fun speechFallenBehindTheView(events: List<Event>): Finding? {
+        val ages = events
+            .filter { it.type == "TTS_UTTERANCE_STARTED" }
+            // Already on every traced event: the gap from the frame to the moment of the record.
+            .mapNotNull { it.number("sinceCaptureMs") }
+            .sorted()
+        if (ages.size < MIN_UTTERANCES_TO_JUDGE) return null
+        val median = ages[ages.size / 2]
+        if (median < STALE_SPEECH_MS) return null
+
+        return Finding(
+            code = "SPEECH_DESCRIBES_A_VIEW_ALREADY_GONE",
+            severity = Severity.FATAL,
+            headline = "ما يُنطق يصف مشهداً غادره المستخدم منذ وقت طويل.",
+            measurement = "${ages.size} جملة، وسيط عمر المشهد الذي تصفه ${(median / 1000).toInt()} " +
+                "ثانية، وأسوأها ${(ages.last() / 1000).toInt()}. لا شيء فشل — الطابور فقط " +
+                "يتراكم أسرع مما يُنطق، فيسمع المستخدم غرفة تركها لا الغرفة التي يقف فيها.",
+            evidence = listOf("TTS_UTTERANCE_STARTED", "LIVE_SPEECH_SUPERSEDED"),
         )
     }
 
@@ -570,6 +608,12 @@ object SessionVerdict {
 
     private const val MIN_CHARACTERS_TO_JUDGE = 200
     private const val DELIVERY_FLOOR = 0.5
+
+    /** Enough spoken sentences that a lagging queue is a pattern, not one slow moment. */
+    private const val MIN_UTTERANCES_TO_JUDGE = 10
+
+    /** Beyond this a live description is about somewhere else. Chosen well above normal latency. */
+    private const val STALE_SPEECH_MS = 15_000.0
 
     /** Enough responses that a run of truncations is a setting, not a long answer or two. */
     private const val MIN_RESPONSES_TO_JUDGE = 5

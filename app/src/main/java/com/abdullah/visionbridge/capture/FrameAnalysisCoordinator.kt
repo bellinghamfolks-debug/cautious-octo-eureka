@@ -87,6 +87,10 @@ class FrameAnalysisCoordinator(
     /** The subject whose surroundings have already been described, so they are not described twice. */
     private var lastDescribedGeneration = Long.MIN_VALUE
 
+    /** The view the description now being spoken belongs to. */
+    @Volatile
+    private var lastDescribedSceneGeneration = Long.MIN_VALUE
+
     /** Visual generation of the last completed text analysis, and when it completed. */
     @Volatile
     private var lastTextAnalysisGeneration = Long.MIN_VALUE
@@ -187,12 +191,10 @@ class FrameAnalysisCoordinator(
                     }
                 }
 
-                AnalysisMode.SCENE_DESCRIPTION -> queueDynamicScene(
-                    bitmap,
-                    settings,
-                    generationAtCapture,
-                    trace,
-                )
+                AnalysisMode.SCENE_DESCRIPTION -> {
+                    if (shouldDeferUnchangedScene(generationAtCapture, trace)) return@withLock
+                    queueDynamicScene(bitmap, settings, generationAtCapture, trace)
+                }
             }
         } catch (error: OcrTrustRejectedException) {
             DiagnosticHub.record(
@@ -711,6 +713,13 @@ class FrameAnalysisCoordinator(
                     ),
                 )
                 if (settings.speechEnabled && streamedText.isNotBlank()) {
+                    // Retired here rather than when the request was launched: a request that fails
+                    // or is cancelled must not silence the description the user is still hearing.
+                    // The old one is dropped only once a newer one has actually produced words.
+                    if (mode == AnalysisMode.SCENE_DESCRIPTION && firstSpeechBlock) {
+                        tts.supersedeLiveSpeech("newer_scene_description_started")
+                        lastDescribedSceneGeneration = generationAtCapture
+                    }
                     DiagnosticHub.record(
                         "TTS_REQUESTED",
                         trace.fieldsOrEmpty(
@@ -728,6 +737,9 @@ class FrameAnalysisCoordinator(
                         urgent = urgent,
                         rate = settings.speechRate,
                         interruptPrevious = urgent && firstSpeechBlock,
+                        // A scene description expires. Marking it live lets the newest one retire
+                        // whatever is still queued from the room the user has already left.
+                        live = mode == AnalysisMode.SCENE_DESCRIPTION,
                     )
                     firstSpeechBlock = false
                 }
@@ -821,6 +833,39 @@ class FrameAnalysisCoordinator(
                 interruptPrevious = settings.interruptSpeechOnVisualChange,
             )
         }
+    }
+
+    /**
+     * Refuses to describe again a view the user is already hearing described.
+     *
+     * Scene description had no such gate, and text reading did. The consequence is measured in a
+     * field session from 2026-08-13: a full description was produced every 4.0 seconds while
+     * speaking one took roughly twenty, so five descriptions were bought for every one that could
+     * be heard. Sixty-seven requests were sent; thirteen never finished; and of what did finish,
+     * most reached the speech queue only to sit behind the rest.
+     *
+     * The gate is deliberately narrower than the reading one: it holds only while the view is
+     * *unchanged*. The moment the target really is new, the description is out of date and a fresh
+     * one is worth every millisecond — that path is not throttled at all, and the queue is cleared
+     * for it by [BilingualTtsEngine.supersedeLiveSpeech]. What this stops is paying five times over
+     * to be told the same room.
+     */
+    private fun shouldDeferUnchangedScene(
+        generationAtCapture: Long,
+        trace: DiagnosticTrace?,
+    ): Boolean {
+        if (generationAtCapture != lastDescribedSceneGeneration) return false
+        if (!tts.isLiveDescriptionInProgress()) return false
+        DiagnosticHub.record(
+            "SCENE_DESCRIPTION_DEFERRED",
+            trace.fieldsOrEmpty(
+                mapOf(
+                    "reason" to "description_in_progress_for_same_view",
+                    "visualGeneration" to generationAtCapture,
+                ),
+            ),
+        )
+        return true
     }
 
     /**
