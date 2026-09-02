@@ -9,6 +9,11 @@ import com.abdullah.visionbridge.domain.repository.VisionAiRepository
 
 internal const val LOW_LATENCY_VISION_MODEL = "gemini-3.5-flash-lite"
 
+/**
+ * VisionBridge routes by user intent rather than blindly using the largest model everywhere.
+ * FAST_TEXT and BRIEF scene description are latency lanes and always use Flash-Lite. Stable text
+ * and comprehensive scene analysis keep the selected model, whose default is Gemini 3.8 Flash.
+ */
 internal fun selectVisionModel(
     requestedModel: String,
     mode: AnalysisMode,
@@ -16,9 +21,8 @@ internal fun selectVisionModel(
     sceneDescriptionStyle: SceneDescriptionStyle,
     trustGateEnabled: Boolean,
 ): String = when {
-    mode == AnalysisMode.TEXT_READING &&
-        captureProfile == CaptureProfile.FAST_TEXT &&
-        !trustGateEnabled -> LOW_LATENCY_VISION_MODEL
+    mode == AnalysisMode.TEXT_READING && captureProfile == CaptureProfile.FAST_TEXT ->
+        LOW_LATENCY_VISION_MODEL
     mode == AnalysisMode.SCENE_DESCRIPTION &&
         sceneDescriptionStyle == SceneDescriptionStyle.BRIEF -> LOW_LATENCY_VISION_MODEL
     else -> requestedModel
