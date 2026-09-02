@@ -6,6 +6,6 @@ enum class CaptureProfile {
 
     companion object {
         fun fromStored(value: String?): CaptureProfile =
-            entries.firstOrNull { it.name == value } ?: STABLE
+            entries.firstOrNull { it.name == value } ?: FAST_TEXT
     }
 }
