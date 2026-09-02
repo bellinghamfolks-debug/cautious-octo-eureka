@@ -7,7 +7,7 @@ data class AppSettings(
     val speechEnabled: Boolean = true,
     val localOcrEnabled: Boolean = true,
     val trustGateEnabled: Boolean = false,
-    val captureProfile: CaptureProfile = CaptureProfile.STABLE,
+    val captureProfile: CaptureProfile = CaptureProfile.FAST_TEXT,
     val interruptSpeechOnVisualChange: Boolean = false,
     val sceneDescriptionStyle: SceneDescriptionStyle = SceneDescriptionStyle.COMPREHENSIVE,
     val speechRate: Float = 1.0f,
@@ -16,10 +16,11 @@ data class AppSettings(
     val sceneIntervalMs: Long = 3_000L,
 ) {
     companion object {
-        const val DEFAULT_MODEL = "gemini-3.6-flash"
+        const val DEFAULT_MODEL = "gemini-3.5-flash-lite"
         const val MIN_SPEECH_RATE = 0.6f
         const val MAX_SPEECH_RATE = 1.8f
         val SUPPORTED_MODELS = listOf(
+            "gemini-3.7-flash",
             "gemini-3.6-flash",
             "gemini-3.5-flash",
             "gemini-3.5-flash-lite",
