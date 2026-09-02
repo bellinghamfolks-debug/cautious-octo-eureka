@@ -16,10 +16,11 @@ data class AppSettings(
     val sceneIntervalMs: Long = 3_000L,
 ) {
     companion object {
-        const val DEFAULT_MODEL = "gemini-3.5-flash-lite"
+        const val DEFAULT_MODEL = "gemini-3.8-flash"
         const val MIN_SPEECH_RATE = 0.6f
         const val MAX_SPEECH_RATE = 1.8f
         val SUPPORTED_MODELS = listOf(
+            "gemini-3.8-flash",
             "gemini-3.7-flash",
             "gemini-3.6-flash",
             "gemini-3.5-flash",
