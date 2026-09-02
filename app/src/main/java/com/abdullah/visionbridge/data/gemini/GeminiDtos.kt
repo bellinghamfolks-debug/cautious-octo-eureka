@@ -1,7 +1,10 @@
 package com.abdullah.visionbridge.data.gemini
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 
 @Serializable
 data class GenerateContentRequest(
@@ -40,12 +43,18 @@ data class ThinkingConfig(
     @SerialName("thinkingLevel") val thinkingLevel: String,
 )
 
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class GenerationConfig(
     @SerialName("maxOutputTokens") val maxOutputTokens: Int = 700,
     @SerialName("responseMimeType") val responseMimeType: String = "text/plain",
-    val temperature: Double = 0.0,
+    // Kept in the constructor so existing call sites remain source-compatible, but intentionally
+    // excluded from Gemini 3.x payloads. Model defaults are safer than legacy sampling overrides.
+    @Transient val temperature: Double = 0.0,
     @SerialName("mediaResolution") val mediaResolution: String = "MEDIA_RESOLUTION_HIGH",
+    // kotlinx.serialization omits default-valued properties unless explicitly forced. Gemini 3.8
+    // must actually receive `low`; fast Flash-Lite lanes must actually receive `minimal`.
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
     @SerialName("thinkingConfig") val thinkingConfig: ThinkingConfig = ThinkingConfig(
         thinkingLevel = adaptiveThinkingLevel(maxOutputTokens, mediaResolution),
     ),
