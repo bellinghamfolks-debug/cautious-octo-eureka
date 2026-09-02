@@ -56,11 +56,12 @@ class Gemini38CompatibilityTest {
     }
 
     @Test
-    fun `generation config has no unsupported candidate count`() {
+    fun `generation payload excludes legacy sampling and candidate count fields`() {
         val encoded = json.encodeToString(
             GenerationConfig.serializer(),
-            GenerationConfig(),
+            GenerationConfig(temperature = 0.1),
         )
+        assertFalse(encoded.contains("temperature"))
         assertFalse(encoded.contains("candidateCount"))
         assertFalse(encoded.contains("candidate_count"))
     }
