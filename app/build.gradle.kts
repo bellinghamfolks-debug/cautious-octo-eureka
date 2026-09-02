@@ -13,8 +13,8 @@ android {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 35
-        versionCode = 15
-        versionName = "1.12.0"
+        versionCode = 16
+        versionName = "1.13.0"
 
         // Xiaomi 14T uses a 64-bit ARM processor. Keeping only arm64-v8a removes native binaries
         // for emulators and legacy 32-bit phones.
