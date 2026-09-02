@@ -24,18 +24,27 @@ data class InlineData(
     val data: String,
 )
 
+/**
+ * Gemini 3.8 and 3.7 reject `minimal`; `low` is their lowest supported latency setting.
+ * Older Flash/Flash-Lite models used by VisionBridge accept `minimal` and remain on it for the
+ * latency-critical lane.
+ */
+internal fun thinkingLevelForModel(model: String): String = when (model) {
+    "gemini-3.8-flash", "gemini-3.7-flash" -> "low"
+    else -> "minimal"
+}
+
 @Serializable
 data class ThinkingConfig(
-    @SerialName("thinkingLevel") val thinkingLevel: String = "minimal",
+    @SerialName("thinkingLevel") val thinkingLevel: String,
 )
 
 @Serializable
 data class GenerationConfig(
     @SerialName("maxOutputTokens") val maxOutputTokens: Int = 700,
     @SerialName("responseMimeType") val responseMimeType: String = "text/plain",
-    val temperature: Double = 0.0,
     @SerialName("mediaResolution") val mediaResolution: String = "MEDIA_RESOLUTION_HIGH",
-    @SerialName("thinkingConfig") val thinkingConfig: ThinkingConfig = ThinkingConfig(),
+    @SerialName("thinkingConfig") val thinkingConfig: ThinkingConfig,
 )
 
 @Serializable
