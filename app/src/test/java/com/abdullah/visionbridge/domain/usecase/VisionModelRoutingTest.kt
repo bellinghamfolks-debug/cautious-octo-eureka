@@ -16,31 +16,19 @@ class VisionModelRoutingTest {
     }
 
     @Test
-    fun `fast untrusted OCR stays on Flash Lite for minimum latency`() {
-        assertEquals(
-            LOW_LATENCY_VISION_MODEL,
-            selectVisionModel(
-                requestedModel = "gemini-3.8-flash",
-                mode = AnalysisMode.TEXT_READING,
-                captureProfile = CaptureProfile.FAST_TEXT,
-                sceneDescriptionStyle = SceneDescriptionStyle.COMPREHENSIVE,
-                trustGateEnabled = false,
-            ),
-        )
-    }
-
-    @Test
-    fun `trusted fast OCR can use Gemini 3_8 quality path`() {
-        assertEquals(
-            "gemini-3.8-flash",
-            selectVisionModel(
-                requestedModel = "gemini-3.8-flash",
-                mode = AnalysisMode.TEXT_READING,
-                captureProfile = CaptureProfile.FAST_TEXT,
-                sceneDescriptionStyle = SceneDescriptionStyle.COMPREHENSIVE,
-                trustGateEnabled = true,
-            ),
-        )
+    fun `fast OCR always stays on Flash Lite for minimum latency`() {
+        listOf(false, true).forEach { trustGateEnabled ->
+            assertEquals(
+                LOW_LATENCY_VISION_MODEL,
+                selectVisionModel(
+                    requestedModel = "gemini-3.8-flash",
+                    mode = AnalysisMode.TEXT_READING,
+                    captureProfile = CaptureProfile.FAST_TEXT,
+                    sceneDescriptionStyle = SceneDescriptionStyle.COMPREHENSIVE,
+                    trustGateEnabled = trustGateEnabled,
+                ),
+            )
+        }
     }
 
     @Test
