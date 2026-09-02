@@ -56,7 +56,6 @@ class GeminiStreamAccumulator(
                     inferred = true
                     return ""
                 }
-                // A malformed or truncated protocol line is internal control data, never user text.
                 if (headerText.trimStart().startsWith(META_PREFIX)) return ""
                 return appendBody(headerText + if (remainder.isNotEmpty()) "\n$remainder" else "")
             }
@@ -88,9 +87,6 @@ class GeminiStreamAccumulator(
         val remainder = preamble.toString()
         preamble.clear()
 
-        // A cancelled SSE stream frequently ends halfway through "META|language=...". The previous
-        // fallback exposed that protocol fragment on screen and through TTS. Control lines are now
-        // discarded even when the request closes before its first newline.
         val trimmed = remainder.trimStart()
         if (trimmed.startsWith(META_PREFIX) || trimmed.startsWith(QUALITY_PREFIX)) {
             if (requireQualityHeader) {
@@ -160,8 +156,18 @@ class GeminiStreamAccumulator(
     }
 }
 
-class StreamingSpeechBuffer {
+/**
+ * Turns network deltas into natural speech blocks.
+ *
+ * The first block uses an eager latency path: after a short, complete-word prefix arrives it can be
+ * spoken without waiting for punctuation or for the SSE stream to close. Later blocks keep the
+ * original sentence/clause boundaries so long responses remain pleasant and do not cut words.
+ */
+class StreamingSpeechBuffer(
+    private val eagerFirstBlock: Boolean = true,
+) {
     private val pending = StringBuilder()
+    private var emittedAny = false
 
     fun append(delta: String, urgent: Boolean): List<String> {
         if (delta.isNotEmpty()) pending.append(delta)
@@ -200,6 +206,14 @@ class StreamingSpeechBuffer {
             }
         }
 
+        if (eagerFirstBlock && !emittedAny && pending.length >= FIRST_BLOCK_TRIGGER_CHARS) {
+            val searchEnd = minOf(pending.lastIndex, FIRST_BLOCK_MAX_CHARS)
+            val whitespace = pending.lastIndexOf(' ', startIndex = searchEnd)
+            if (whitespace >= FIRST_BLOCK_MIN_CHARS) return whitespace + 1
+            val newline = pending.lastIndexOf('\n', startIndex = searchEnd)
+            if (newline >= FIRST_BLOCK_MIN_CHARS) return newline + 1
+        }
+
         if (pending.length >= MAX_BLOCK_CHARS) {
             val preferred = pending.lastIndexOf(' ', startIndex = MAX_BLOCK_CHARS)
             return if (preferred >= MIN_SENTENCE_CHARS) preferred + 1 else -1
@@ -211,7 +225,10 @@ class StreamingSpeechBuffer {
         val value = pending.substring(0, boundary).trim()
         pending.delete(0, boundary)
         while (pending.isNotEmpty() && pending.first().isWhitespace()) pending.deleteCharAt(0)
-        if (value.isNotEmpty()) output += value
+        if (value.isNotEmpty()) {
+            output += value
+            emittedAny = true
+        }
     }
 
     private companion object {
@@ -222,5 +239,8 @@ class StreamingSpeechBuffer {
         const val MIN_CLAUSE_CHARS = 36
         const val MAX_SENTENCES_PER_BLOCK = 3
         const val MAX_BLOCK_CHARS = 160
+        const val FIRST_BLOCK_TRIGGER_CHARS = 24
+        const val FIRST_BLOCK_MIN_CHARS = 10
+        const val FIRST_BLOCK_MAX_CHARS = 52
     }
 }
