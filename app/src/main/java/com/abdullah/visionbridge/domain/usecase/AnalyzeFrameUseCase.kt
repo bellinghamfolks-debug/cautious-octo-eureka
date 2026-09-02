@@ -18,15 +18,29 @@ class AnalyzeFrameUseCase(private val repository: VisionAiRepository) {
         captureProfile: CaptureProfile,
         trustGateEnabled: Boolean,
         onSpeechChunk: suspend (text: String, urgent: Boolean) -> Unit,
-    ): AnalysisResult = repository.analyzeStreaming(
-        bitmap = bitmap,
-        mode = mode,
-        model = model,
-        apiKey = apiKey,
-        forceCellular = forceCellular,
-        sceneDescriptionStyle = sceneDescriptionStyle,
-        captureProfile = captureProfile,
-        trustGateEnabled = trustGateEnabled,
-        onSpeechChunk = onSpeechChunk,
-    )
+    ): AnalysisResult {
+        val effectiveModel = when {
+            mode == AnalysisMode.TEXT_READING &&
+                captureProfile == CaptureProfile.FAST_TEXT &&
+                !trustGateEnabled -> LOW_LATENCY_MODEL
+            mode == AnalysisMode.SCENE_DESCRIPTION &&
+                sceneDescriptionStyle == SceneDescriptionStyle.BRIEF -> LOW_LATENCY_MODEL
+            else -> model
+        }
+        return repository.analyzeStreaming(
+            bitmap = bitmap,
+            mode = mode,
+            model = effectiveModel,
+            apiKey = apiKey,
+            forceCellular = forceCellular,
+            sceneDescriptionStyle = sceneDescriptionStyle,
+            captureProfile = captureProfile,
+            trustGateEnabled = trustGateEnabled,
+            onSpeechChunk = onSpeechChunk,
+        )
+    }
+
+    companion object {
+        const val LOW_LATENCY_MODEL = "gemini-3.5-flash-lite"
+    }
 }
