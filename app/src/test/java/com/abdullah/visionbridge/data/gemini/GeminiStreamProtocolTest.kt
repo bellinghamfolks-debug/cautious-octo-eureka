@@ -79,8 +79,8 @@ class GeminiStreamProtocolTest {
     }
 
     @Test
-    fun `network word fragments are held until a complete sentence`() {
-        val buffer = StreamingSpeechBuffer()
+    fun `strict speech mode still holds network fragments until a complete sentence`() {
+        val buffer = StreamingSpeechBuffer(eagerFirstBlock = false)
         assertTrue(buffer.append("يوجد نص عربي وفي الوسط Open", urgent = false).isEmpty())
         assertTrue(buffer.append("AI ثم يعود النص العربي", urgent = false).isEmpty())
         val output = buffer.append(" في الترتيب الصحيح تماماً.", urgent = false)
@@ -88,6 +88,15 @@ class GeminiStreamProtocolTest {
             listOf("يوجد نص عربي وفي الوسط OpenAI ثم يعود النص العربي في الترتيب الصحيح تماماً."),
             output,
         )
+    }
+
+    @Test
+    fun `eager speech emits a complete word prefix before punctuation arrives`() {
+        val buffer = StreamingSpeechBuffer()
+        assertTrue(buffer.append("أمامك باب مفتوح وعلى", urgent = false).isEmpty())
+        val first = buffer.append(" اليمين كرسي قريب", urgent = false)
+        assertEquals(listOf("أمامك باب مفتوح وعلى اليمين كرسي"), first)
+        assertEquals(listOf("قريب"), buffer.finish())
     }
 
     @Test
@@ -114,7 +123,7 @@ class GeminiStreamProtocolTest {
     }
 
     @Test
-    fun `unfinished tail is spoken only when stream closes`() {
+    fun `unfinished short tail is spoken when stream closes`() {
         val buffer = StreamingSpeechBuffer()
         assertTrue(buffer.append("النص الأخير بلا نقطة", urgent = false).isEmpty())
         assertEquals(listOf("النص الأخير بلا نقطة"), buffer.finish())
