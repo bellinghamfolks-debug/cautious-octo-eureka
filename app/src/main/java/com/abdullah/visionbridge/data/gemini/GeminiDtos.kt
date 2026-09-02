@@ -25,13 +25,19 @@ data class InlineData(
 )
 
 /**
- * `low` is the lowest thinking level accepted by Gemini 3.8/3.7 and is also supported by the
- * Flash-Lite models used on VisionBridge's latency-critical lane. Keeping one compatible value here
- * prevents a 3.8 request from failing with the unsupported `minimal` level.
+ * Stable OCR uses HIGH media resolution, while comprehensive scene descriptions use MEDIUM with a
+ * compact output budget. Those are the smart-quality lanes and use `low`, the fastest level accepted
+ * by Gemini 3.8/3.7. FAST_TEXT and BRIEF scenes are routed to Flash-Lite and retain `minimal`.
  */
+internal fun adaptiveThinkingLevel(maxOutputTokens: Int, mediaResolution: String): String = when {
+    mediaResolution == "MEDIA_RESOLUTION_HIGH" -> "low"
+    mediaResolution == "MEDIA_RESOLUTION_MEDIUM" && maxOutputTokens <= 400 -> "low"
+    else -> "minimal"
+}
+
 @Serializable
 data class ThinkingConfig(
-    @SerialName("thinkingLevel") val thinkingLevel: String = "low",
+    @SerialName("thinkingLevel") val thinkingLevel: String,
 )
 
 @Serializable
@@ -40,7 +46,9 @@ data class GenerationConfig(
     @SerialName("responseMimeType") val responseMimeType: String = "text/plain",
     val temperature: Double = 0.0,
     @SerialName("mediaResolution") val mediaResolution: String = "MEDIA_RESOLUTION_HIGH",
-    @SerialName("thinkingConfig") val thinkingConfig: ThinkingConfig = ThinkingConfig(),
+    @SerialName("thinkingConfig") val thinkingConfig: ThinkingConfig = ThinkingConfig(
+        thinkingLevel = adaptiveThinkingLevel(maxOutputTokens, mediaResolution),
+    ),
 )
 
 @Serializable
