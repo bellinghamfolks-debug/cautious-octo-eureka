@@ -9,12 +9,15 @@ import com.abdullah.visionbridge.domain.repository.SettingsRepository
 import kotlinx.coroutines.flow.first
 
 /**
- * Cloud/live switchboard layered over the proven 3.1.1 coordinator.
+ * Strict routing for VisionBridge.
  *
- * - Local text reading: untouched PP-OCR/ONNX through the legacy coordinator.
- * - Cloud text reading: Gemini Live WebSocket first.
- * - Scene description: Gemini Live WebSocket first.
- * - Any Live connection/setup/send failure: exact 3.1.1 cloud path as fallback.
+ * - Local text reading is used only when the user explicitly enables PP-OCR.
+ * - Every cloud visual task is Gemini Live only.
+ * - A missing key, setup failure, socket failure, send failure, timeout, or model rejection is
+ *   surfaced as a real Live failure. It NEVER falls back to the legacy Gemini request path.
+ *
+ * This is intentionally strict so field diagnostics cannot report a successful-looking result that
+ * was secretly produced by the old cloud path.
  */
 class LiveCloudCoordinator(
     private val settingsRepository: SettingsRepository,
@@ -25,33 +28,42 @@ class LiveCloudCoordinator(
     suspend fun process(bitmap: Bitmap) {
         val settings = settingsRepository.settings.first()
 
-        // The user's local Arabic/English reader is a separate, proven lane and remains untouched.
+        // This is an explicit user-selected offline engine, not a fallback.
         if (settings.mode == AnalysisMode.TEXT_READING && settings.useLocalOcr) {
             DiagnosticHub.record(
                 "ANALYSIS_ROUTE_SELECTED",
-                mapOf("route" to "LOCAL_PPOCR", "mode" to settings.mode.name),
+                mapOf(
+                    "route" to "LOCAL_PPOCR_EXPLICIT",
+                    "mode" to settings.mode.name,
+                    "fallback" to false,
+                ),
             )
             legacy.process(bitmap)
             return
         }
 
-        // Everything else is a cloud visual task and therefore Live-first.
         val apiKey = apiKeyStore.get()
         if (apiKey.isNullOrBlank()) {
             DiagnosticHub.record(
-                "LIVE_FRAME_FALLBACK",
-                mapOf("reason" to "api_key_missing", "mode" to settings.mode.name),
+                "LIVE_REQUIRED_FAILURE",
+                mapOf(
+                    "reason" to "api_key_missing",
+                    "mode" to settings.mode.name,
+                    "fallbackAllowed" to false,
+                ),
             )
-            legacy.process(bitmap)
+            live.reportLiveRequiredFailure("مفتاح Gemini غير موجود")
             return
         }
 
         DiagnosticHub.record(
             "ANALYSIS_ROUTE_SELECTED",
             mapOf(
-                "route" to "GEMINI_LIVE",
+                "route" to "GEMINI_LIVE_REQUIRED",
                 "mode" to settings.mode.name,
                 "localOcrEnabled" to settings.useLocalOcr,
+                "describeAlongsideText" to settings.describeAlongsideText,
+                "fallbackAllowed" to false,
             ),
         )
 
@@ -61,21 +73,31 @@ class LiveCloudCoordinator(
             DiagnosticHub.failure(
                 "LIVE_FRAME_SUBMIT",
                 error,
-                mapOf("mode" to settings.mode.name),
+                mapOf(
+                    "mode" to settings.mode.name,
+                    "describeAlongsideText" to settings.describeAlongsideText,
+                    "fallbackAllowed" to false,
+                ),
             )
         }.getOrDefault(false)
 
         if (!handled) {
             DiagnosticHub.record(
-                "LIVE_LEGACY_FALLBACK_STARTED",
-                mapOf("mode" to settings.mode.name),
+                "LIVE_REQUIRED_FAILURE",
+                mapOf(
+                    "reason" to "live_submit_or_turn_failed",
+                    "mode" to settings.mode.name,
+                    "describeAlongsideText" to settings.describeAlongsideText,
+                    "fallbackAllowed" to false,
+                ),
             )
-            legacy.process(bitmap)
+            live.reportLiveRequiredFailure("تعذر إكمال الدور المباشر")
         }
     }
 
     fun onVisualTargetChanged(interruptSpeech: Boolean) {
         live.onVisualTargetChanged(interruptSpeech)
+        // Kept only for the explicitly selected local PP-OCR lane. It never starts cloud analysis.
         legacy.onVisualTargetChanged(interruptSpeech)
     }
 
