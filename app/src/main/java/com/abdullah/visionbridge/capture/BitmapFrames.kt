@@ -8,12 +8,11 @@ import com.abdullah.visionbridge.capture.vision.TrackedFrame
 /**
  * Turns a captured frame into the pyramid the tracker registers against.
  *
- * The base resolution is the one real decision here. The signature this replaces was 24×24, which
- * on a 1080-wide capture made a single cell about 45 pixels — wider than a steady hand drifts
- * between frames, so the smallest motion it could represent was already larger than the tremor it
- * needed to forgive. At 160 a cell is about 7 pixels, corners survive, and a page of text still has
- * structure to register against, while the whole pyramid is 34,000 samples and costs a fraction of
- * a millisecond to compare.
+ * Real-device diagnostics showed target tracking itself consuming roughly half a second in the
+ * common cloud path, with occasional multi-second outliers. Live analysis does not need a large
+ * registration image: its job here is only to forgive camera motion before Gemini performs the
+ * semantic decision. A 96×96 base with three pyramid levels keeps that motion compensation while
+ * cutting the raw sample work to about 42% of the former 128×128/four-level configuration.
  */
 object BitmapFrames {
 
@@ -52,8 +51,8 @@ object BitmapFrames {
         }
     }
 
-    const val BASE_SIZE = 128
-    const val DEPTH = 4
+    const val BASE_SIZE = 96
+    const val DEPTH = 3
 
     /** Wide enough to resolve a letterbox gutter, small enough to cost nothing per frame. */
     const val VIEWPORT_EDGE = 160
