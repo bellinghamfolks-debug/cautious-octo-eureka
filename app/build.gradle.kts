@@ -18,7 +18,6 @@ val fetchOcrModels by tasks.registering(Exec::class) {
     description = "Fetches and checksums the bundled PP-OCR models"
     workingDir = rootDir
     commandLine("python3", "scripts/fetch_ocr_models.py")
-    // Re-runs only when the pinned set changes or an asset goes missing.
     inputs.file(rootProject.file("scripts/fetch_ocr_models.py"))
     outputs.dir(layout.projectDirectory.dir("src/main/assets/ppocr"))
 }
@@ -33,24 +32,12 @@ android {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 29
-        versionName = "3.1.1"
+        versionCode = 30
+        versionName = "3.2.0"
 
-        // 64-bit only. ONNX Runtime's AAR ships four ABIs; abiFilters keeps arm64-v8a and drops
-        // the rest at packaging time, so the APK carries no library this device cannot run.
-        //
-        // x86_64 joins it only when the build is asked for it, which is how the instrumented tests
-        // run at all: a managed device on an ordinary CI runner is an x86 emulator, and an
-        // arm64-only APK simply does not install on one. The first attempt failed with "No matching
-        // Apks found" for exactly that reason. The published release never sets this property, so
-        // what ships is unchanged and the arm64-only check in CI still guards it.
         ndk {
             abiFilters += "arm64-v8a"
             if (project.hasProperty("visionbridge.emulatorAbi")) {
-                // Both, because the ATD image's ABI is not something the build gets to choose: the
-                // API 30 AOSP ATD image provisioned by the managed device is 32-bit `x86`, while
-                // later levels are `x86_64`. Naming only one of them reproduces the same "No
-                // matching Apks found" failure on whichever image turns up.
                 abiFilters += "x86"
                 abiFilters += "x86_64"
             }
@@ -92,13 +79,10 @@ android {
             "META-INF/LICENSE.md",
             "META-INF/LICENSE-notice.md"
         )
-        // Uncompressed .so pages map straight from the APK instead of being extracted again.
         jniLibs.useLegacyPackaging = false
-        // The models are already compact; deflating them only costs time on every cold start.
     }
 
     androidResources {
-        // The models are already compact; deflating them only costs time on every cold start.
         noCompress += "onnx"
     }
 
@@ -109,10 +93,6 @@ android {
     }
 
     testOptions {
-        // The first automated Android execution this project has ever had. A Gradle managed device
-        // is provisioned, run and torn down by the build itself, so there is no emulator to keep
-        // alive between runs and no separate service to depend on. API 30 with the ATD image is the
-        // cheapest configuration that still runs real ART on a real ABI.
         managedDevices {
             localDevices {
                 create("pixel6Api30") {
@@ -150,8 +130,6 @@ dependencies {
 
     implementation("com.squareup.okhttp3:okhttp:5.4.0")
     implementation("com.squareup.okhttp3:okhttp-sse:5.4.0")
-    // On-device OCR. The AAR carries a complete Java API, so PP-OCRv5 runs with no JNI bridge
-    // and no CMake in this project at all.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
 
     testImplementation("junit:junit:4.13.2")
