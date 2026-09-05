@@ -25,15 +25,15 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
         AppSettings(
             mode = AnalysisMode.fromStored(values[Keys.MODE]),
             model = storedModel?.takeIf { it in AppSettings.SUPPORTED_MODELS } ?: AppSettings.DEFAULT_MODEL,
-            // Live-only 3.7 retires the old legacy-network override. A previously stored true value
-            // must not silently disable the WebSocket session after upgrading.
+            // Live-only keeps the retired network override off.
             forceCellular = false,
             speechEnabled = values[Keys.SPEECH] ?: true,
-            // Live Accuracy Guard is always on; the old trust-gate switch no longer represents a
-            // separate execution path and is intentionally reset rather than pretending otherwise.
+            // Live Accuracy Guard is always on.
             trustGateEnabled = false,
             captureProfile = CaptureProfile.fromStored(values[Keys.CAPTURE_PROFILE]),
-            interruptSpeechOnVisualChange = values[Keys.INTERRUPT_SPEECH_V2] ?: false,
+            // V3 intentionally does not inherit the old raw-interrupt toggle. Smart interruption is
+            // a different and safer policy, so upgrades start with it enabled.
+            interruptSpeechOnVisualChange = values[Keys.SMART_TARGET_INTERRUPTION_V3] ?: true,
             sceneDescriptionStyle = SceneDescriptionStyle.fromStored(values[Keys.SCENE_DESCRIPTION_STYLE]),
             useLocalOcr = values[Keys.USE_LOCAL_OCR] ?: false,
             describeAlongsideText = values[Keys.DESCRIBE_ALONGSIDE_TEXT] ?: false,
@@ -53,21 +53,18 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
     }
 
     override suspend fun setForceCellular(enabled: Boolean) {
-        // Kept only for binary/source compatibility with older callers. Live-only always uses the
-        // validated default network because the previous cellular flag made Live fail by design.
         update(Keys.FORCE_CELLULAR, false)
     }
 
     override suspend fun setSpeechEnabled(enabled: Boolean) = update(Keys.SPEECH, enabled)
 
     override suspend fun setTrustGateEnabled(enabled: Boolean) {
-        // Accuracy Guard is permanent in Live 3.7; do not persist a switch that has no real meaning.
         update(Keys.TRUST_GATE_V2, false)
     }
 
     override suspend fun setCaptureProfile(profile: CaptureProfile) = update(Keys.CAPTURE_PROFILE, profile.name)
     override suspend fun setInterruptSpeechOnVisualChange(enabled: Boolean) =
-        update(Keys.INTERRUPT_SPEECH_V2, enabled)
+        update(Keys.SMART_TARGET_INTERRUPTION_V3, enabled)
     override suspend fun setSceneDescriptionStyle(style: SceneDescriptionStyle) =
         update(Keys.SCENE_DESCRIPTION_STYLE, style.name)
     override suspend fun setUseLocalOcr(enabled: Boolean) = update(Keys.USE_LOCAL_OCR, enabled)
@@ -93,6 +90,7 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
         val TRUST_GATE_V2 = booleanPreferencesKey("ocr_trust_gate_v2")
         val CAPTURE_PROFILE = stringPreferencesKey("capture_profile")
         val INTERRUPT_SPEECH_V2 = booleanPreferencesKey("interrupt_speech_on_visual_change_v2")
+        val SMART_TARGET_INTERRUPTION_V3 = booleanPreferencesKey("smart_target_interruption_v3")
         val SCENE_DESCRIPTION_STYLE = stringPreferencesKey("scene_description_style")
         val USE_LOCAL_OCR = booleanPreferencesKey("use_local_ocr")
         val DESCRIBE_ALONGSIDE_TEXT = booleanPreferencesKey("describe_alongside_text")

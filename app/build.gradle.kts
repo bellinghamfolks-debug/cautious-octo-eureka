@@ -58,6 +58,15 @@ val applyEsightViewportSettingsV370 by tasks.registering(Exec::class) {
     dependsOn(applyLiveAccuracyGuardV362)
 }
 
+val applySmartTargetInterruptionV380 by tasks.registering(Exec::class) {
+    group = "build setup"
+    description = "Adds smart target identity, stale-turn suppression, and safe Live speech interruption"
+    workingDir = rootDir
+    commandLine("python3", "scripts/apply_smart_target_interruption_v380.py")
+    inputs.file(rootProject.file("scripts/apply_smart_target_interruption_v380.py"))
+    dependsOn(applyEsightViewportSettingsV370)
+}
+
 val fetchOcrModels by tasks.registering(Exec::class) {
     group = "build setup"
     description = "Fetches and checksums the bundled PP-OCR models"
@@ -68,7 +77,7 @@ val fetchOcrModels by tasks.registering(Exec::class) {
 }
 
 tasks.matching { it.name == "preBuild" }.configureEach {
-    dependsOn(applyEsightViewportSettingsV370, fetchOcrModels)
+    dependsOn(applySmartTargetInterruptionV380, fetchOcrModels)
 }
 
 android {
@@ -93,8 +102,8 @@ android {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 40
-        versionName = "3.7.0"
+        versionCode = 41
+        versionName = "3.8.0"
 
         ndk {
             abiFilters += "arm64-v8a"
