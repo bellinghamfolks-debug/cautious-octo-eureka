@@ -24,11 +24,20 @@ val finalizeLiveBackpressure by tasks.registering(Exec::class) {
 
 val applyLiveTextFemaleVoicePatch by tasks.registering(Exec::class) {
     group = "build setup"
-    description = "Switches Gemini Live to text output and local female-first TTS"
+    description = "Adds local female-first TTS and Live transcript result handling"
     workingDir = rootDir
     commandLine("python3", "scripts/apply_live_text_female_voice_patch.py")
     inputs.file(rootProject.file("scripts/apply_live_text_female_voice_patch.py"))
     dependsOn(finalizeLiveBackpressure)
+}
+
+val applyLiveRequiredAudioTranscriptPatch by tasks.registering(Exec::class) {
+    group = "build setup"
+    description = "Requires real Gemini Live using AUDIO plus output transcription, with no cloud fallback"
+    workingDir = rootDir
+    commandLine("python3", "scripts/apply_live_required_audio_transcript_patch.py")
+    inputs.file(rootProject.file("scripts/apply_live_required_audio_transcript_patch.py"))
+    dependsOn(applyLiveTextFemaleVoicePatch)
 }
 
 val fetchOcrModels by tasks.registering(Exec::class) {
@@ -41,7 +50,7 @@ val fetchOcrModels by tasks.registering(Exec::class) {
 }
 
 tasks.matching { it.name == "preBuild" }.configureEach {
-    dependsOn(applyLiveTextFemaleVoicePatch, fetchOcrModels)
+    dependsOn(applyLiveRequiredAudioTranscriptPatch, fetchOcrModels)
 }
 
 android {
@@ -66,8 +75,8 @@ android {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 37
-        versionName = "3.6.0"
+        versionCode = 38
+        versionName = "3.6.1"
 
         ndk {
             abiFilters += "arm64-v8a"
