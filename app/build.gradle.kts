@@ -5,14 +5,6 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
-/**
- * Downloads the four PP-OCR ONNX models into `src/main/assets/ppocr` before anything is packaged.
- *
- * The models are not committed: ~26 MB of binaries would live in every clone forever, and a pinned
- * URL plus a pinned SHA-256 is a stronger guarantee of what is in the APK than a file someone
- * committed once. The checksum decides whether a download is accepted, so a mirror that serves the
- * wrong bytes fails the build instead of shipping a reader that quietly produces nonsense.
- */
 val fetchOcrModels by tasks.registering(Exec::class) {
     group = "build setup"
     description = "Fetches and checksums the bundled PP-OCR models"
@@ -28,12 +20,26 @@ android {
     namespace = "com.abdullah.visionbridge"
     compileSdk = 36
 
+    val stableSigningPassword = System.getenv("VISIONBRIDGE_KEYSTORE_PASSWORD")
+    val stableSigningFile = rootProject.file("signing/visionbridge-signing-v1.jks")
+
+    signingConfigs {
+        if (!stableSigningPassword.isNullOrBlank() && stableSigningFile.exists()) {
+            create("visionbridgeStable") {
+                storeFile = stableSigningFile
+                storePassword = stableSigningPassword
+                keyAlias = "visionbridge"
+                keyPassword = stableSigningPassword
+            }
+        }
+    }
+
     defaultConfig {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 32
-        versionName = "3.2.2"
+        versionCode = 33
+        versionName = "3.3.0"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -48,6 +54,9 @@ android {
     }
 
     buildTypes {
+        debug {
+            signingConfigs.findByName("visionbridgeStable")?.let { signingConfig = it }
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
@@ -82,9 +91,7 @@ android {
         jniLibs.useLegacyPackaging = false
     }
 
-    androidResources {
-        noCompress += "onnx"
-    }
+    androidResources { noCompress += "onnx" }
 
     lint {
         abortOnError = true
@@ -102,7 +109,6 @@ android {
                 }
             }
         }
-
         unitTests.isIncludeAndroidResources = true
     }
 }
@@ -111,7 +117,6 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)
     androidTestImplementation(composeBom)
-
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-compose:1.10.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
@@ -123,15 +128,12 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
-
     implementation("com.squareup.okhttp3:okhttp:5.4.0")
     implementation("com.squareup.okhttp3:okhttp-sse:5.4.0")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
-
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
