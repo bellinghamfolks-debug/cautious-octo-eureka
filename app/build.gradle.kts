@@ -13,6 +13,15 @@ val applyUltraLiveLatencyPatch by tasks.registering(Exec::class) {
     inputs.file(rootProject.file("scripts/apply_ultra_live_latency_patch.py"))
 }
 
+val finalizeLiveBackpressure by tasks.registering(Exec::class) {
+    group = "build setup"
+    description = "Hardens Live turn gating and mode feedback after the main patch"
+    workingDir = rootDir
+    commandLine("python3", "scripts/finalize_live_backpressure.py")
+    inputs.file(rootProject.file("scripts/finalize_live_backpressure.py"))
+    dependsOn(applyUltraLiveLatencyPatch)
+}
+
 val fetchOcrModels by tasks.registering(Exec::class) {
     group = "build setup"
     description = "Fetches and checksums the bundled PP-OCR models"
@@ -23,7 +32,7 @@ val fetchOcrModels by tasks.registering(Exec::class) {
 }
 
 tasks.matching { it.name == "preBuild" }.configureEach {
-    dependsOn(applyUltraLiveLatencyPatch, fetchOcrModels)
+    dependsOn(finalizeLiveBackpressure, fetchOcrModels)
 }
 
 android {
