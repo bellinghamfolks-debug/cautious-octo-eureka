@@ -7,7 +7,7 @@ plugins {
 
 val applyUltraLiveLatencyPatch by tasks.registering(Exec::class) {
     group = "build setup"
-    description = "Applies the direct low-latency Gemini Live capture path"
+    description = "Applies the backpressured low-latency Gemini Live capture path"
     workingDir = rootDir
     commandLine("python3", "scripts/apply_ultra_live_latency_patch.py")
     inputs.file(rootProject.file("scripts/apply_ultra_live_latency_patch.py"))
@@ -48,8 +48,8 @@ android {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 35
-        versionName = "3.4.0"
+        versionCode = 36
+        versionName = "3.5.0"
 
         ndk {
             abiFilters += "arm64-v8a"
