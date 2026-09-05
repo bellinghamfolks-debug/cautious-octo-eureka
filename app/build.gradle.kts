@@ -40,6 +40,15 @@ val applyLiveRequiredAudioTranscriptPatch by tasks.registering(Exec::class) {
     dependsOn(applyLiveTextFemaleVoicePatch)
 }
 
+val applyLiveAccuracyGuardV362 by tasks.registering(Exec::class) {
+    group = "build setup"
+    description = "Raises Live OCR fidelity, resets text context, and prevents crop-driven hallucinations"
+    workingDir = rootDir
+    commandLine("python3", "scripts/apply_live_accuracy_guard_v362.py")
+    inputs.file(rootProject.file("scripts/apply_live_accuracy_guard_v362.py"))
+    dependsOn(applyLiveRequiredAudioTranscriptPatch)
+}
+
 val fetchOcrModels by tasks.registering(Exec::class) {
     group = "build setup"
     description = "Fetches and checksums the bundled PP-OCR models"
@@ -50,7 +59,7 @@ val fetchOcrModels by tasks.registering(Exec::class) {
 }
 
 tasks.matching { it.name == "preBuild" }.configureEach {
-    dependsOn(applyLiveRequiredAudioTranscriptPatch, fetchOcrModels)
+    dependsOn(applyLiveAccuracyGuardV362, fetchOcrModels)
 }
 
 android {
@@ -75,8 +84,8 @@ android {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 38
-        versionName = "3.6.1"
+        versionCode = 39
+        versionName = "3.6.2"
 
         ndk {
             abiFilters += "arm64-v8a"
