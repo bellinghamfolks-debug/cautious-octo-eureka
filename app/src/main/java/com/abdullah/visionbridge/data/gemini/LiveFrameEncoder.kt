@@ -12,9 +12,9 @@ import java.io.ByteArrayOutputStream
  * Fast encoder dedicated to Gemini Live.
  *
  * MediaProjectionService already crops to the live eSight viewport before the frame reaches this
- * class. Re-running the older text probe, per-row camera-chrome detector and high-resolution JPEG
- * path cost several seconds on the real Xiaomi session. Live values freshness first, so this path
- * performs one resize and one JPEG encode only.
+ * class. Live values freshness first, so this path performs one resize and one JPEG encode only.
+ * The 3.4 profile deliberately keeps scene frames compact because the Live API itself allocates a
+ * low media-resolution budget there; uploading extra pixels only burns local JPEG and network time.
  */
 class LiveFrameEncoder {
     data class EncodedFrame(
@@ -90,12 +90,12 @@ class LiveFrameEncoder {
         (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0
 
     private companion object {
-        const val TEXT_STABLE_EDGE = 1280
-        const val TEXT_FAST_EDGE = 960
-        const val SCENE_BRIEF_EDGE = 768
-        const val SCENE_COMPREHENSIVE_EDGE = 960
-        const val TEXT_STABLE_QUALITY = 86
-        const val TEXT_FAST_QUALITY = 82
-        const val SCENE_QUALITY = 80
+        const val TEXT_STABLE_EDGE = 1120
+        const val TEXT_FAST_EDGE = 800
+        const val SCENE_BRIEF_EDGE = 576
+        const val SCENE_COMPREHENSIVE_EDGE = 720
+        const val TEXT_STABLE_QUALITY = 82
+        const val TEXT_FAST_QUALITY = 78
+        const val SCENE_QUALITY = 72
     }
 }
