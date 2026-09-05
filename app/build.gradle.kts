@@ -5,6 +5,14 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+val applyUltraLiveLatencyPatch by tasks.registering(Exec::class) {
+    group = "build setup"
+    description = "Applies the direct low-latency Gemini Live capture path"
+    workingDir = rootDir
+    commandLine("python3", "scripts/apply_ultra_live_latency_patch.py")
+    inputs.file(rootProject.file("scripts/apply_ultra_live_latency_patch.py"))
+}
+
 val fetchOcrModels by tasks.registering(Exec::class) {
     group = "build setup"
     description = "Fetches and checksums the bundled PP-OCR models"
@@ -14,7 +22,9 @@ val fetchOcrModels by tasks.registering(Exec::class) {
     outputs.dir(layout.projectDirectory.dir("src/main/assets/ppocr"))
 }
 
-tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(fetchOcrModels) }
+tasks.matching { it.name == "preBuild" }.configureEach {
+    dependsOn(applyUltraLiveLatencyPatch, fetchOcrModels)
+}
 
 android {
     namespace = "com.abdullah.visionbridge"
@@ -38,8 +48,8 @@ android {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 34
-        versionName = "3.3.1"
+        versionCode = 35
+        versionName = "3.4.0"
 
         ndk {
             abiFilters += "arm64-v8a"
