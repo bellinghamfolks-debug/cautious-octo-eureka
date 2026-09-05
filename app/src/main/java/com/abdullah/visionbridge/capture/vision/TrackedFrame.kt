@@ -22,20 +22,13 @@ class TrackedFrame(val pyramid: FramePyramid) {
 
     /**
      * Corners detected across the whole pyramid, with their positions expressed in analysis-level
-     * coordinates.
-     *
-     * Detecting on one level only was tried and is not enough. A BRIEF descriptor is steered by its
-     * corner's orientation, so it survives rotation, but its sampling pattern is a fixed number of
-     * pixels across — so the same corner seen 25% larger produces a different descriptor and does
-     * not match. Measured: a 1.25× zoom of one page yielded too few matches to fit a homography at
-     * all, and the tracker was one frame away from calling it a new subject. Detecting at every
-     * level means a corner at full size in one frame can match itself at half size in another,
-     * which is what makes matching scale invariant over the pyramid's range.
+     * coordinates. The limits are intentionally conservative for the live path: enough points for
+     * rotation/zoom recovery without spending hundreds of milliseconds describing the same camera
+     * motion that Gemini's semantic gate will check again.
      */
     val features: List<Feature> by lazy(LazyThreadSafetyMode.NONE) {
         val all = ArrayList<Feature>(MAX_TOTAL_FEATURES)
         for (level in pyramid.levels.indices) {
-            // Coordinates are rescaled so features from every level live in one frame of reference.
             val scale = Math.pow(2.0, (level - analysisLevel).toDouble()).toFloat()
             for (feature in Features.detect(pyramid[level], MAX_FEATURES_PER_LEVEL)) {
                 all.add(
@@ -54,7 +47,7 @@ class TrackedFrame(val pyramid: FramePyramid) {
     }
 
     private companion object {
-        const val MAX_FEATURES_PER_LEVEL = 140
-        const val MAX_TOTAL_FEATURES = 360
+        const val MAX_FEATURES_PER_LEVEL = 100
+        const val MAX_TOTAL_FEATURES = 240
     }
 }
