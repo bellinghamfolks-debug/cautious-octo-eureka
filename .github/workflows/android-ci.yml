@@ -225,8 +225,6 @@ jobs:
     needs: signing
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    permissions:
-      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -243,21 +241,6 @@ jobs:
 
       - name: Install Android 36 SDK
         run: yes | sdkmanager "platforms;android-36" "build-tools;36.0.0"
-
-      - name: Restore private signing material
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p signing
-          gh release download visionbridge-private-signing-v1 --repo "$GITHUB_REPOSITORY" \
-            -p 'visionbridge-signing-v1.jks' \
-            -p 'visionbridge-signing-v1.pass' \
-            -D signing --clobber
-          password=$(cat signing/visionbridge-signing-v1.pass)
-          echo "VISIONBRIDGE_KEYSTORE_PASSWORD=$password" >> "$GITHUB_ENV"
-          rm signing/visionbridge-signing-v1.pass
 
       - name: Grant access to KVM
         run: |
