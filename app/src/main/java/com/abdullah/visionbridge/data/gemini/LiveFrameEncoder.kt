@@ -11,10 +11,10 @@ import java.io.ByteArrayOutputStream
 /**
  * Fast encoder dedicated to Gemini Live.
  *
- * MediaProjectionService already crops to the live eSight viewport before the frame reaches this
- * class. Live values freshness first, so this path performs one resize and one JPEG encode only.
- * The 3.4 profile deliberately keeps scene frames compact because the Live API itself allocates a
- * low media-resolution budget there; uploading extra pixels only burns local JPEG and network time.
+ * One resize plus one JPEG encode only. Dense labels need more pixels than a general scene, so the
+ * stable text profile keeps enough detail for small Arabic/English print while scene frames remain
+ * compact for latency. Backpressure in the Live turn lane prevents higher text detail from creating
+ * a request storm.
  */
 class LiveFrameEncoder {
     data class EncodedFrame(
@@ -90,12 +90,12 @@ class LiveFrameEncoder {
         (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0
 
     private companion object {
-        const val TEXT_STABLE_EDGE = 1120
-        const val TEXT_FAST_EDGE = 800
-        const val SCENE_BRIEF_EDGE = 576
-        const val SCENE_COMPREHENSIVE_EDGE = 720
-        const val TEXT_STABLE_QUALITY = 82
-        const val TEXT_FAST_QUALITY = 78
-        const val SCENE_QUALITY = 72
+        const val TEXT_STABLE_EDGE = 1440
+        const val TEXT_FAST_EDGE = 960
+        const val SCENE_BRIEF_EDGE = 640
+        const val SCENE_COMPREHENSIVE_EDGE = 760
+        const val TEXT_STABLE_QUALITY = 88
+        const val TEXT_FAST_QUALITY = 82
+        const val SCENE_QUALITY = 74
     }
 }
