@@ -15,7 +15,6 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
-# --- Gemini Live: accuracy-first text profile and strict visual grounding ---
 text = LIVE.read_text()
 if "LIVE_TEXT_ACCURACY_V362" not in text:
     text = replace_once(
@@ -32,9 +31,7 @@ if "LIVE_TEXT_ACCURACY_V362" not in text:
             model = TEXT_LIVE_MODEL,
             proactiveAudio = false,
             semanticSceneGate = false,
-            // LIVE_TEXT_ACCURACY_V362: Google's current guidance recommends HIGH for
-            // text-heavy video frames. MEDIUM + MINIMAL was fast but field data showed
-            // severe OCR hallucination, including invented regulatory/model strings.
+            // LIVE_TEXT_ACCURACY_V362: dense text needs more visual detail than the old latency-first profile.
             mediaResolution = "MEDIA_RESOLUTION_HIGH",
             thinkingLevel = "MEDIUM",
         )
@@ -43,11 +40,11 @@ if "LIVE_TEXT_ACCURACY_V362" not in text:
     )
 
     old_tail = '''            val descriptionTail = if (settings.describeAlongsideText) {
-                " بعد إكمال كل النص المرئي، اختم بجملة وصفية واحدة قصيرة تبدأ بكلمة الوصف: وتذكر ما هو الشيء الذي يحمل النص وأين يظهر تقريباً في المشهد. لا تعيد النص داخل الجملة الوصفية."
+                " بعد إكمال كل النص المرئي، اختم بجملة وصفية واحدة قصيرة تبدأ بكلمة الوصف: وتذكر ما هو الشيء الذي يحمل النص وأين يظهر تقريباً في المشهد. لا تعيد النص داخل الجملة الوصفية. وإذا لم يوجد أي نص مقروء إطلاقاً، صف أهم ما يظهر في المشهد بجملة واحدة بدلاً من الصمت."
             } else ""
 '''
     new_tail = '''            val descriptionTail = if (settings.describeAlongsideText) {
-                " بعد القراءة الحرفية فقط، يمكنك إضافة جملة واحدة تبدأ بكلمة الوصف:. صف فقط شيئاً مرئياً مباشرة في اللقطة الحالية ومكانه التقريبي. لا تستنتج نوع المنتج أو اسم الشيء من النص المقروء، ولا تصف ظلاماً أو ضبابية أو عدم وضوح إلا إذا كان ذلك حقيقة بصرية قاطعة. إذا لم تكن واثقاً من الوصف فلا تضفه."
+                " بعد القراءة الحرفية فقط، يمكنك إضافة جملة واحدة تبدأ بكلمة الوصف:. صف فقط شيئاً مرئياً مباشرة في اللقطة الحالية ومكانه التقريبي. لا تستنتج نوع المنتج أو اسم الشيء من النص المقروء أو من شكل مألوف، ولا تصف ظلاماً أو ضبابية أو عدم وضوح إلا إذا كان ذلك حقيقة بصرية قاطعة. إذا لم تكن واثقاً من الوصف فلا تضفه. وإذا لم يوجد نص موثوق فلا تحاول تعويضه بوصف تخميني."
             } else ""
 '''
     text = replace_once(text, old_tail, new_tail, "strict hybrid description tail")
@@ -64,10 +61,6 @@ if "LIVE_TEXT_ACCURACY_V362" not in text:
 '''
     text = replace_once(text, old_fast, new_fast, "fast accuracy prompt")
 
-    # A Live connection is stateful. For OCR, retaining prior visual/text turns is a liability:
-    # the next label must not inherit food-label text, model numbers, or scene semantics from the
-    # previous target. Close only after the completed text turn; the next frame opens a clean Live
-    # session while preserving the Live-only architecture.
     old_wait_tail = '''            DiagnosticHub.record(
                 "LIVE_TURN_WAIT_COMPLETED",
                 mapOf("mode" to settings.mode.name, "epoch" to activeTurnEpoch, "model" to profile.model),
@@ -89,8 +82,6 @@ if "LIVE_TEXT_ACCURACY_V362" not in text:
 '''
     text = replace_once(text, old_wait_tail, new_wait_tail, "fresh text context")
 
-    # Never speak model control sentinels in text-reading mode. A refusal to guess is success,
-    # not something the user should hear as literal English protocol text.
     old_semantic = '''            val semanticNoChange = scene && finalText.trim().equals("NO_CHANGE", ignoreCase = true)
             if (semanticNoChange) {
 '''
@@ -114,18 +105,13 @@ if "LIVE_TEXT_ACCURACY_V362" not in text:
 
     LIVE.write_text(text)
 
-# --- Capture geometry: never let dark content masquerade as a right-side UI gutter in cloud OCR ---
 media = MEDIA.read_text()
 if "LIVE_TEXT_HORIZONTAL_CROP_GUARD_V362" not in media:
     old_rect = '''        val rect = activeViewport ?: return source
         val left = (rect.left * source.width).toInt().coerceIn(0, source.width - 1)
 '''
     new_rect = '''        val detectedRect = activeViewport ?: return source
-        // LIVE_TEXT_HORIZONTAL_CROP_GUARD_V362: field diagnostics showed the right edge
-        // oscillating between 100% and about 73% of the screen while the user held the same
-        // label. Dark/flat content was being mistaken for eSight's inert control gutter and could
-        // remove a quarter of the actual card. In cloud text reading we keep the full horizontal
-        // field and only retain the detector's safer top/bottom letterbox trim.
+        // LIVE_TEXT_HORIZONTAL_CROP_GUARD_V362: preserve the full horizontal label width for cloud OCR.
         val rect = if (
             activeSettings.mode == AnalysisMode.TEXT_READING && !activeSettings.useLocalOcr
         ) {
@@ -150,7 +136,6 @@ if "LIVE_TEXT_HORIZONTAL_CROP_GUARD_V362" not in media:
     media = replace_once(media, old_rect, new_rect, "horizontal viewport guard")
     MEDIA.write_text(media)
 
-# --- Pixel fidelity: don't downscale a 1627px eSight crop to 1440 for dense labels ---
 encoder = ENCODER.read_text()
 if "TEXT_STABLE_EDGE = 1800" not in encoder:
     encoder = replace_once(encoder, "const val TEXT_STABLE_EDGE = 1440", "const val TEXT_STABLE_EDGE = 1800", "stable text edge")
