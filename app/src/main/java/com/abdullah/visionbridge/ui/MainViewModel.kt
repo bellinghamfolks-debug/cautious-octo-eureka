@@ -108,7 +108,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         message.value = "تم حذف Gemini API Key"
     }
 
-    fun setMode(mode: AnalysisMode) = viewModelScope.launch { container.settingsRepository.setMode(mode) }
+    fun setMode(mode: AnalysisMode) = viewModelScope.launch {
+        container.settingsRepository.setMode(mode)
+        message.value = when (mode) {
+            AnalysisMode.TEXT_READING -> "تم تفعيل قراءة النص"
+            AnalysisMode.SCENE_DESCRIPTION -> "تم تفعيل وصف المشهد"
+        }
+        DiagnosticHub.record("MODE_SELECTED", mapOf("mode" to mode.name))
+    }
     fun setModel(model: String) = viewModelScope.launch { container.settingsRepository.setModel(model) }
     fun setForceCellular(enabled: Boolean) = viewModelScope.launch { container.settingsRepository.setForceCellular(enabled) }
     fun setSpeechEnabled(enabled: Boolean) = viewModelScope.launch { container.settingsRepository.setSpeechEnabled(enabled) }
