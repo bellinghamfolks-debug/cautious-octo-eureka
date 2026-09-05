@@ -71,14 +71,11 @@ class MainActivity : ComponentActivity() {
             var showSettings by rememberSaveable { mutableStateOf(false) }
             VisionBridgeTheme {
                 if (showSettings) {
-                    SettingsScreen(
+                    VerifiedSettingsScreen(
                         state = state,
                         onSaveApiKey = viewModel::saveApiKey,
                         onDeleteApiKey = viewModel::deleteApiKey,
-                        onModelChange = viewModel::setModel,
-                        onForceCellularChange = viewModel::setForceCellular,
                         onSpeechChange = viewModel::setSpeechEnabled,
-                        onTrustGateChange = viewModel::setTrustGateEnabled,
                         onCaptureProfileChange = viewModel::setCaptureProfile,
                         onInterruptSpeechChange = viewModel::setInterruptSpeechOnVisualChange,
                         onSceneDescriptionStyleChange = viewModel::setSceneDescriptionStyle,
@@ -86,6 +83,7 @@ class MainActivity : ComponentActivity() {
                         onUseLocalOcrChange = viewModel::setUseLocalOcr,
                         onDescribeAlongsideTextChange = viewModel::setDescribeAlongsideText,
                         onLocalReadingQualityChange = viewModel::setLocalReadingQuality,
+                        onViewportModeChange = viewModel::setViewportMode,
                         onCaptureFailureEvidenceChange = viewModel::setCaptureFailureEvidence,
                         onDiscardEvidenceFrames = viewModel::discardEvidenceFrames,
                         onOpenAccessibilityShortcutSettings = {
@@ -118,13 +116,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * Sends the user to where the accessibility button is assigned.
-     *
-     * There is no API to assign a shortcut on the user's behalf, and there should not be: an app
-     * that could grant itself an accessibility service would be a different kind of app. The list
-     * this opens is one TalkBack users already know how to navigate.
-     */
     private fun openAccessibilityShortcutSettings() {
         val opened = runCatching {
             startActivity(
@@ -143,6 +134,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun shareDiagnosticFile(file: File) {
+        val evidenceCount = DiagnosticHub.evidenceFrameCount()
+        val includesImages = evidenceCount > 0
         runCatching {
             val uri = FileProvider.getUriForFile(
                 this@MainActivity,
@@ -152,10 +145,14 @@ class MainActivity : ComponentActivity() {
             val share = Intent(Intent.ACTION_SEND).apply {
                 type = "application/zip"
                 putExtra(Intent.EXTRA_STREAM, uri)
-                putExtra(Intent.EXTRA_SUBJECT, "VisionBridge automatic image-free diagnostics")
+                putExtra(Intent.EXTRA_SUBJECT, "VisionBridge diagnostics")
                 putExtra(
                     Intent.EXTRA_TEXT,
-                    "ملف تشخيص VisionBridge من دون صور. يتضمن الخط الزمني، والبصمات البصرية غير القابلة لإعادة بناء الصورة، ونتائج OCR وGemini، وحالة النطق، والتوقيتات.",
+                    if (includesImages) {
+                        "ملف تشخيص VisionBridge ويحتوي $evidenceCount لقطة فشل محفوظة بإذن المستخدم، إضافة إلى الخط الزمني ونتائج OCR وGemini Live وحالة النطق والتوقيتات."
+                    } else {
+                        "ملف تشخيص VisionBridge من دون صور. يتضمن الخط الزمني ونتائج OCR وGemini Live وحالة النطق والتوقيتات."
+                    },
                 )
                 clipData = ClipData.newRawUri("VisionBridge diagnostics", uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -165,7 +162,8 @@ class MainActivity : ComponentActivity() {
                 mapOf(
                     "fileName" to file.name,
                     "fileBytes" to file.length(),
-                    "includesImages" to false,
+                    "includesImages" to includesImages,
+                    "evidenceFrameCount" to evidenceCount,
                     "automaticContinuousRecording" to true,
                     "manualProblemMarkerRequired" to false,
                 ),

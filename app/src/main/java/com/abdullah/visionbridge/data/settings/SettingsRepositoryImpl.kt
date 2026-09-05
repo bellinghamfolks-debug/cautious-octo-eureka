@@ -12,6 +12,7 @@ import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
 import com.abdullah.visionbridge.domain.model.LocalReadingQuality
 import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
+import com.abdullah.visionbridge.domain.model.ViewportMode
 import com.abdullah.visionbridge.domain.repository.SettingsRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -24,18 +25,20 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
         AppSettings(
             mode = AnalysisMode.fromStored(values[Keys.MODE]),
             model = storedModel?.takeIf { it in AppSettings.SUPPORTED_MODELS } ?: AppSettings.DEFAULT_MODEL,
-            forceCellular = values[Keys.FORCE_CELLULAR] ?: false,
+            // Live-only 3.7 retires the old legacy-network override. A previously stored true value
+            // must not silently disable the WebSocket session after upgrading.
+            forceCellular = false,
             speechEnabled = values[Keys.SPEECH] ?: true,
-            // Versioned keys intentionally stop older aggressive defaults from surviving an upgrade.
-            // Users can still re-enable either option explicitly from the accessible settings screen.
-            trustGateEnabled = values[Keys.TRUST_GATE_V2] ?: false,
+            // Live Accuracy Guard is always on; the old trust-gate switch no longer represents a
+            // separate execution path and is intentionally reset rather than pretending otherwise.
+            trustGateEnabled = false,
             captureProfile = CaptureProfile.fromStored(values[Keys.CAPTURE_PROFILE]),
             interruptSpeechOnVisualChange = values[Keys.INTERRUPT_SPEECH_V2] ?: false,
             sceneDescriptionStyle = SceneDescriptionStyle.fromStored(values[Keys.SCENE_DESCRIPTION_STYLE]),
             useLocalOcr = values[Keys.USE_LOCAL_OCR] ?: false,
             describeAlongsideText = values[Keys.DESCRIBE_ALONGSIDE_TEXT] ?: false,
-            localReadingQuality =
-                LocalReadingQuality.fromStored(values[Keys.LOCAL_READING_QUALITY]),
+            localReadingQuality = LocalReadingQuality.fromStored(values[Keys.LOCAL_READING_QUALITY]),
+            viewportMode = ViewportMode.fromStored(values[Keys.VIEWPORT_MODE]),
             captureFailureEvidence = values[Keys.CAPTURE_FAILURE_EVIDENCE] ?: false,
             speechRate = (values[Keys.SPEECH_RATE] ?: 1.0f)
                 .coerceIn(AppSettings.MIN_SPEECH_RATE, AppSettings.MAX_SPEECH_RATE),
@@ -49,26 +52,32 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
         update(Keys.MODEL, model)
     }
 
-    override suspend fun setForceCellular(enabled: Boolean) = update(Keys.FORCE_CELLULAR, enabled)
+    override suspend fun setForceCellular(enabled: Boolean) {
+        // Kept only for binary/source compatibility with older callers. Live-only always uses the
+        // validated default network because the previous cellular flag made Live fail by design.
+        update(Keys.FORCE_CELLULAR, false)
+    }
+
     override suspend fun setSpeechEnabled(enabled: Boolean) = update(Keys.SPEECH, enabled)
-    override suspend fun setTrustGateEnabled(enabled: Boolean) = update(Keys.TRUST_GATE_V2, enabled)
+
+    override suspend fun setTrustGateEnabled(enabled: Boolean) {
+        // Accuracy Guard is permanent in Live 3.7; do not persist a switch that has no real meaning.
+        update(Keys.TRUST_GATE_V2, false)
+    }
+
     override suspend fun setCaptureProfile(profile: CaptureProfile) = update(Keys.CAPTURE_PROFILE, profile.name)
     override suspend fun setInterruptSpeechOnVisualChange(enabled: Boolean) =
         update(Keys.INTERRUPT_SPEECH_V2, enabled)
     override suspend fun setSceneDescriptionStyle(style: SceneDescriptionStyle) =
         update(Keys.SCENE_DESCRIPTION_STYLE, style.name)
-
     override suspend fun setUseLocalOcr(enabled: Boolean) = update(Keys.USE_LOCAL_OCR, enabled)
-
     override suspend fun setDescribeAlongsideText(enabled: Boolean) =
         update(Keys.DESCRIBE_ALONGSIDE_TEXT, enabled)
-
     override suspend fun setLocalReadingQuality(quality: LocalReadingQuality) =
         update(Keys.LOCAL_READING_QUALITY, quality.name)
-
+    override suspend fun setViewportMode(mode: ViewportMode) = update(Keys.VIEWPORT_MODE, mode.name)
     override suspend fun setCaptureFailureEvidence(enabled: Boolean) =
         update(Keys.CAPTURE_FAILURE_EVIDENCE, enabled)
-
     override suspend fun setSpeechRate(rate: Float) =
         update(Keys.SPEECH_RATE, rate.coerceIn(AppSettings.MIN_SPEECH_RATE, AppSettings.MAX_SPEECH_RATE))
 
@@ -88,6 +97,7 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
         val USE_LOCAL_OCR = booleanPreferencesKey("use_local_ocr")
         val DESCRIBE_ALONGSIDE_TEXT = booleanPreferencesKey("describe_alongside_text")
         val LOCAL_READING_QUALITY = stringPreferencesKey("local_reading_quality")
+        val VIEWPORT_MODE = stringPreferencesKey("viewport_mode_v1")
         val CAPTURE_FAILURE_EVIDENCE = booleanPreferencesKey("capture_failure_evidence")
         val SPEECH_RATE = floatPreferencesKey("speech_rate")
     }

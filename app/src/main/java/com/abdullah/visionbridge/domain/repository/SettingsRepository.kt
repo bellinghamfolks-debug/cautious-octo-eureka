@@ -5,6 +5,7 @@ import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
 import com.abdullah.visionbridge.domain.model.LocalReadingQuality
 import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
+import com.abdullah.visionbridge.domain.model.ViewportMode
 import kotlinx.coroutines.flow.Flow
 
 interface SettingsRepository {
@@ -19,10 +20,9 @@ interface SettingsRepository {
     suspend fun setSceneDescriptionStyle(style: SceneDescriptionStyle)
     suspend fun setUseLocalOcr(enabled: Boolean)
     suspend fun setDescribeAlongsideText(enabled: Boolean)
-
     suspend fun setLocalReadingQuality(quality: LocalReadingQuality)
+    suspend fun setViewportMode(mode: ViewportMode)
     /** Store the frame behind a failure in the diagnostic bundle. Off by default; see AppSettings. */
     suspend fun setCaptureFailureEvidence(enabled: Boolean)
-
     suspend fun setSpeechRate(rate: Float)
 }

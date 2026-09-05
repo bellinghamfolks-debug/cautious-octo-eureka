@@ -49,6 +49,15 @@ val applyLiveAccuracyGuardV362 by tasks.registering(Exec::class) {
     dependsOn(applyLiveRequiredAudioTranscriptPatch)
 }
 
+val applyEsightViewportSettingsV370 by tasks.registering(Exec::class) {
+    group = "build setup"
+    description = "Applies the calibrated eSight viewport and verified settings audit"
+    workingDir = rootDir
+    commandLine("python3", "scripts/apply_esight_viewport_settings_v370.py")
+    inputs.file(rootProject.file("scripts/apply_esight_viewport_settings_v370.py"))
+    dependsOn(applyLiveAccuracyGuardV362)
+}
+
 val fetchOcrModels by tasks.registering(Exec::class) {
     group = "build setup"
     description = "Fetches and checksums the bundled PP-OCR models"
@@ -59,7 +68,7 @@ val fetchOcrModels by tasks.registering(Exec::class) {
 }
 
 tasks.matching { it.name == "preBuild" }.configureEach {
-    dependsOn(applyLiveAccuracyGuardV362, fetchOcrModels)
+    dependsOn(applyEsightViewportSettingsV370, fetchOcrModels)
 }
 
 android {
@@ -84,8 +93,8 @@ android {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 39
-        versionName = "3.6.2"
+        versionCode = 40
+        versionName = "3.7.0"
 
         ndk {
             abiFilters += "arm64-v8a"

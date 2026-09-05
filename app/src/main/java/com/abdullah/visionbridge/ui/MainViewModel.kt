@@ -8,9 +8,10 @@ import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
-import com.abdullah.visionbridge.domain.model.LocalReadingQuality
 import com.abdullah.visionbridge.domain.model.CaptureState
+import com.abdullah.visionbridge.domain.model.LocalReadingQuality
 import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
+import com.abdullah.visionbridge.domain.model.ViewportMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -38,19 +39,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         MainUiState(),
     )
 
-    init {
-        refreshKeyState()
-    }
+    init { refreshKeyState() }
 
     fun setCaptureFailureEvidence(enabled: Boolean) = viewModelScope.launch {
         container.settingsRepository.setCaptureFailureEvidence(enabled)
     }
 
-    /**
-     * Switching capture off no longer deletes what it caught, because the shortcut workflow is
-     * "on, reproduce, off, export". Changing one's mind about the images is therefore an action of
-     * its own rather than a side effect, and it says how many were removed.
-     */
     fun discardEvidenceFrames() {
         val held = DiagnosticHub.evidenceFrameCount()
         DiagnosticHub.discardEvidence()
@@ -65,16 +59,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         container.settingsRepository.setUseLocalOcr(enabled)
         if (!enabled) container.localOcrEngine.release("user_disabled_local_reader")
         message.value = if (enabled) {
-            "تم تفعيل PP-OCRv5. ستتم قراءة النص على الجهاز، بينما يبقى وصف المشهد عبر Gemini."
+            "تم تفعيل PP-OCRv5. ستتم قراءة النص على الجهاز، بينما يبقى وصف المشهد عبر Gemini Live."
         } else {
-            "تم إيقاف PP-OCRv5. ستتم قراءة النص عبر Gemini."
+            "تم إيقاف PP-OCRv5. ستتم قراءة النص عبر Gemini Live فقط."
         }
     }
 
     fun setDescribeAlongsideText(enabled: Boolean) = viewModelScope.launch {
         container.settingsRepository.setDescribeAlongsideText(enabled)
         message.value = if (enabled) {
-            "بعد كل قراءة ستسمع جملة واحدة تصف ما حول النص. الطلب واحد، فالقراءة لا تتأخر."
+            "بعد كل قراءة Live قد تسمع جملة وصفية واحدة إذا كان الوصف مؤكداً."
         } else {
             "سيُقرأ النص وحده دون وصف."
         }
@@ -83,11 +77,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setLocalReadingQuality(quality: LocalReadingQuality) = viewModelScope.launch {
         container.settingsRepository.setLocalReadingQuality(quality)
         message.value = when (quality) {
-            LocalReadingQuality.AUTO ->
-                "جودة OCR على الجهاز: تلقائي. يقيس التطبيق حجم النص ويختار الدقة في كل لقطة."
-            LocalReadingQuality.FAST -> "جودة OCR على الجهاز: سريع"
-            LocalReadingQuality.BALANCED -> "جودة OCR على الجهاز: متوازن"
-            LocalReadingQuality.MAXIMUM -> "جودة OCR على الجهاز: أعلى دقة. قد تستغرق القراءة وقتًا أطول."
+            LocalReadingQuality.AUTO -> "جودة PP-OCR: تلقائي."
+            LocalReadingQuality.FAST -> "جودة PP-OCR: سريع"
+            LocalReadingQuality.BALANCED -> "جودة PP-OCR: متوازن"
+            LocalReadingQuality.MAXIMUM -> "جودة PP-OCR: أعلى دقة"
+        }
+    }
+
+    fun setViewportMode(mode: ViewportMode) = viewModelScope.launch {
+        container.settingsRepository.setViewportMode(mode)
+        message.value = when (mode) {
+            ViewportMode.AUTO -> "القص: تلقائي."
+            ViewportMode.ESIGHT_FIXED -> "القص: نافذة eSight الثابتة لكل الأوضاع."
+            ViewportMode.ESIGHT_TEXT_SAFE -> "القص: eSight نص آمن. القراءة تستخدم نافذة النظارة الثابتة."
         }
     }
 
@@ -106,69 +108,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         message.value = "تم حذف Gemini API Key"
     }
 
-    fun setMode(mode: AnalysisMode) = viewModelScope.launch {
-        container.settingsRepository.setMode(mode)
-    }
-
-    fun setModel(model: String) = viewModelScope.launch {
-        container.settingsRepository.setModel(model)
-    }
-
-    fun setForceCellular(enabled: Boolean) = viewModelScope.launch {
-        container.settingsRepository.setForceCellular(enabled)
-    }
-
-    fun setSpeechEnabled(enabled: Boolean) = viewModelScope.launch {
-        container.settingsRepository.setSpeechEnabled(enabled)
-    }
-
-    fun setTrustGateEnabled(enabled: Boolean) = viewModelScope.launch {
-        container.settingsRepository.setTrustGateEnabled(enabled)
-    }
-
-    fun setCaptureProfile(profile: CaptureProfile) = viewModelScope.launch {
-        container.settingsRepository.setCaptureProfile(profile)
-    }
-
+    fun setMode(mode: AnalysisMode) = viewModelScope.launch { container.settingsRepository.setMode(mode) }
+    fun setModel(model: String) = viewModelScope.launch { container.settingsRepository.setModel(model) }
+    fun setForceCellular(enabled: Boolean) = viewModelScope.launch { container.settingsRepository.setForceCellular(enabled) }
+    fun setSpeechEnabled(enabled: Boolean) = viewModelScope.launch { container.settingsRepository.setSpeechEnabled(enabled) }
+    fun setTrustGateEnabled(enabled: Boolean) = viewModelScope.launch { container.settingsRepository.setTrustGateEnabled(enabled) }
+    fun setCaptureProfile(profile: CaptureProfile) = viewModelScope.launch { container.settingsRepository.setCaptureProfile(profile) }
     fun setInterruptSpeechOnVisualChange(enabled: Boolean) = viewModelScope.launch {
         container.settingsRepository.setInterruptSpeechOnVisualChange(enabled)
     }
-
     fun setSceneDescriptionStyle(style: SceneDescriptionStyle) = viewModelScope.launch {
         container.settingsRepository.setSceneDescriptionStyle(style)
     }
+    fun setSpeechRate(rate: Float) = viewModelScope.launch { container.settingsRepository.setSpeechRate(rate) }
 
-    fun setSpeechRate(rate: Float) = viewModelScope.launch {
-        container.settingsRepository.setSpeechRate(rate)
-    }
-
-    /** Optional label only. The recorder already captures the complete timeline automatically. */
     fun markDiagnosticProblem(note: String) = viewModelScope.launch {
         runCatching {
             DiagnosticHub.markProblem(note)
             DiagnosticHub.storageStatus()
         }.onSuccess { status ->
             val megabytes = status.totalBytes.toDouble() / (1024.0 * 1024.0)
-            message.value =
-                "تم تحديد لحظة المشكلة. يحتوي السجل على ${status.sessionCount} جلسة من دون صور، بحجم ${String.format(Locale.US, "%.1f", megabytes)} MB"
+            val images = DiagnosticHub.evidenceFrameCount()
+            message.value = "تم تحديد لحظة المشكلة. ${status.sessionCount} جلسة، ${String.format(Locale.US, "%.1f", megabytes)} MB، لقطات محفوظة: $images"
         }.onFailure { message.value = it.message ?: "تعذر تحديد لحظة المشكلة" }
     }
 
     fun exportDiagnostics(onReady: (File) -> Unit) = viewModelScope.launch {
-        message.value = "جارٍ تجهيز ملف التشخيص من دون صور"
+        val evidenceCount = DiagnosticHub.evidenceFrameCount()
+        val includesImages = evidenceCount > 0
+        message.value = if (includesImages) {
+            "جارٍ تجهيز ملف التشخيص ومعه $evidenceCount لقطة محفوظة"
+        } else {
+            "جارٍ تجهيز ملف التشخيص من دون صور"
+        }
         runCatching {
             DiagnosticHub.record(
                 "AUTOMATIC_DIAGNOSTIC_EXPORT_REQUESTED",
                 mapOf(
                     "manualProblemMarkerRequired" to false,
-                    "includesImages" to false,
+                    "includesImages" to includesImages,
+                    "evidenceFrameCount" to evidenceCount,
                 ),
             )
             DiagnosticHub.export()
         }.onSuccess { file ->
             val megabytes = file.length().toDouble() / (1024.0 * 1024.0)
-            message.value =
+            message.value = if (includesImages) {
+                "تم تجهيز ملف التشخيص ومعه $evidenceCount لقطة: ${String.format(Locale.US, "%.1f", megabytes)} MB"
+            } else {
                 "تم تجهيز ملف التشخيص من دون صور: ${String.format(Locale.US, "%.1f", megabytes)} MB"
+            }
             onReady(file)
         }.onFailure { message.value = it.message ?: "تعذر إنشاء ملف التشخيص" }
     }
