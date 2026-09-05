@@ -3,7 +3,6 @@ name: Android CI
 on:
   push:
     branches: [main, master, "codex/**", "claude/**"]
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -14,21 +13,72 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # One lane, one APK. The on-device reader is PP-OCRv5 running on the
-  # ONNX Runtime Android AAR, so there is no C++ in this project any more and
-  # nothing to compile beyond Kotlin. The two-lane split existed only because
-  # llama.cpp took an hour to build; with that gone, the lane that runs the
-  # tests is also the lane that produces the shippable artifact, which removes
-  # the trap where two jobs each published a file called app-debug.apk and the
-  # wrong one got installed.
-  build:
-    name: Lint, tests, and ARM64 debug APK
+  signing:
+    name: Restore persistent signing identity
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    # Needed only by the release step below; everything else reads.
     permissions:
       contents: write
+    outputs:
+      cert_sha256: ${{ steps.identity.outputs.cert_sha256 }}
+    steps:
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
 
+      - name: Restore or create private VisionBridge signing identity
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="visionbridge-private-signing-v1"
+          mkdir -p signing-private
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+              -p 'visionbridge-signing-v1.jks' \
+              -p 'visionbridge-signing-v1.pass' \
+              -D signing-private --clobber
+            echo "Restored existing private signing identity."
+          else
+            password=$(openssl rand -hex 32)
+            printf '%s' "$password" > signing-private/visionbridge-signing-v1.pass
+            keytool -genkeypair -noprompt \
+              -keystore signing-private/visionbridge-signing-v1.jks \
+              -storepass "$password" \
+              -keypass "$password" \
+              -alias visionbridge \
+              -keyalg RSA -keysize 4096 -validity 10000 \
+              -dname 'CN=VisionBridge, OU=Accessibility, O=VisionBridge, C=SA'
+            gh release create "$tag" \
+              signing-private/visionbridge-signing-v1.jks \
+              signing-private/visionbridge-signing-v1.pass \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --title 'PRIVATE: VisionBridge signing identity' \
+              --notes 'Private CI-only signing material. Never publish this draft release.'
+            echo "Created private persistent signing identity."
+          fi
+
+          password=$(cat signing-private/visionbridge-signing-v1.pass)
+          cert=$(keytool -list -v \
+            -keystore signing-private/visionbridge-signing-v1.jks \
+            -storepass "$password" -alias visionbridge \
+            | sed -n 's/^[[:space:]]*SHA256: //p' | head -n1 | tr -d ':')
+          test -n "$cert"
+          echo "cert_sha256=$cert" >> "$GITHUB_OUTPUT"
+          echo "Signing certificate SHA-256: $cert"
+
+  build:
+    name: Lint, tests, and ARM64 stable-signed APK
+    needs: signing
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -46,12 +96,24 @@ jobs:
       - name: Install Android 36 SDK
         run: yes | sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
+      - name: Restore private signing material
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p signing
+          gh release download visionbridge-private-signing-v1 --repo "$GITHUB_REPOSITORY" \
+            -p 'visionbridge-signing-v1.jks' \
+            -p 'visionbridge-signing-v1.pass' \
+            -D signing --clobber
+          password=$(cat signing/visionbridge-signing-v1.pass)
+          echo "VISIONBRIDGE_KEYSTORE_PASSWORD=$password" >> "$GITHUB_ENV"
+          rm signing/visionbridge-signing-v1.pass
+
       - name: Verify repository structure and secrets
         run: python3 scripts/verify_project.py
 
-      # Run before Gradle so a model-hosting outage is reported as itself rather
-      # than as a mysterious Gradle failure. Gradle depends on the same task, so
-      # this is a clearer error message, not a second download.
       - name: Fetch and checksum the bundled PP-OCR models
         run: python3 scripts/fetch_ocr_models.py
 
@@ -62,13 +124,27 @@ jobs:
         shell: bash
         run: |
           source .github/gradle-retry.sh
-          # `|| status=$?` keeps the step alive under `set -e` so the log is
-          # always printed before the exit status is propagated.
           status=0
           gradle_with_network_retry build.log \
             lintDebug testDebugUnitTest assembleDebug || status=$?
           cat build.log
           exit "$status"
+
+      - name: Confirm persistent APK signing certificate
+        env:
+          EXPECTED_CERT: ${{ needs.signing.outputs.cert_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          actual=$($ANDROID_HOME/build-tools/36.0.0/apksigner verify --print-certs "$apk" \
+            | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n1 | tr -d ':' | tr '[:lower:]' '[:upper:]')
+          expected=$(printf '%s' "$EXPECTED_CERT" | tr -d ':' | tr '[:lower:]' '[:upper:]')
+          echo "APK signing certificate SHA-256: $actual"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::Signing identity changed. Refusing to publish an uninstall-required update."
+            exit 1
+          fi
 
       - name: Confirm the APK carries arm64 only
         shell: bash
@@ -77,33 +153,18 @@ jobs:
           apk=app/build/outputs/apk/debug/app-debug.apk
           libs=$(unzip -Z1 "$apk" 'lib/*' | cut -d/ -f2 | sort -u)
           echo "ABIs in APK: ${libs:-none}"
-          if [ -z "$libs" ]; then
-            echo "::error::No native library packaged; ONNX Runtime is missing from the APK."
-            exit 1
-          fi
-          if [ "$libs" != "arm64-v8a" ]; then
-            echo "::error::Unexpected ABI packaged: $libs"
-            exit 1
-          fi
+          test -n "$libs"
+          test "$libs" = "arm64-v8a"
 
-      # The reader is useless without its models, and an APK missing them looks
-      # perfectly healthy until a blind user turns local reading on. Checked here
-      # rather than discovered on a phone.
       - name: Confirm the OCR models are inside the APK
         shell: bash
         run: |
           set -euo pipefail
           apk=app/build/outputs/apk/debug/app-debug.apk
           for model in ppocr-det.onnx ppocr-rec-ar.onnx ppocr-rec-en.onnx ppocr-cls.onnx; do
-            if ! unzip -Z1 "$apk" "assets/ppocr/$model" >/dev/null 2>&1; then
-              echo "::error::$model is not packaged in the APK"
-              exit 1
-            fi
-            echo "packaged: assets/ppocr/$model"
+            unzip -Z1 "$apk" "assets/ppocr/$model" >/dev/null 2>&1 || exit 1
           done
 
-      # Named so the file itself is self-identifying once downloaded, rather
-      # than being another anonymous app-debug.apk in a Downloads folder.
       - name: Name the APK after the version
         id: apk
         shell: bash
@@ -113,28 +174,16 @@ jobs:
           name="VisionBridge-${version}-arm64.apk"
           cp app/build/outputs/apk/debug/app-debug.apk "$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
-          echo "Installable APK: $name ($(stat -c%s "$name") bytes)"
 
       - name: Upload the installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: VisionBridge-arm64-debug-apk
+          name: VisionBridge-arm64-stable-signed-apk
           path: ${{ steps.apk.outputs.name }}
           if-no-files-found: error
           retention-days: 14
 
-      # Downloading a workflow artifact means navigating into a run page, finding the
-      # artifacts section, and unzipping what arrives. With a screen reader that is a
-      # long walk for a file. A release gives one unchanging address that downloads the
-      # APK directly:
-      #
-      #   https://github.com/<owner>/<repo>/releases/latest/download/VisionBridge.apk
-      #
-      # Two assets go up: VisionBridge.apk, whose name never changes so the link above
-      # keeps working, and the versioned name, so a file sitting in a Downloads folder
-      # still says which build it is.
       - name: Publish the APK to a release with a stable download link
-        if: ${{ github.event_name != 'pull_request' }}
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -144,16 +193,13 @@ jobs:
           build=$(sed -n 's/.*versionCode = \([0-9]*\).*/\1/p' app/build.gradle.kts | head -n1)
           tag="v${version}"
           cp app/build/outputs/apk/debug/app-debug.apk VisionBridge.apk
-
           notes=$(printf '%s\n' \
             "الإصدار ${version}، Build ${build}" \
             "" \
-            "التنزيل المباشر: VisionBridge.apk" \
-            "" \
-            "بعد التثبيت افتح الإعدادات، وسيظهر في أعلى الشاشة: الإصدار ${version}، Build ${build}." \
+            "توقيع VisionBridge ثابت ومحفوظ في أصل خاص غير منشور داخل CI." \
+            "التحديثات القادمة الموقعة بهذه الهوية تُثبت فوق التطبيق مباشرة." \
             "" \
             "commit: ${GITHUB_SHA}")
-
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$tag" VisionBridge.apk "${{ steps.apk.outputs.name }}" \
               --repo "$GITHUB_REPOSITORY" --clobber
@@ -164,7 +210,6 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --title "VisionBridge ${version} (Build ${build})" --notes "$notes" --latest
           fi
-          echo "Stable link: https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/VisionBridge.apk"
 
       - name: Upload build diagnostics
         if: failure()
@@ -175,22 +220,13 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-      - name: Upload lint report on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: lint-report
-          path: app/build/reports/lint-results-debug.html
-          if-no-files-found: ignore
-
-  # A separate job on purpose. Booting an emulator is infrastructure, and coupling it to the APK
-  # means an emulator that will not start stops releases -- which is what happened the first time
-  # this ran: the standard runner has no KVM, so an x86 image cannot boot at all. Split, a device
-  # failure still fails the run, so the signal is not lost, while the APK is still produced.
   device:
     name: On-device tests
+    needs: signing
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -208,15 +244,27 @@ jobs:
       - name: Install Android 36 SDK
         run: yes | sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
-      # Without this the emulator reports "x86 emulation currently requires hardware acceleration"
-      # and never boots. The device node exists on the runner but is not readable by the build user.
+      - name: Restore private signing material
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p signing
+          gh release download visionbridge-private-signing-v1 --repo "$GITHUB_REPOSITORY" \
+            -p 'visionbridge-signing-v1.jks' \
+            -p 'visionbridge-signing-v1.pass' \
+            -D signing --clobber
+          password=$(cat signing/visionbridge-signing-v1.pass)
+          echo "VISIONBRIDGE_KEYSTORE_PASSWORD=$password" >> "$GITHUB_ENV"
+          rm signing/visionbridge-signing-v1.pass
+
       - name: Grant access to KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-          ls -la /dev/kvm || echo "no /dev/kvm on this runner"
 
       - name: Fetch and checksum the bundled PP-OCR models
         run: python3 scripts/fetch_ocr_models.py
@@ -240,20 +288,3 @@ jobs:
           name: device-test-report
           path: app/build/reports/androidTests/managedDevice/
           if-no-files-found: ignore
-
-  diagnostics:
-    name: Concise compiler diagnostics
-    needs: build
-    if: failure()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download build log
-        uses: actions/download-artifact@v4
-        with:
-          name: build-log
-
-      - name: Print actionable errors
-        shell: bash
-        run: |
-          echo "Actionable Gradle and Kotlin errors:"
-          grep -E '(^e: |^w: |FAILURE:|What went wrong:|error:|Exception|Unresolved reference|Compilation error)' build.log | tail -n 200 || tail -n 200 build.log
