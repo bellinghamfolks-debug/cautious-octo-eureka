@@ -8,31 +8,28 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
 
-/**
- * Low-latency player for Gemini Live native PCM audio.
- *
- * Live scene description values freshness over completeness. Every accepted new visual turn advances
- * an epoch and flushes buffered audio, so a sentence about a previous view cannot sit behind the
- * current scene. Gemini Live audio is mono, signed 16-bit little-endian PCM at 24 kHz.
- */
+/** Low-latency PCM player for Gemini Live speech. */
 class LivePcmAudioPlayer {
-    private data class Packet(val epoch: Long, val bytes: ByteArray)
+    private data class Packet(val epoch: Long, val bytes: ByteArray, val sampleRateHz: Int)
 
     private val epoch = AtomicLong(0L)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val packets = Channel<Packet>(
-        capacity = PACKET_QUEUE_CAPACITY,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST,
-    )
+
+    // Do not DROP_OLDEST here. The previous queue silently threw away speech packets whenever
+    // Gemini produced audio faster than AudioTrack consumed it; the result on a real Xiaomi device
+    // was missing syllables and speech the user described as unintelligible. Stale epochs are still
+    // discarded immediately by the consumer, so an unlimited transport queue does not make old
+    // visual turns audible after a target change.
+    private val packets = Channel<Packet>(Channel.UNLIMITED)
     private val trackLock = Any()
-    private val audioTrack = createTrack()
+    private var configuredSampleRateHz = DEFAULT_SAMPLE_RATE_HZ
+    private var audioTrack = createTrack(configuredSampleRateHz)
 
     init {
         synchronized(trackLock) { audioTrack.play() }
@@ -40,34 +37,45 @@ class LivePcmAudioPlayer {
             for (packet in packets) {
                 if (!isActive || packet.epoch != epoch.get()) continue
                 synchronized(trackLock) {
-                    if (packet.epoch == epoch.get() && audioTrack.state == AudioTrack.STATE_INITIALIZED) {
-                        audioTrack.write(packet.bytes, 0, packet.bytes.size, AudioTrack.WRITE_BLOCKING)
+                    if (packet.epoch != epoch.get()) continue
+                    ensureSampleRateLocked(packet.sampleRateHz)
+                    if (audioTrack.state == AudioTrack.STATE_INITIALIZED) {
+                        val written = audioTrack.write(
+                            packet.bytes,
+                            0,
+                            packet.bytes.size,
+                            AudioTrack.WRITE_BLOCKING,
+                        )
+                        if (written < 0) {
+                            DiagnosticHub.record(
+                                "LIVE_AUDIO_WRITE_FAILED",
+                                mapOf("code" to written, "bytes" to packet.bytes.size),
+                            )
+                        }
                     }
                 }
             }
         }
     }
 
-    fun beginTurn(): Long {
+    fun beginTurn(reason: String = "new_live_turn"): Long {
         val next = epoch.incrementAndGet()
-        flush("new_live_scene")
+        flush(reason)
         return next
     }
 
-    fun enqueue(packetEpoch: Long, bytes: ByteArray) {
+    fun enqueue(packetEpoch: Long, bytes: ByteArray, sampleRateHz: Int = DEFAULT_SAMPLE_RATE_HZ) {
         if (bytes.isEmpty() || packetEpoch != epoch.get()) return
-        if (packets.trySend(Packet(packetEpoch, bytes)).isFailure) {
-            DiagnosticHub.record(
-                "LIVE_AUDIO_PACKET_DROPPED",
-                mapOf("reason" to "bounded_audio_queue", "bytes" to bytes.size),
-            )
-        }
+        val normalizedRate = sampleRateHz.takeIf { it in 8_000..96_000 } ?: DEFAULT_SAMPLE_RATE_HZ
+        packets.trySend(Packet(packetEpoch, bytes, normalizedRate))
     }
 
     fun interrupt(reason: String) {
         epoch.incrementAndGet()
         flush(reason)
     }
+
+    fun currentEpoch(): Long = epoch.get()
 
     fun close() {
         epoch.incrementAndGet()
@@ -80,6 +88,20 @@ class LivePcmAudioPlayer {
         }
     }
 
+    private fun ensureSampleRateLocked(sampleRateHz: Int) {
+        if (sampleRateHz == configuredSampleRateHz) return
+        runCatching { audioTrack.pause() }
+        runCatching { audioTrack.flush() }
+        runCatching { audioTrack.release() }
+        configuredSampleRateHz = sampleRateHz
+        audioTrack = createTrack(sampleRateHz)
+        audioTrack.play()
+        DiagnosticHub.record(
+            "LIVE_AUDIO_FORMAT_CHANGED",
+            mapOf("sampleRateHz" to sampleRateHz),
+        )
+    }
+
     private fun flush(reason: String) {
         synchronized(trackLock) {
             if (audioTrack.state != AudioTrack.STATE_INITIALIZED) return
@@ -90,9 +112,9 @@ class LivePcmAudioPlayer {
         DiagnosticHub.record("LIVE_AUDIO_FLUSHED", mapOf("reason" to reason))
     }
 
-    private fun createTrack(): AudioTrack {
+    private fun createTrack(sampleRateHz: Int): AudioTrack {
         val minimum = AudioTrack.getMinBufferSize(
-            SAMPLE_RATE_HZ,
+            sampleRateHz,
             AudioFormat.CHANNEL_OUT_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
         ).coerceAtLeast(0)
@@ -106,7 +128,7 @@ class LivePcmAudioPlayer {
             .setAudioFormat(
                 AudioFormat.Builder()
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setSampleRate(SAMPLE_RATE_HZ)
+                    .setSampleRate(sampleRateHz)
                     .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                     .build()
             )
@@ -116,9 +138,8 @@ class LivePcmAudioPlayer {
             .build()
     }
 
-    private companion object {
-        const val SAMPLE_RATE_HZ = 24_000
-        const val PACKET_QUEUE_CAPACITY = 6
-        const val FALLBACK_BUFFER_BYTES = 9_600
+    companion object {
+        const val DEFAULT_SAMPLE_RATE_HZ = 24_000
+        private const val FALLBACK_BUFFER_BYTES = 9_600
     }
 }
