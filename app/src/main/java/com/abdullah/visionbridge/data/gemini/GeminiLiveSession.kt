@@ -110,9 +110,6 @@ class GeminiLiveSession(
                 sceneProbeStartedAtElapsedMs = 0L
             }
 
-            // A stable page is read once per registered visual target. Camera tremor over the same
-            // page must not keep restarting cloud speech. FAST_TEXT intentionally remains live for
-            // captions, scrolling UIs and genuinely changing text.
             if (
                 settings.mode == AnalysisMode.TEXT_READING &&
                 settings.captureProfile == CaptureProfile.STABLE &&
@@ -185,19 +182,15 @@ class GeminiLiveSession(
             sceneProbeHadAudio = false
             synchronized(transcriptLock) { transcript = StringBuilder() }
 
-            // Text keeps the existing eager interruption behaviour. Scene description is different:
-            // do not flush a valid description merely because pixels moved. With semantic gating we
-            // wait until Gemini actually chooses to speak about a meaningful change, then the first
-            // new audio chunk atomically replaces the previous scene audio.
             if (settings.mode == AnalysisMode.TEXT_READING) {
                 activeTurnEpoch = audioPlayer.beginTurn()
             }
 
             val base64Started = SystemClock.elapsedRealtimeNanos()
             val imageBase64 = Base64.encodeToString(image.bytes, Base64.NO_WRAP)
-            val videoSent = currentSocket.send(
-                videoMessage(imageBase64, image.mimeType, liveMediaResolution(settings))
-            )
+            // Media resolution belongs to the Live session configuration. Sending it in
+            // realtimeInput caused real devices to be disconnected with WebSocket code 1007.
+            val videoSent = currentSocket.send(videoMessage(imageBase64, image.mimeType))
             val instructionSent = currentSocket.send(realtimeTextMessage(instructionFor(settings)))
             if (!videoSent || !instructionSent) {
                 DiagnosticHub.record(
@@ -265,8 +258,6 @@ class GeminiLiveSession(
         synchronized(sendLock) { lastFrameSentAtElapsedMs = 0L }
         synchronized(transcriptLock) { transcript = StringBuilder() }
 
-        // In scene mode the local tracker is only a candidate generator. The AI semantic gate owns
-        // the final decision, so a large camera move is not allowed to cut speech by itself.
         val scene = lastMode == AnalysisMode.SCENE_DESCRIPTION
         if (!scene && interruptSpeech) audioPlayer.interrupt("visual_target_changed")
         DiagnosticHub.record(
@@ -371,10 +362,6 @@ class GeminiLiveSession(
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-            // The real-device bundle showed the socket opening four times but every server message
-            // arriving through OkHttp's binary callback. Ignoring it meant setupComplete was never
-            // observed and every frame fell back to 3.1.1. Gemini's WebSocket payload is JSON, so
-            // decode UTF-8 binary frames and feed them into exactly the same parser as text frames.
             val decoded = runCatching { bytes.utf8() }.getOrNull()
             if (decoded != null && decoded.trimStart().startsWith("{")) {
                 DiagnosticHub.record(
@@ -437,8 +424,6 @@ class GeminiLiveSession(
 
         val serverContent = root["serverContent"]?.jsonObject ?: return
         if (serverContent["interrupted"]?.jsonPrimitive?.contentOrNull == "true") {
-            // Do not flush scene audio here. A semantic probe may intentionally conclude that only
-            // the camera moved and stay silent. Flush only if a genuinely new scene response starts.
             if (activeResponseMode == AnalysisMode.TEXT_READING) {
                 activeTurnEpoch = audioPlayer.beginTurn()
             }
@@ -560,14 +545,13 @@ class GeminiLiveSession(
         })
     }.toString()
 
-    private fun videoMessage(base64: String, mimeType: String, mediaResolution: String): String =
+    private fun videoMessage(base64: String, mimeType: String): String =
         buildJsonObject {
             put("realtimeInput", buildJsonObject {
                 put("video", buildJsonObject {
                     put("data", base64)
                     put("mimeType", mimeType)
                 })
-                put("mediaResolution", mediaResolution)
             })
         }.toString()
 
@@ -590,15 +574,6 @@ class GeminiLiveSession(
             SceneDescriptionStyle.BRIEF -> "MODE=SCENE_BRIEF_SEMANTIC. قارن هذا الإطار دلالياً بالمشهد السابق في الجلسة. حركة النظارة أو الهاتف، الالتفات، الاهتزاز، تغير موضع الأشياء داخل الإطار بسبب حركة الكاميرا، التكبير، تغير الإضاءة أو التركيز أو الضبابية أو أزرار eSight ليست تغيراً في المحتوى. إذا لم يظهر أو يختف أو يتغير شيء مهم فعلياً للمستخدم، استخدم Proactive Audio وابق صامتاً تماماً. إذا تغير المحتوى الحقيقي، ابدأ فوراً بأهم تغير: خطر أو عائق أو اتجاه أو شخص أو شيء أو لافتة أو نص مفيد، في نحو 25 كلمة، بلا مقدمة ولا تخمين. أول مشهد في الجلسة يستحق الوصف."
             SceneDescriptionStyle.COMPREHENSIVE -> "MODE=SCENE_COMPREHENSIVE_SEMANTIC. قارن هذا الإطار دلالياً بالمشهد السابق في الجلسة، لا بالبكسلات. تجاهل حركة النظارة أو الهاتف، الدوران، الاهتزاز، pan/tilt، التكبير، تغير الإضاءة أو التركيز أو الضبابية وتغير موضع نفس الأشياء داخل الصورة، وكذلك واجهة eSight. إذا بقيت هوية المشهد ومحتواه العملي نفسه، استخدم Proactive Audio وابق صامتاً تماماً. تكلم فقط عندما يتغير شيء حقيقي ومفيد: ظهور أو اختفاء شخص أو مركبة أو عائق أو باب أو مسار أو جسم، تغير حالته أو موقعه العملي، أو تغير لافتة أو اسم أو سعر أو نص مهم. عند التغير ابدأ فوراً بجملة قصيرة عن الأهم ثم أكمل تدريجياً بلا تخمين. أول مشهد في الجلسة يستحق الوصف."
         }
-    }
-
-    private fun liveMediaResolution(settings: AppSettings): String = when (settings.mode) {
-        AnalysisMode.TEXT_READING -> if (settings.captureProfile == CaptureProfile.STABLE) {
-            "MEDIA_RESOLUTION_HIGH"
-        } else "MEDIA_RESOLUTION_MEDIUM"
-        AnalysisMode.SCENE_DESCRIPTION -> if (settings.sceneDescriptionStyle == SceneDescriptionStyle.BRIEF) {
-            "MEDIA_RESOLUTION_LOW"
-        } else "MEDIA_RESOLUTION_MEDIUM"
     }
 
     private fun profileFor(settings: AppSettings): LiveProfile = when (settings.mode) {
