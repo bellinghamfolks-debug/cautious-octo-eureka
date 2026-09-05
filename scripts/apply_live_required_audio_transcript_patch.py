@@ -3,6 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LIVE = ROOT / "app/src/main/java/com/abdullah/visionbridge/data/gemini/GeminiLiveSession.kt"
+SERVICE = ROOT / "app/src/main/java/com/abdullah/visionbridge/capture/MediaProjectionService.kt"
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -110,8 +111,8 @@ if "LIVE_REQUIRED_AUDIO_TRANSCRIPT_V361" not in text:
         1,
     )
 
-    # System instruction must describe the model's hidden native-audio generation correctly; the
-    # app will discard PCM and speak only the transcript locally.
+    # System instruction describes the model's hidden native-audio generation correctly; the app
+    # discards PCM and speaks only the transcription locally.
     text = text.replace(
         "أعد النتيجة كنص عربي طبيعي واضح مباشرة بلا مقدمة أو Markdown، وأبق الإنجليزية والأرقام كما تظهر عند الحاجة.",
         "أنشئ استجابة عربية طبيعية واضحة مباشرة بلا مقدمة أو Markdown، وانطق الإنجليزية والأرقام كما تظهر عند الحاجة.",
@@ -138,5 +139,16 @@ if "LIVE_REQUIRED_AUDIO_TRANSCRIPT_V361" not in text:
     text = replace_once(text, marker, helper + marker, "explicit Live-required failure API")
 
     LIVE.write_text(text)
+
+# Make hybrid reading state explicit in every capture-settings diagnostic snapshot.
+service = SERVICE.read_text()
+if '"describeAlongsideText" to settings.describeAlongsideText' not in service:
+    service = replace_once(
+        service,
+        '        "useLocalOcr" to settings.useLocalOcr,\n',
+        '        "useLocalOcr" to settings.useLocalOcr,\n        "describeAlongsideText" to settings.describeAlongsideText,\n',
+        "diagnose describeAlongsideText",
+    )
+    SERVICE.write_text(service)
 
 print("Applied VisionBridge 3.6.1 Live-required AUDIO+transcription patch")
