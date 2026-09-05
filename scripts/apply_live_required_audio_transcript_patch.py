@@ -16,9 +16,6 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 
 text = LIVE.read_text()
 if "LIVE_REQUIRED_AUDIO_TRANSCRIPT_V361" not in text:
-    # Gemini 3.1 Live rejects TEXT as a response modality on the Bidi Live session used on-device.
-    # Keep the officially supported AUDIO modality, enable outputAudioTranscription, discard native
-    # PCM, and speak the transcript through the local female-first Android TTS engine.
     text = replace_once(
         text,
         'put("responseModalities", buildJsonArray { add(JsonPrimitive("TEXT")) })',
@@ -63,12 +60,7 @@ if "LIVE_REQUIRED_AUDIO_TRANSCRIPT_V361" not in text:
         }
 
 '''
-    text = replace_once(
-        text,
-        old_transcription,
-        new_transcription,
-        "append every audio transcript delta",
-    )
+    text = replace_once(text, old_transcription, new_transcription, "append every audio transcript delta")
 
     pcm_anchor = '''                val mimeType = inlineData["mimeType"]?.jsonPrimitive?.contentOrNull.orEmpty()
                 val data = inlineData["data"]?.jsonPrimitive?.contentOrNull.orEmpty()
@@ -91,11 +83,11 @@ if "LIVE_REQUIRED_AUDIO_TRANSCRIPT_V361" not in text:
     text = replace_once(text, pcm_anchor, pcm_replacement, "discard native PCM")
 
     old_tail = '''            val descriptionTail = if (settings.describeAlongsideText) {
-                " بعد قراءة النص، أضف جملة قصيرة جداً تضع النص في سياقه المكاني إن بقي المشهد نفسه، دون إعادة النص."
+                " بعد إنهاء كل النص المقروء، أضف جملة قصيرة جداً عن موضعه. وإذا لم يوجد أي نص مقروء إطلاقاً، صف أهم ما يظهر في المشهد بجملة واحدة بدلاً من الصمت."
             } else ""
 '''
     new_tail = '''            val descriptionTail = if (settings.describeAlongsideText) {
-                " بعد إكمال كل النص المرئي، اختم بجملة وصفية واحدة قصيرة تبدأ بكلمة الوصف: وتذكر ما هو الشيء الذي يحمل النص وأين يظهر تقريباً في المشهد. لا تعيد النص داخل الجملة الوصفية."
+                " بعد إكمال كل النص المرئي، اختم بجملة وصفية واحدة قصيرة تبدأ بكلمة الوصف: وتذكر ما هو الشيء الذي يحمل النص وأين يظهر تقريباً في المشهد. لا تعيد النص داخل الجملة الوصفية. وإذا لم يوجد أي نص مقروء إطلاقاً، صف أهم ما يظهر في المشهد بجملة واحدة بدلاً من الصمت."
             } else ""
 '''
     text = replace_once(text, old_tail, new_tail, "hybrid text plus one description sentence")
@@ -110,9 +102,6 @@ if "LIVE_REQUIRED_AUDIO_TRANSCRIPT_V361" not in text:
         "اقرأ فوراً كل عبارة واضحة تراها في الإطار الحالي بالترتيب واجعل القراءة أول جزء من الرد.",
         1,
     )
-
-    # System instruction describes the model's hidden native-audio generation correctly; the app
-    # discards PCM and speaks only the transcription locally.
     text = text.replace(
         "أعد النتيجة كنص عربي طبيعي واضح مباشرة بلا مقدمة أو Markdown، وأبق الإنجليزية والأرقام كما تظهر عند الحاجة.",
         "أنشئ استجابة عربية طبيعية واضحة مباشرة بلا مقدمة أو Markdown، وانطق الإنجليزية والأرقام كما تظهر عند الحاجة.",
@@ -124,7 +113,6 @@ if "LIVE_REQUIRED_AUDIO_TRANSCRIPT_V361" not in text:
         1,
     )
 
-    # Expose a clear UI failure without initiating any secondary cloud analysis path.
     marker = '''    fun onVisualTargetChanged(interruptSpeech: Boolean) {
 '''
     helper = '''    fun reportLiveRequiredFailure(reason: String) {
@@ -137,10 +125,8 @@ if "LIVE_REQUIRED_AUDIO_TRANSCRIPT_V361" not in text:
 
 '''
     text = replace_once(text, marker, helper + marker, "explicit Live-required failure API")
-
     LIVE.write_text(text)
 
-# Make hybrid reading state explicit in every capture-settings diagnostic snapshot.
 service = SERVICE.read_text()
 if '"describeAlongsideText" to settings.describeAlongsideText' not in service:
     service = replace_once(
