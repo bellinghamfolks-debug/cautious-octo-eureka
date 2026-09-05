@@ -3,10 +3,10 @@ package com.abdullah.visionbridge.di
 import android.content.Context
 import com.abdullah.visionbridge.capture.CaptureRuntime
 import com.abdullah.visionbridge.capture.FrameAnalysisCoordinator
-import com.abdullah.visionbridge.capture.LiveSceneCoordinator
+import com.abdullah.visionbridge.capture.LiveCloudCoordinator
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticRecorder
-import com.abdullah.visionbridge.data.gemini.GeminiLiveSceneSession
+import com.abdullah.visionbridge.data.gemini.GeminiLiveSession
 import com.abdullah.visionbridge.data.gemini.GeminiVisionRepository
 import com.abdullah.visionbridge.data.network.CellularNetworkManager
 import com.abdullah.visionbridge.data.paddleocr.PaddleOcrEngine
@@ -31,10 +31,7 @@ class AppContainer(context: Context) {
     private val networkManager = CellularNetworkManager(appContext)
     private val cloudVisionRepository = GeminiVisionRepository(networkManager)
 
-    /**
-     * The proven 3.1.1 on-device Arabic/English reader. Its PP-OCR/ONNX path is deliberately left
-     * untouched by the Live update; Live is a scene-description transport, not an OCR replacement.
-     */
+    /** Proven 3.1.1 on-device Arabic/English PP-OCR reader. Kept unchanged. */
     val localOcrEngine = PaddleOcrEngine(appContext)
 
     private val visionRepository: VisionAiRepository = RoutingVisionRepository(
@@ -44,10 +41,10 @@ class AppContainer(context: Context) {
         settingsRepository = settingsRepository,
     )
 
-    /** Long-lived speech engine used by the original 3.1.1 reader and legacy scene fallback. */
+    /** Original TTS remains for local reading, notices and legacy cloud fallback. */
     val tts = BilingualTtsEngine(appContext)
 
-    /** Exact 13-August coordinator retained as the reading engine and Live failure fallback. */
+    /** Exact 13-August pipeline retained for local PP-OCR and Live failure fallback. */
     private val legacyCoordinator = FrameAnalysisCoordinator(
         settingsRepository = settingsRepository,
         apiKeyStore = apiKeyStore,
@@ -57,19 +54,21 @@ class AppContainer(context: Context) {
     )
 
     private val liveAudioPlayer = LivePcmAudioPlayer()
-    private val liveSceneSession = GeminiLiveSceneSession(
+    private val liveSession = GeminiLiveSession(
         runtime = runtime,
         audioPlayer = liveAudioPlayer,
     )
 
     /**
-     * Public capture entry point. Text goes straight to the untouched 3.1.1 coordinator; scene
-     * description tries the persistent Live socket first and falls back to the same old coordinator.
+     * Local text -> PP-OCR 3.1.1.
+     * Cloud text -> Gemini Live.
+     * Scene description -> Gemini Live.
+     * Live failure -> original 3.1.1 cloud path.
      */
-    val coordinator = LiveSceneCoordinator(
+    val coordinator = LiveCloudCoordinator(
         settingsRepository = settingsRepository,
         apiKeyStore = apiKeyStore,
-        liveScene = liveSceneSession,
+        live = liveSession,
         legacy = legacyCoordinator,
     )
 }
