@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,17 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     if old not in text:
         raise SystemExit(f"3.6.2 accuracy patch failed: {label} anchor not found")
     return text.replace(old, new, 1)
+
+
+def replace_mode_prompt(text: str, mode_prefix: str, replacement_line: str, label: str) -> str:
+    """Replace one Kotlin prompt line by its stable MODE marker, not fragile Arabic wording."""
+    if replacement_line.strip() in text:
+        return text
+    pattern = rf'^[ \t]*"MODE={re.escape(mode_prefix)}\.[^\n]*\$descriptionTail"[ \t]*$'
+    updated, count = re.subn(pattern, replacement_line, text, count=1, flags=re.MULTILINE)
+    if count != 1:
+        raise SystemExit(f"3.6.2 accuracy patch failed: {label} marker not found uniquely (count={count})")
+    return updated
 
 
 text = LIVE.read_text()
@@ -49,17 +61,11 @@ if "LIVE_TEXT_ACCURACY_V362" not in text:
 '''
     text = replace_once(text, old_tail, new_tail, "strict hybrid description tail")
 
-    old_stable = '''                "MODE=TEXT_ACCURATE. اقرأ كل النص المقروء الظاهر في الإطار الحالي من البداية إلى النهاية. لا تتوقف بعد كلمة أو سطر واحد إذا بقي نص واضح. ابدأ فوراً بلا مقدمة، ولا تصحح أو تكمل أو تترجم أو تخمن. إذا تعذرت كلمة قل غير واضح ثم واصل ما بعدها. تجاهل واجهة eSight.$descriptionTail"
-'''
-    new_stable = '''                "MODE=TEXT_ACCURATE_V362. هذه اللقطة الحالية وحدها هي المصدر. اقرأ حرفياً فقط الأحرف والكلمات والأرقام التي تراها فعلاً في البكسلات الحالية. ممنوع تماماً التخمين أو إكمال كلمة أو رقم أو موديل أو معيار أو رمز شائع من الذاكرة أو من شكل الملصق، وممنوع إنشاء بدائل مثل X أو XX أو XYZ أو XXXXX. لا تستخدم أي نص من إطار أو رد سابق. إذا لم تستطع التحقق بصرياً من جزء فاحذفه ولا تقل غير واضح. إذا لم يوجد نص يمكن الوثوق به فقل NO_TEXT فقط. لا تصف الإضاءة أو الضبابية أو الظلام داخل جزء القراءة. تجاهل واجهة eSight.$descriptionTail"
-'''
-    text = replace_once(text, old_stable, new_stable, "stable accuracy prompt")
+    stable_line = '                "MODE=TEXT_ACCURATE_V362. هذه اللقطة الحالية وحدها هي المصدر. اقرأ حرفياً فقط الأحرف والكلمات والأرقام التي تراها فعلاً في البكسلات الحالية. ممنوع تماماً التخمين أو إكمال كلمة أو رقم أو موديل أو معيار أو رمز شائع من الذاكرة أو من شكل الملصق، وممنوع إنشاء بدائل مثل X أو XX أو XYZ أو XXXXX. لا تستخدم أي نص من إطار أو رد سابق. إذا لم تستطع التحقق بصرياً من جزء فاحذفه ولا تقل غير واضح. إذا لم يوجد نص يمكن الوثوق به فقل NO_TEXT فقط. لا تصف الإضاءة أو الضبابية أو الظلام داخل جزء القراءة. تجاهل واجهة eSight.$descriptionTail"'
+    text = replace_mode_prompt(text, "TEXT_ACCURATE", stable_line, "stable accuracy prompt")
 
-    old_fast = '''                "MODE=TEXT_FAST. اقرأ فوراً كل عبارة واضحة تراها في الإطار الحالي بالترتيب، ولا تتوقف بعد أول كلمة إن كان المزيد واضحاً. لا تشرح أو تترجم أو تتوقع حروفاً غير ظاهرة. تجاهل واجهة eSight.$descriptionTail"
-'''
-    new_fast = '''                "MODE=TEXT_FAST_V362. استخدم اللقطة الحالية وحدها. اقرأ فقط النص المرئي المؤكد حرفياً وبالترتيب. لا تكمل أنماطاً مألوفة ولا تخمن أرقاماً أو رموزاً أو موديلات ولا تستخدم محتوى من رد سابق. إذا لم يوجد نص موثوق فقل NO_TEXT فقط. تجاهل واجهة eSight.$descriptionTail"
-'''
-    text = replace_once(text, old_fast, new_fast, "fast accuracy prompt")
+    fast_line = '                "MODE=TEXT_FAST_V362. استخدم اللقطة الحالية وحدها. اقرأ فقط النص المرئي المؤكد حرفياً وبالترتيب. لا تكمل أنماطاً مألوفة ولا تخمن أرقاماً أو رموزاً أو موديلات ولا تستخدم محتوى من رد سابق. إذا لم يوجد نص موثوق فقل NO_TEXT فقط. تجاهل واجهة eSight.$descriptionTail"'
+    text = replace_mode_prompt(text, "TEXT_FAST", fast_line, "fast accuracy prompt")
 
     old_wait_tail = '''            DiagnosticHub.record(
                 "LIVE_TURN_WAIT_COMPLETED",
