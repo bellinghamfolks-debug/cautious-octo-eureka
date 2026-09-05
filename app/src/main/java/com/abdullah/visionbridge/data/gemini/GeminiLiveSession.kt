@@ -16,10 +16,9 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -40,10 +39,10 @@ import java.util.concurrent.TimeUnit
 /**
  * Persistent Gemini Live vision lane used by VisionBridge 1.14.
  *
- * This lane is intentionally cloud-first for Arabic and mixed text. The old local Arabic OCR path is
- * not used here. A selected frame is JPEG-encoded once, sent over a warm WebSocket, then followed by
- * a tiny realtime text instruction. Gemini returns native 24 kHz PCM audio immediately while output
- * transcription is collected for the accessible on-screen result.
+ * Arabic and mixed text are cloud-first here by design. No local Arabic recognizer participates in
+ * the Live answer. A selected eSight frame is encoded once, sent over the warm WebSocket and followed
+ * by a tiny realtime instruction. Native 24 kHz PCM starts playing as soon as the first audio chunks
+ * arrive, while output transcription is retained for the accessible on-screen result.
  */
 class GeminiLiveSession(
     private val runtime: CaptureRuntime,
@@ -70,10 +69,19 @@ class GeminiLiveSession(
     private var setupReady: CompletableDeferred<Boolean>? = null
 
     @Volatile
+    private var setupSucceeded: Boolean = false
+
+    @Volatile
     private var keyFingerprint: String? = null
 
     @Volatile
     private var activeTurnEpoch: Long = 0L
+
+    @Volatile
+    private var activeTurnSentAtNanos: Long = 0L
+
+    @Volatile
+    private var firstAudioSeenForEpoch: Long = Long.MIN_VALUE
 
     @Volatile
     private var activeSpeechEnabled: Boolean = true
@@ -89,6 +97,9 @@ class GeminiLiveSession(
         settings: AppSettings,
         apiKey: String,
     ): Boolean {
+        // The existing legacy path owns a real Android Network lease. Until the persistent Live
+        // socket owns such a lease too, honour Force Cellular by falling back rather than silently
+        // changing the user's routing choice.
         if (settings.forceCellular) {
             DiagnosticHub.record(
                 "LIVE_FRAME_FALLBACK",
@@ -119,6 +130,8 @@ class GeminiLiveSession(
         }
 
         return coroutineScope {
+            // Warm-connection setup and image encoding happen concurrently. On an already-open
+            // session, the connection branch returns almost immediately.
             val connection = async(Dispatchers.IO) { ensureConnected(apiKey) }
             val encoded = async(Dispatchers.Default) {
                 imageEnhancer.prepare(
@@ -139,6 +152,8 @@ class GeminiLiveSession(
             val currentSocket = socket ?: return@coroutineScope false
             val epoch = audioPlayer.beginTurn()
             activeTurnEpoch = epoch
+            activeTurnSentAtNanos = SystemClock.elapsedRealtimeNanos()
+            firstAudioSeenForEpoch = Long.MIN_VALUE
             activeSpeechEnabled = settings.speechEnabled
             synchronized(transcriptLock) { transcript = StringBuilder() }
 
@@ -151,6 +166,8 @@ class GeminiLiveSession(
             )
             val instructionMessage = realtimeTextMessage(instructionFor(settings))
 
+            // Video first, instruction second. The instruction acts as the fresh turn trigger and
+            // explicitly tells the model to prioritise this frame over any older generation.
             val videoSent = currentSocket.send(videoMessage)
             val instructionSent = currentSocket.send(instructionMessage)
             if (!videoSent || !instructionSent) {
@@ -183,6 +200,7 @@ class GeminiLiveSession(
                         (SystemClock.elapsedRealtimeNanos() - base64Started) / 1_000_000.0,
                     "nativeAudio" to settings.speechEnabled,
                     "localArabicOcrUsed" to false,
+                    "epoch" to epoch,
                 ),
             )
             true
@@ -190,6 +208,8 @@ class GeminiLiveSession(
     }
 
     fun onVisualTargetChanged(interruptSpeech: Boolean) {
+        // A genuinely new target must be eligible immediately, even if the previous frame was sent
+        // less than one second ago. The one-FPS guard applies only within the same visual target.
         synchronized(sendLock) { lastFrameSentAtElapsedMs = 0L }
         if (interruptSpeech) audioPlayer.interrupt("visual_target_changed")
         synchronized(transcriptLock) { transcript = StringBuilder() }
@@ -211,6 +231,7 @@ class GeminiLiveSession(
 
     fun stop() {
         synchronized(sendLock) { lastFrameSentAtElapsedMs = 0L }
+        synchronized(transcriptLock) { transcript = StringBuilder() }
         audioPlayer.interrupt("capture_stopped")
         invalidateSocket("capture_stopped")
     }
@@ -223,9 +244,8 @@ class GeminiLiveSession(
             if (
                 socket != null &&
                 keyFingerprint == fingerprint &&
-                existingReady != null &&
-                existingReady.isCompleted &&
-                existingReady.getCompleted()
+                setupSucceeded &&
+                existingReady != null
             ) {
                 return true
             }
@@ -237,14 +257,14 @@ class GeminiLiveSession(
                 val deferred = CompletableDeferred<Boolean>()
                 ready = deferred
                 setupReady = deferred
+                setupSucceeded = false
                 keyFingerprint = fingerprint
 
                 val url = LIVE_ENDPOINT.toHttpUrl().newBuilder()
                     .addQueryParameter("key", apiKey)
                     .build()
                 val request = Request.Builder().url(url).build()
-                val listener = createListener(fingerprint, deferred)
-                socket = client.newWebSocket(request, listener)
+                socket = client.newWebSocket(request, createListener(fingerprint, deferred))
                 DiagnosticHub.record(
                     "LIVE_SOCKET_CONNECTING",
                     mapOf("model" to LIVE_MODEL, "endpointHost" to url.host),
@@ -274,10 +294,7 @@ class GeminiLiveSession(
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-            DiagnosticHub.record(
-                "LIVE_BINARY_MESSAGE_IGNORED",
-                mapOf("bytes" to bytes.size),
-            )
+            DiagnosticHub.record("LIVE_BINARY_MESSAGE_IGNORED", mapOf("bytes" to bytes.size))
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -287,10 +304,7 @@ class GeminiLiveSession(
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             if (!ready.isCompleted) ready.complete(false)
             clearSocketIfCurrent(webSocket)
-            DiagnosticHub.record(
-                "LIVE_SOCKET_CLOSED",
-                mapOf("code" to code, "reason" to reason),
-            )
+            DiagnosticHub.record("LIVE_SOCKET_CLOSED", mapOf("code" to code, "reason" to reason))
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
@@ -311,6 +325,7 @@ class GeminiLiveSession(
         }
 
         if (root.containsKey("setupComplete")) {
+            setupSucceeded = true
             if (!ready.isCompleted) ready.complete(true)
             DiagnosticHub.record("LIVE_SETUP_COMPLETE", mapOf("model" to LIVE_MODEL))
         }
@@ -320,10 +335,16 @@ class GeminiLiveSession(
         }
 
         val serverContent = root["serverContent"]?.jsonObject ?: return
+
+        // Gemini can acknowledge that the previous generation was interrupted after the client has
+        // already submitted the new frame. Start a fresh epoch AND publish that epoch back into the
+        // session so the first audio of the new response is not accidentally discarded.
         if (serverContent["interrupted"]?.jsonPrimitive?.contentOrNull == "true") {
-            audioPlayer.interrupt("gemini_live_interrupted")
+            activeTurnEpoch = audioPlayer.beginTurn()
+            firstAudioSeenForEpoch = Long.MIN_VALUE
+            activeTurnSentAtNanos = SystemClock.elapsedRealtimeNanos()
             synchronized(transcriptLock) { transcript = StringBuilder() }
-            DiagnosticHub.record("LIVE_MODEL_INTERRUPTED")
+            DiagnosticHub.record("LIVE_MODEL_INTERRUPTED", mapOf("newEpoch" to activeTurnEpoch))
         }
 
         val epoch = activeTurnEpoch
@@ -334,14 +355,32 @@ class GeminiLiveSession(
                 val inlineData = partElement.jsonObject["inlineData"]?.jsonObject ?: return@forEach
                 val mimeType = inlineData["mimeType"]?.jsonPrimitive?.contentOrNull.orEmpty()
                 val data = inlineData["data"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                if (mimeType.startsWith("audio/pcm") && data.isNotBlank() && activeSpeechEnabled) {
-                    val bytes = runCatching { Base64.decode(data, Base64.DEFAULT) }.getOrNull()
-                    if (bytes != null) {
-                        audioPlayer.enqueue(epoch, bytes)
+                if (mimeType.startsWith("audio/pcm") && data.isNotBlank()) {
+                    if (firstAudioSeenForEpoch != epoch) {
+                        firstAudioSeenForEpoch = epoch
+                        val sentAt = activeTurnSentAtNanos
                         DiagnosticHub.record(
-                            "LIVE_AUDIO_CHUNK_RECEIVED",
-                            mapOf("bytes" to bytes.size, "epoch" to epoch),
+                            "LIVE_FIRST_AUDIO_RECEIVED",
+                            mapOf(
+                                "epoch" to epoch,
+                                "frameToFirstAudioMs" to if (sentAt > 0L) {
+                                    (SystemClock.elapsedRealtimeNanos() - sentAt) / 1_000_000.0
+                                } else {
+                                    null
+                                },
+                                "speechEnabled" to activeSpeechEnabled,
+                            ),
                         )
+                    }
+                    if (activeSpeechEnabled) {
+                        val bytes = runCatching { Base64.decode(data, Base64.DEFAULT) }.getOrNull()
+                        if (bytes != null) {
+                            audioPlayer.enqueue(epoch, bytes)
+                            DiagnosticHub.record(
+                                "LIVE_AUDIO_CHUNK_RECEIVED",
+                                mapOf("bytes" to bytes.size, "epoch" to epoch),
+                            )
+                        }
                     }
                 }
             }
@@ -386,7 +425,7 @@ class GeminiLiveSession(
         put("setup", buildJsonObject {
             put("model", "models/$LIVE_MODEL")
             put("generationConfig", buildJsonObject {
-                put("responseModalities", buildJsonArray { add(kotlinx.serialization.json.JsonPrimitive("AUDIO")) })
+                put("responseModalities", buildJsonArray { add(JsonPrimitive("AUDIO")) })
                 put("mediaResolution", "MEDIA_RESOLUTION_MEDIUM")
             })
             put("systemInstruction", buildJsonObject {
@@ -444,7 +483,7 @@ class GeminiLiveSession(
                 MODE=SCENE_COMPREHENSIVE. هذا أحدث إطار وهو أعلى أولوية من أي وصف سابق.
                 ابدأ فوراً بجملة أولى قصيرة ومفيدة، ثم أكمل وصفاً عملياً متدرجاً: خطر واضح إن وجد، الاتجاه والمسار، الأشخاص والأشياء، ثم التفاصيل.
                 النص المقروء جزء من فهم المشهد: اذكر النص البارز أو المفيد في موضعه الطبيعي، مثل: على اليمين صيدلية وعلى اللوحة مكتوب النهدي، ولا تكرر النص لاحقاً كقائمة منفصلة.
-                اقرأ الأرقام والأسعار وأسماء الأماكن عندما تكون واضحة ومفيدة، مع إبقاء الإنجليزية كما تظهر. تجاهل كروم تطبيق eSight/الكاميرا ومؤشرات الزوم والأزرار.
+                اقرأ الأرقام والأسعار وأسماء الأماكن عندما تكون واضحة ومفيدة، مع إبقاء الإنجليزية كما تظهر. تجاهل كروم تطبيق eSight والكاميرا ومؤشرات الزوم والأزرار.
                 لا تفترض هوية شخص، ولا مسافة دقيقة، ولا سلامة طريق، ولا معلومات غير مرئية.
             """.trimIndent()
         }
@@ -468,6 +507,7 @@ class GeminiLiveSession(
             socket?.close(NORMAL_CLOSE_CODE, reason)
             socket = null
             setupReady = null
+            setupSucceeded = false
             keyFingerprint = null
         }
         DiagnosticHub.record("LIVE_SOCKET_INVALIDATED", mapOf("reason" to reason))
@@ -478,6 +518,7 @@ class GeminiLiveSession(
             if (socket === webSocket) {
                 socket = null
                 setupReady = null
+                setupSucceeded = false
                 keyFingerprint = null
             }
         }
@@ -501,7 +542,7 @@ class GeminiLiveSession(
             كل صورة فيديو يتبعها أمر نصي يبدأ بـ MODE. نفذ أحدث MODE فقط واعتبره مقاطعة لأي مهمة أقدم.
             تكلم بالعربية الطبيعية مباشرة دون مقدمة أو Markdown، وانطق الكلمات الإنجليزية والأرقام كما تظهر عند الحاجة.
             السرعة أولوية: ابدأ بأول معلومة مؤكدة ومفيدة فوراً، ثم أكمل التفاصيل تدريجياً بدلاً من الانتظار لصياغة جواب طويل.
-            لا تستخدم OCR عربي محلي أو أي افتراض من سياق سابق؛ اعتمد على البكسلات الحالية فقط.
+            في وضع قراءة النص، اقرأ البكسلات الحالية نفسها ولا تستخدم معرفة عامة لإكمال كلمة غير واضحة.
             في وضع المشهد، دمج النص المرئي مع معنى وموقع الشيء أفضل من وصف عام ثم قائمة نصوص منفصلة.
             لا تخمّن نصاً غير واضح، ولا هوية شخص، ولا سلامة طريق، ولا تفاصيل خارج الإطار.
         """.trimIndent()
