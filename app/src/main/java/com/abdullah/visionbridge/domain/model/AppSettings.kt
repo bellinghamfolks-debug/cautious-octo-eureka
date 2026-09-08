@@ -35,6 +35,8 @@ data class AppSettings(
     companion object {
         const val CURRENT_LIVE_MODEL = "gemini-3.1-flash-live-preview"
         const val LIVE_MODEL_LABEL = "Gemini 3.1 Flash Live"
+        /** Compatibility surface for old UI/callers. It contains the current model only. */
+        val SUPPORTED_MODELS = listOf(CURRENT_LIVE_MODEL)
         const val MIN_SPEECH_RATE = 0.6f
         const val MAX_SPEECH_RATE = 1.8f
     }
