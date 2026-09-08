@@ -10,8 +10,12 @@ data class AppSettings(
     /** Legacy cloud trust gate. Live Accuracy Guard is always enabled instead. */
     val trustGateEnabled: Boolean = false,
     val captureProfile: CaptureProfile = CaptureProfile.STABLE,
-    /** Used by the local OCR speech lane. Cloud Live intentionally does not expose this toggle. */
-    val interruptSpeechOnVisualChange: Boolean = false,
+    /**
+     * Smart Target Interruption. When enabled, only a strong motion-compensated target replacement
+     * cuts speech immediately. A confirmed but borderline replacement lets the current phrase end.
+     * Camera shake, zoom, rotation and lighting changes never interrupt on their own.
+     */
+    val interruptSpeechOnVisualChange: Boolean = true,
     val sceneDescriptionStyle: SceneDescriptionStyle = SceneDescriptionStyle.COMPREHENSIVE,
     /** Read text with the on-device PP-OCR engine instead of Gemini. Describing stays cloud-only. */
     val useLocalOcr: Boolean = false,
