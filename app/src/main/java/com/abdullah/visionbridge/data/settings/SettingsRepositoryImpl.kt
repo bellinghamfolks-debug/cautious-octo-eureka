@@ -21,21 +21,14 @@ private val Context.settingsDataStore by preferencesDataStore(name = "vision_bri
 
 class SettingsRepositoryImpl(private val context: Context) : SettingsRepository {
     override val settings: Flow<AppSettings> = context.settingsDataStore.data.map { values ->
-        val storedModel = values[Keys.MODEL]
         AppSettings(
             mode = AnalysisMode.fromStored(values[Keys.MODE]),
-            model = storedModel?.takeIf { it in AppSettings.SUPPORTED_MODELS } ?: AppSettings.DEFAULT_MODEL,
-            // Live-only retires the old legacy-network override. A previously stored true value
-            // must not silently disable the WebSocket session after upgrading.
+            // There is one Gemini model in this build. Old stored model preferences are ignored.
+            model = AppSettings.CURRENT_LIVE_MODEL,
             forceCellular = false,
             speechEnabled = values[Keys.SPEECH] ?: true,
-            // Live Accuracy Guard is always on; the old trust-gate switch no longer represents a
-            // separate execution path and is intentionally reset rather than pretending otherwise.
             trustGateEnabled = false,
             captureProfile = CaptureProfile.fromStored(values[Keys.CAPTURE_PROFILE]),
-            // New key on purpose: older builds stored a simple cut/don't-cut switch. 3.8 replaces
-            // that behaviour with Smart Target Interruption and enables the safer policy by default
-            // on upgrade without reviving a stale legacy preference.
             interruptSpeechOnVisualChange = values[Keys.SMART_TARGET_INTERRUPTION_V1] ?: true,
             sceneDescriptionStyle = SceneDescriptionStyle.fromStored(values[Keys.SCENE_DESCRIPTION_STYLE]),
             useLocalOcr = values[Keys.USE_LOCAL_OCR] ?: false,
@@ -51,19 +44,15 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
     override suspend fun setMode(mode: AnalysisMode) = update(Keys.MODE, mode.name)
 
     override suspend fun setModel(model: String) {
-        require(model in AppSettings.SUPPORTED_MODELS) { "نموذج Gemini غير مدعوم" }
-        update(Keys.MODEL, model)
+        require(model == AppSettings.CURRENT_LIVE_MODEL) { "هذا الإصدار يستخدم Gemini Live الحالي فقط" }
+        // Intentionally no persistence. Model selection was removed from the product.
     }
 
-    override suspend fun setForceCellular(enabled: Boolean) {
-        update(Keys.FORCE_CELLULAR, false)
-    }
+    override suspend fun setForceCellular(enabled: Boolean) = Unit
 
     override suspend fun setSpeechEnabled(enabled: Boolean) = update(Keys.SPEECH, enabled)
 
-    override suspend fun setTrustGateEnabled(enabled: Boolean) {
-        update(Keys.TRUST_GATE_V2, false)
-    }
+    override suspend fun setTrustGateEnabled(enabled: Boolean) = Unit
 
     override suspend fun setCaptureProfile(profile: CaptureProfile) = update(Keys.CAPTURE_PROFILE, profile.name)
     override suspend fun setInterruptSpeechOnVisualChange(enabled: Boolean) =
@@ -87,10 +76,7 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
 
     private object Keys {
         val MODE = stringPreferencesKey("mode")
-        val MODEL = stringPreferencesKey("model")
-        val FORCE_CELLULAR = booleanPreferencesKey("force_cellular")
         val SPEECH = booleanPreferencesKey("speech")
-        val TRUST_GATE_V2 = booleanPreferencesKey("ocr_trust_gate_v2")
         val CAPTURE_PROFILE = stringPreferencesKey("capture_profile")
         val SMART_TARGET_INTERRUPTION_V1 = booleanPreferencesKey("smart_target_interruption_v1")
         val SCENE_DESCRIPTION_STYLE = stringPreferencesKey("scene_description_style")
