@@ -67,6 +67,15 @@ val applySmartTargetInterruptionV380 by tasks.registering(Exec::class) {
     dependsOn(applyEsightViewportSettingsV370)
 }
 
+val applyCurrentLiveOnlyV381 by tasks.registering(Exec::class) {
+    group = "build setup"
+    description = "Removes the legacy Gemini model chooser and accelerates Smart Target observation"
+    workingDir = rootDir
+    commandLine("python3", "scripts/apply_current_live_only_v381.py")
+    inputs.file(rootProject.file("scripts/apply_current_live_only_v381.py"))
+    dependsOn(applySmartTargetInterruptionV380)
+}
+
 val fetchOcrModels by tasks.registering(Exec::class) {
     group = "build setup"
     description = "Fetches and checksums the bundled PP-OCR models"
@@ -77,7 +86,7 @@ val fetchOcrModels by tasks.registering(Exec::class) {
 }
 
 tasks.matching { it.name == "preBuild" }.configureEach {
-    dependsOn(applySmartTargetInterruptionV380, fetchOcrModels)
+    dependsOn(applyCurrentLiveOnlyV381, fetchOcrModels)
 }
 
 android {
