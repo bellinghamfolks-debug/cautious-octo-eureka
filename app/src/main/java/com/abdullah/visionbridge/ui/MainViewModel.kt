@@ -123,6 +123,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setCaptureProfile(profile: CaptureProfile) = viewModelScope.launch { container.settingsRepository.setCaptureProfile(profile) }
     fun setInterruptSpeechOnVisualChange(enabled: Boolean) = viewModelScope.launch {
         container.settingsRepository.setInterruptSpeechOnVisualChange(enabled)
+        message.value = if (enabled) {
+            "تم تفعيل الانتقال الذكي بين الأهداف. لن يقطع الكلام إلا عند انتقال قوي ومؤكد."
+        } else {
+            "تم تعطيل القطع الذكي. سيستمر اكتشاف الأهداف الجديدة من دون قطع الكلام الجاري فوراً."
+        }
     }
     fun setSceneDescriptionStyle(style: SceneDescriptionStyle) = viewModelScope.launch {
         container.settingsRepository.setSceneDescriptionStyle(style)
