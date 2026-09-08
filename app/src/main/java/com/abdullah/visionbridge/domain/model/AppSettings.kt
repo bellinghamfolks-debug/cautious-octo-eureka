@@ -2,8 +2,8 @@ package com.abdullah.visionbridge.domain.model
 
 data class AppSettings(
     val mode: AnalysisMode = AnalysisMode.TEXT_READING,
-    /** Legacy non-Live model preference. Live uses its verified fixed model and does not expose this. */
-    val model: String = DEFAULT_MODEL,
+    /** Single current Gemini identity. There is no user-selectable legacy model path. */
+    val model: String = CURRENT_LIVE_MODEL,
     /** Retained for migration/API compatibility. Live-only builds keep this false. */
     val forceCellular: Boolean = false,
     val speechEnabled: Boolean = true,
@@ -33,15 +33,9 @@ data class AppSettings(
     val sceneIntervalMs: Long = 3_000L,
 ) {
     companion object {
-        const val DEFAULT_MODEL = "gemini-3.6-flash"
+        const val CURRENT_LIVE_MODEL = "gemini-3.1-flash-live-preview"
         const val LIVE_MODEL_LABEL = "Gemini 3.1 Flash Live"
         const val MIN_SPEECH_RATE = 0.6f
         const val MAX_SPEECH_RATE = 1.8f
-        val SUPPORTED_MODELS = listOf(
-            "gemini-3.6-flash",
-            "gemini-3.5-flash",
-            "gemini-3.5-flash-lite",
-            "gemini-3.1-flash-lite",
-        )
     }
 }
