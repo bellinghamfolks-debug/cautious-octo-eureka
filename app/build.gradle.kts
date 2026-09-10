@@ -69,7 +69,7 @@ val applySmartTargetInterruptionV380 by tasks.registering(Exec::class) {
 
 val applyCurrentLiveOnlyV381 by tasks.registering(Exec::class) {
     group = "build setup"
-    description = "Removes the legacy Gemini model chooser and accelerates Smart Target observation"
+    description = "Removes the legacy Gemini model chooser, accelerates Smart Target observation, and applies dense opt-in diagnostic image evidence"
     workingDir = rootDir
     commandLine("python3", "scripts/apply_current_live_only_v381.py")
     inputs.file(rootProject.file("scripts/apply_current_live_only_v381.py"))
@@ -111,8 +111,8 @@ android {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 41
-        versionName = "3.8.0"
+        versionCode = 42
+        versionName = "3.8.1"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -208,7 +208,6 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp-sse:5.4.0")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
