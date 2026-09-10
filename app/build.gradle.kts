@@ -76,6 +76,15 @@ val applyCurrentLiveOnlyV381 by tasks.registering(Exec::class) {
     dependsOn(applySmartTargetInterruptionV380)
 }
 
+val applyTenMinuteDiagnosticTimelineV382 by tasks.registering(Exec::class) {
+    group = "build setup"
+    description = "Adds a one-frame-per-second opt-in diagnostic timeline covering ten minutes"
+    workingDir = rootDir
+    commandLine("python3", "scripts/apply_10min_diagnostic_timeline_v382.py")
+    inputs.file(rootProject.file("scripts/apply_10min_diagnostic_timeline_v382.py"))
+    dependsOn(applyCurrentLiveOnlyV381)
+}
+
 val fetchOcrModels by tasks.registering(Exec::class) {
     group = "build setup"
     description = "Fetches and checksums the bundled PP-OCR models"
@@ -86,7 +95,7 @@ val fetchOcrModels by tasks.registering(Exec::class) {
 }
 
 tasks.matching { it.name == "preBuild" }.configureEach {
-    dependsOn(applyCurrentLiveOnlyV381, fetchOcrModels)
+    dependsOn(applyTenMinuteDiagnosticTimelineV382, fetchOcrModels)
 }
 
 android {
@@ -111,8 +120,8 @@ android {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 42
-        versionName = "3.8.1"
+        versionCode = 43
+        versionName = "3.8.2"
 
         ndk {
             abiFilters += "arm64-v8a"
