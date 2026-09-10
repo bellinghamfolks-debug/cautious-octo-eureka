@@ -94,6 +94,15 @@ val hardenTenMinuteDiagnosticTimelineV382 by tasks.registering(Exec::class) {
     dependsOn(applyTenMinuteDiagnosticTimelineV382)
 }
 
+val applyEveryAnalysisInputEvidenceV383 by tasks.registering(Exec::class) {
+    group = "build setup"
+    description = "Captures every selected OCR/Gemini visual input during opt-in diagnostics"
+    workingDir = rootDir
+    commandLine("python3", "scripts/apply_every_analysis_input_evidence_v383.py")
+    inputs.file(rootProject.file("scripts/apply_every_analysis_input_evidence_v383.py"))
+    dependsOn(hardenTenMinuteDiagnosticTimelineV382)
+}
+
 val fetchOcrModels by tasks.registering(Exec::class) {
     group = "build setup"
     description = "Fetches and checksums the bundled PP-OCR models"
@@ -104,7 +113,7 @@ val fetchOcrModels by tasks.registering(Exec::class) {
 }
 
 tasks.matching { it.name == "preBuild" }.configureEach {
-    dependsOn(hardenTenMinuteDiagnosticTimelineV382, fetchOcrModels)
+    dependsOn(applyEveryAnalysisInputEvidenceV383, fetchOcrModels)
 }
 
 android {
@@ -129,8 +138,8 @@ android {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 43
-        versionName = "3.8.2"
+        versionCode = 44
+        versionName = "3.8.3"
 
         ndk {
             abiFilters += "arm64-v8a"
