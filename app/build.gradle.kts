@@ -85,6 +85,15 @@ val applyTenMinuteDiagnosticTimelineV382 by tasks.registering(Exec::class) {
     dependsOn(applyCurrentLiveOnlyV381)
 }
 
+val hardenTenMinuteDiagnosticTimelineV382 by tasks.registering(Exec::class) {
+    group = "build setup"
+    description = "Hardens ten-minute diagnostics against timing drift and supplemental evidence exhaustion"
+    workingDir = rootDir
+    commandLine("python3", "scripts/harden_10min_diagnostic_timeline_v382.py")
+    inputs.file(rootProject.file("scripts/harden_10min_diagnostic_timeline_v382.py"))
+    dependsOn(applyTenMinuteDiagnosticTimelineV382)
+}
+
 val fetchOcrModels by tasks.registering(Exec::class) {
     group = "build setup"
     description = "Fetches and checksums the bundled PP-OCR models"
@@ -95,7 +104,7 @@ val fetchOcrModels by tasks.registering(Exec::class) {
 }
 
 tasks.matching { it.name == "preBuild" }.configureEach {
-    dependsOn(applyTenMinuteDiagnosticTimelineV382, fetchOcrModels)
+    dependsOn(hardenTenMinuteDiagnosticTimelineV382, fetchOcrModels)
 }
 
 android {
