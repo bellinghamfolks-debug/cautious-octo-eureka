@@ -37,7 +37,26 @@ import java.util.concurrent.atomic.AtomicLong
  * which decides whether a whole page deserves to be read, so a retry of a half-heard page can no
  * longer have most of its blocks silenced individually.
  */
-class BilingualTtsEngine(context: Context) {
+class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.visionbridge.capture.TurnGate? = null) {
+    fun invalidateVisualContent() { interruptInternal("visual_turn_invalidated") }
+
+    fun speakTurn(result: com.abdullah.visionbridge.domain.model.AnalysisResult, rate: Float, section: String) {
+        val turn = result.turn ?: return
+        val queuedAt = SystemClock.elapsedRealtimeNanos()
+        val trace = DiagnosticTrace(turn.traceId,turn.frameId,turn.capturedAt,turn.capturedAtNanos,turn,section)
+        scope.launch(trace) {
+            if (turnGate?.rejection(turn) != null) return@launch
+            enqueue(result.text,rate,false,NO_READING,trace=trace,originalEnqueuedAt=queuedAt)
+        }
+    }
+
+    private fun stale(trace: DiagnosticTrace?): Boolean =
+        trace?.turn?.let { turnGate?.rejection(it) != null } ?: false
+
+    private fun SpeechRequest.expired(): Boolean = trace?.turn != null &&
+        (SystemClock.elapsedRealtimeNanos()-enqueuedAtElapsedNanos)/1_000_000 >
+        (if (trace.section == "SCENE_TAIL") 1500 else 4000)
+
     private data class SpeechRequest(
         val text: String,
         val rate: Float,
@@ -124,7 +143,7 @@ class BilingualTtsEngine(context: Context) {
         initializeEngine("initialization")
         scope.launch {
             for (request in requests) {
-                val outcome = if (request.isStaleLiveDescription()) {
+                val outcome = if (request.isStaleLiveDescription() || stale(request.trace) || request.expired()) {
                     DiagnosticHub.record(
                         "TTS_REQUEST_DROPPED",
                         request.trace.fieldsOrEmpty(
@@ -461,6 +480,11 @@ class BilingualTtsEngine(context: Context) {
                 val id = utteranceId ?: return
                 val state = utterances[id] ?: return
                 state.startedAtElapsedNanos = SystemClock.elapsedRealtimeNanos()
+                if (stale(state.trace) || state.requestGeneration != generation.get()) {
+                    tts?.stop()
+                    completeUtterance(id,"TTS_STALE_START_DROPPED",SpeechOutcome.INTERRUPTED)
+                    return
+                }
                 DiagnosticHub.record(
                     "TTS_UTTERANCE_STARTED",
                     state.trace.fieldsOrEmpty(
@@ -471,6 +495,7 @@ class BilingualTtsEngine(context: Context) {
                             "requestGeneration" to state.requestGeneration,
                             "queueWaitMs" to
                                 (state.startedAtElapsedNanos - state.enqueuedAtElapsedNanos) / 1_000_000.0,
+                            "queueAgeMs" to (state.startedAtElapsedNanos - state.enqueuedAtElapsedNanos) / 1_000_000.0,
                             "submitToStartMs" to
                                 (state.startedAtElapsedNanos - state.submittedAtElapsedNanos) / 1_000_000.0,
                         ),
@@ -552,6 +577,7 @@ class BilingualTtsEngine(context: Context) {
         blockIndex: Int = NO_BLOCK,
         trace: DiagnosticTrace?,
         liveGeneration: Long = NOT_LIVE,
+        originalEnqueuedAt: Long = SystemClock.elapsedRealtimeNanos(),
     ) {
         val readyStarted = SystemClock.elapsedRealtimeNanos()
         if (!ensureEngineReady(trace, text)) {
@@ -569,7 +595,7 @@ class BilingualTtsEngine(context: Context) {
             } else {
                 generation.get()
             }
-            val enqueuedAt = SystemClock.elapsedRealtimeNanos()
+            val enqueuedAt = originalEnqueuedAt
             if (liveGeneration != NOT_LIVE) liveBlocksOutstanding.incrementAndGet()
             val request = SpeechRequest(
                 text = text,
@@ -582,7 +608,11 @@ class BilingualTtsEngine(context: Context) {
                 trace = trace,
                 enqueuedAtElapsedNanos = enqueuedAt,
             )
-            val accepted = requests.trySend(request).isSuccess
+            var accepted = false
+            val owner = trace?.turn
+            if (owner != null && turnGate != null) {
+                turnGate.commit(owner) { accepted = requests.trySend(request).isSuccess }
+            } else { accepted = requests.trySend(request).isSuccess }
             DiagnosticHub.record(
                 "TTS_REQUEST_ENQUEUED",
                 trace.fieldsOrEmpty(
@@ -704,7 +734,7 @@ class BilingualTtsEngine(context: Context) {
         )
 
         for ((index, segment) in segments.withIndex()) {
-            if (request.generation != generation.get()) {
+            if (request.generation != generation.get() || stale(request.trace)) {
                 DiagnosticHub.record(
                     "TTS_SEGMENT_DROPPED",
                     request.trace.fieldsOrEmpty(
@@ -769,7 +799,9 @@ class BilingualTtsEngine(context: Context) {
                     ),
                 ),
             )
-            val result = engine.speak(
+            var result = TextToSpeech.ERROR
+            val submit = {
+                result = engine.speak(
                 segment.text,
                 if (index == 0 && request.flushFirst) {
                     TextToSpeech.QUEUE_FLUSH
@@ -779,6 +811,14 @@ class BilingualTtsEngine(context: Context) {
                 null,
                 utteranceId,
             )
+            }
+            val owner = request.trace?.turn
+            if (owner != null && turnGate != null) {
+                if (!turnGate.commit(owner,submit)) {
+                    utterances.remove(utteranceId)?.completion?.complete(SpeechOutcome.INTERRUPTED)
+                    return SpeechOutcome.INTERRUPTED
+                }
+            } else { submit() }
             DiagnosticHub.record(
                 "TTS_ENGINE_SPEAK_RETURNED",
                 request.trace.fieldsOrEmpty(

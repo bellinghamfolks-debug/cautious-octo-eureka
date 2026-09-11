@@ -56,6 +56,7 @@ class MediaProjectionService : Service() {
     private data class PendingFrame(
         val bitmap: Bitmap,
         val trace: DiagnosticTrace,
+        val candidate: FrameBoundCoordinator.Candidate,
     )
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -440,8 +441,8 @@ class MediaProjectionService : Service() {
             // delay. While Gemini is busy, later frames replace only the single pending slot.
             cloudLive -> frameChangeDetector.evaluateFast(
                 bitmap = bitmap,
-                minimumMeanDifference = cloudTextMeanThreshold,
-                minimumChangedRatio = cloudTextRatioThreshold,
+                minimumMeanDifference = 0.0,
+                minimumChangedRatio = 0.0,
             )
             settings.mode == AnalysisMode.SCENE_DESCRIPTION -> frameChangeDetector.evaluateFast(
                 bitmap = bitmap,
@@ -643,7 +644,7 @@ class MediaProjectionService : Service() {
                     ),
                 ),
             )
-            submitLatestFrame(PendingFrame(view, trace))
+            submitLatestFrame(PendingFrame(view, trace, container.coordinator.candidate(view, trace, settings)))
             return
         }
 
@@ -734,7 +735,7 @@ class MediaProjectionService : Service() {
             ),
         )
         DiagnosticHub.record("FRAME_SELECTED_FOR_ANALYSIS", trace.fields())
-        submitLatestFrame(PendingFrame(view, trace))
+        submitLatestFrame(PendingFrame(view, trace, container.coordinator.candidate(view, trace, settings)))
     }
 
     private fun observeVisualFeedHealth(
@@ -850,7 +851,7 @@ class MediaProjectionService : Service() {
             DiagnosticHub.record("ANALYSIS_DISPATCH_STARTED", frame.trace.fields())
             try {
                 withContext(frame.trace) {
-                    container.coordinator.process(frame.bitmap)
+                    container.coordinator.process(frame.bitmap, frame.candidate)
                 }
                 DiagnosticHub.record(
                     "ANALYSIS_DISPATCH_COMPLETED",

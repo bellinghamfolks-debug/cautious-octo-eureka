@@ -68,3 +68,16 @@ Next exact steps:
 
 A previous snapshot has GitHub Actions run 34591658552. It covers the earlier checkpoint,
 not the subsequent stateless-coordinator additions. Check its exact head SHA before using results.
+
+## Integration checkpoint
+
+AppContainer now selects FrameBoundCoordinator. MediaProjectionService carries Candidate
+with PendingFrame; cloud change detection allows stable-quality retries. BilingualTtsEngine
+now accepts immutable speakTurn context, rejects stale queue/segment/start callbacks, and
+performs the final speak submission under TurnGate. UI acknowledgement records after a
+Compose frame. These changes are saved for recovery but **not yet compiled or device tested**.
+The earlier 'integration unfinished' paragraph describes the prior checkpoint only.
+
+Still review: coordinator locking/cancellation, first-candidate quality settling, measured
+crop completeness, per-utterance hard start timeout and speech queue budgets; full telemetry,
+scene dedupe and tests. Existing unreferenced Live classes have not yet been deleted.

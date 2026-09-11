@@ -57,6 +57,15 @@ fun MainScreen(
 ) {
     val snackbarHost = remember { SnackbarHostState() }
 
+    val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val displayed = state.capture.lastResult
+    LaunchedEffect(displayed?.turn?.turnId, displayed?.text, displayed?.sceneTail) {
+        if (displayed != null) {
+            androidx.compose.runtime.withFrameNanos { }
+            (appContext as? com.abdullah.visionbridge.VisionBridgeApp)?.container?.runtime?.displayed(displayed)
+        }
+    }
+
     LaunchedEffect(state.message) {
         state.message?.let {
             snackbarHost.showSnackbar(it)
