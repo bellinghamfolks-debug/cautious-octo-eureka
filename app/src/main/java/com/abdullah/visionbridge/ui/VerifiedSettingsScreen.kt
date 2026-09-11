@@ -124,7 +124,7 @@ fun VerifiedSettingsScreen(
                     if (state.settings.useLocalOcr && state.settings.mode == AnalysisMode.TEXT_READING) {
                         "قراءة النص الحالية: PP-OCRv5 على الجهاز."
                     } else {
-                        "المسار السحابي: ${AppSettings.LIVE_MODEL_LABEL} عبر WebSocket Live فقط، بلا Legacy fallback."
+                        "${AppSettings.FRAME_MODEL_LABEL} لقراءة النص ووصف المشهد، مع مراجعة الكلمات على الجهاز."
                     },
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                 )
@@ -193,7 +193,7 @@ fun VerifiedSettingsScreen(
                         description = if (state.settings.useLocalOcr) {
                             "الصور لا تُرسل إلى Gemini للقراءة. هذا اختيار صريح وليس مسارًا احتياطيًا."
                         } else {
-                            "القراءة عبر Gemini Live فقط. إذا فشل Live لا ينتقل التطبيق إلى Legacy."
+                            "تُحلل الصورة الحالية عبر Gemini وتُراجع الكلمات على الجهاز. إذا لم تتأكد القراءة سيُطلب إطار أوضح."
                         },
                         checked = state.settings.useLocalOcr,
                         onCheckedChange = onUseLocalOcrChange,

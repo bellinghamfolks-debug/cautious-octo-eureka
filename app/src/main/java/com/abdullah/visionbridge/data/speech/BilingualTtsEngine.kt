@@ -15,6 +15,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -38,7 +39,8 @@ import java.util.concurrent.atomic.AtomicLong
  * longer have most of its blocks silenced individually.
  */
 class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.visionbridge.capture.TurnGate? = null) {
-    fun invalidateVisualContent() { interruptInternal("visual_turn_invalidated") }
+    private val visualTimeline = VisualSpeechTimeline()
+    fun invalidateVisualContent() { visualTimeline.invalidate();interruptInternal("visual_turn_invalidated") }
 
     fun speakTurn(result: com.abdullah.visionbridge.domain.model.AnalysisResult, rate: Float, section: String) {
         val turn = result.turn ?: return
@@ -53,9 +55,9 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
     private fun stale(trace: DiagnosticTrace?): Boolean =
         trace?.turn?.let { turnGate?.rejection(it) != null } ?: false
 
-    private fun SpeechRequest.expired(): Boolean = trace?.turn != null &&
-        (SystemClock.elapsedRealtimeNanos()-enqueuedAtElapsedNanos)/1_000_000 >
-        (if (trace.section == "SCENE_TAIL") 1500 else 4000)
+    private fun SpeechRequest.expired(): Boolean = trace?.turn?.let {
+        visualTimeline.window(it,trace.section,enqueuedAtElapsedNanos).expired(SystemClock.elapsedRealtimeNanos())
+    } ?: false
 
     private data class SpeechRequest(
         val text: String,
@@ -81,6 +83,7 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
         val requestGeneration: Long,
         val enqueuedAtElapsedNanos: Long,
         val submittedAtElapsedNanos: Long,
+        val window: VisualSpeechTimeline.Window?,
     ) {
         @Volatile
         var startedAtElapsedNanos: Long = 0L
@@ -479,12 +482,16 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
             override fun onStart(utteranceId: String?) {
                 val id = utteranceId ?: return
                 val state = utterances[id] ?: return
-                state.startedAtElapsedNanos = SystemClock.elapsedRealtimeNanos()
-                if (stale(state.trace) || state.requestGeneration != generation.get()) {
-                    tts?.stop()
-                    completeUtterance(id,"TTS_STALE_START_DROPPED",SpeechOutcome.INTERRUPTED)
-                    return
-                }
+                val now = SystemClock.elapsedRealtimeNanos()
+                val started = {
+                    if (state.requestGeneration != generation.get() || utterances[id] !== state) {
+                        completeUtterance(id,"TTS_STALE_START_DROPPED",SpeechOutcome.INTERRUPTED)
+                    } else if (state.window?.expired(now) == true) {
+                        tts?.stop()
+                        completeUtterance(id,"TTS_START_DEADLINE_EXCEEDED",SpeechOutcome.SUPERSEDED_BEFORE_START,
+                            mapOf("reason" to "engine_start_expired","queueAgeMs" to (now-state.enqueuedAtElapsedNanos)/1e6))
+                    } else {
+                state.startedAtElapsedNanos = now
                 DiagnosticHub.record(
                     "TTS_UTTERANCE_STARTED",
                     state.trace.fieldsOrEmpty(
@@ -497,12 +504,23 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
                                 (state.startedAtElapsedNanos - state.enqueuedAtElapsedNanos) / 1_000_000.0,
                             "queueAgeMs" to (state.startedAtElapsedNanos - state.enqueuedAtElapsedNanos) / 1_000_000.0,
                             "ttsStartedAtElapsedNanos" to state.startedAtElapsedNanos,
-                            "ttsEligibleAtElapsedNanos" to state.enqueuedAtElapsedNanos,
+                            "ttsEligibleAtElapsedNanos" to (state.window?.eligibleAtNanos ?: state.enqueuedAtElapsedNanos),
+                            "engineQueueAgeMs" to (now-(state.window?.eligibleAtNanos ?: state.enqueuedAtElapsedNanos))/1e6,
                             "submitToStartMs" to
                                 (state.startedAtElapsedNanos - state.submittedAtElapsedNanos) / 1_000_000.0,
                         ),
                     ),
                 )
+                    }
+                }
+                val owner=state.trace?.turn
+                if(owner!=null && turnGate!=null) {
+                    if(!turnGate.commit(owner,started)) {
+                        // Invalidation already stopped this turn. A late callback must not stop
+                        // a newer turn's engine output.
+                        completeUtterance(id,"TTS_STALE_START_DROPPED",SpeechOutcome.INTERRUPTED)
+                    }
+                } else started()
             }
 
             override fun onDone(utteranceId: String?) {
@@ -777,6 +795,14 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
             val utteranceId = "vision-${UUID.randomUUID()}"
             val completion = CompletableDeferred<SpeechOutcome>()
             val submittedAt = SystemClock.elapsedRealtimeNanos()
+            val window = request.trace?.turn?.let {
+                visualTimeline.window(it,request.trace.section,request.enqueuedAtElapsedNanos)
+            }
+            if(window?.expired(submittedAt)==true) {
+                DiagnosticHub.record("TTS_REQUEST_DROPPED",request.trace.fieldsOrEmpty(mapOf(
+                    "reason" to "start_deadline_before_submit","queueAgeMs" to (submittedAt-request.enqueuedAtElapsedNanos)/1e6)))
+                return SpeechOutcome.SUPERSEDED_BEFORE_START
+            }
             utterances[utteranceId] = UtteranceState(
                 completion = completion,
                 trace = request.trace,
@@ -785,6 +811,7 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
                 requestGeneration = request.generation,
                 enqueuedAtElapsedNanos = request.enqueuedAtElapsedNanos,
                 submittedAtElapsedNanos = submittedAt,
+                window = window,
             )
             DiagnosticHub.record(
                 "TTS_UTTERANCE_SUBMITTING",
@@ -840,8 +867,23 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
                 return SpeechOutcome.FAILED
             }
 
+            val startWatchdog = window?.let { deadline -> scope.launch {
+                delay(((deadline.deadlineNanos-SystemClock.elapsedRealtimeNanos()).coerceAtLeast(0)+999_999)/1_000_000)
+                val expire = {
+                    val state=utterances[utteranceId]
+                    if(state!=null && state.startedAtElapsedNanos==0L) {
+                        engine.stop()
+                        completeUtterance(utteranceId,"TTS_START_DEADLINE_EXCEEDED",SpeechOutcome.SUPERSEDED_BEFORE_START,
+                            mapOf("reason" to "engine_did_not_start","queueAgeMs" to
+                                (SystemClock.elapsedRealtimeNanos()-request.enqueuedAtElapsedNanos)/1e6))
+                    }
+                }
+                if(owner!=null && turnGate!=null) turnGate.commit(owner,expire) else expire()
+            } }
+
             val timeoutMs = utteranceTimeoutMs(segment.text)
             val outcome = withTimeoutOrNull(timeoutMs) { completion.await() }
+            startWatchdog?.cancel()
             utterances.remove(utteranceId)
             if (outcome == null) {
                 consecutiveTimeouts++
@@ -863,6 +905,9 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
             // One silenced segment silences the rest of the block: the words after it were never
             // spoken either, whatever the engine goes on to report about them.
             if (!outcome.delivered) return outcome
+            request.trace?.turn?.let { turn -> turnGate?.commit(turn) {
+                visualTimeline.delivered(turn,SystemClock.elapsedRealtimeNanos())
+            } }
             consecutiveTimeouts = 0
         }
         return SpeechOutcome.COMPLETED

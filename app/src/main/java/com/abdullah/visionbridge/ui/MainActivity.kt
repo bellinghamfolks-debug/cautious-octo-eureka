@@ -149,9 +149,9 @@ class MainActivity : ComponentActivity() {
                 putExtra(
                     Intent.EXTRA_TEXT,
                     if (includesImages) {
-                        "ملف تشخيص VisionBridge ويحتوي $evidenceCount لقطة فشل محفوظة بإذن المستخدم، إضافة إلى الخط الزمني ونتائج OCR وGemini Live وحالة النطق والتوقيتات."
+                        "ملف تشخيص VisionBridge ويحتوي $evidenceCount لقطة فشل محفوظة بإذن المستخدم، إضافة إلى الخط الزمني ونتائج OCR وGemini وحالة النطق والتوقيتات."
                     } else {
-                        "ملف تشخيص VisionBridge من دون صور. يتضمن الخط الزمني ونتائج OCR وGemini Live وحالة النطق والتوقيتات."
+                        "ملف تشخيص VisionBridge من دون صور. يتضمن الخط الزمني ونتائج OCR وGemini وحالة النطق والتوقيتات."
                     },
                 )
                 clipData = ClipData.newRawUri("VisionBridge diagnostics", uri)

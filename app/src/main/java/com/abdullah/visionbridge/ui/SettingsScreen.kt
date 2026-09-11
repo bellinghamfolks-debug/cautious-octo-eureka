@@ -174,14 +174,13 @@ fun SettingsScreen(
                     }
                 }
 
-                // CURRENT_LIVE_MODEL_ONLY_V381
-                SectionTitle("Gemini Live")
+                SectionTitle("المحرك السحابي")
                 Text(
-                    text = "Gemini 3.1 Flash Live هو النموذج السحابي الحالي الوحيد. لا توجد نماذج قديمة أو اختيار نموذج في هذا الإصدار.",
+                    text = "Gemini 3.6 Flash لقراءة النص ووصف المشهد. تُراجع قراءة النص أيضًا على الجهاز للتحقق من الكلمات.",
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.semantics {
                         contentDescription =
-                            "النموذج السحابي الحالي الوحيد: Gemini 3.1 Flash Live. لا توجد نماذج قديمة."
+                            "Gemini 3.6 Flash. تُراجع قراءة النص أيضًا على الجهاز للتحقق من الكلمات."
                     },
                 )
 

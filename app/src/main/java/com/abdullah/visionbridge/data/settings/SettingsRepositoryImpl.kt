@@ -24,7 +24,7 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
         AppSettings(
             mode = AnalysisMode.fromStored(values[Keys.MODE]),
             // There is one Gemini model in this build. Old stored model preferences are ignored.
-            model = AppSettings.CURRENT_LIVE_MODEL,
+            model = AppSettings.CURRENT_FRAME_MODEL,
             forceCellular = false,
             speechEnabled = values[Keys.SPEECH] ?: true,
             trustGateEnabled = false,
@@ -44,7 +44,7 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
     override suspend fun setMode(mode: AnalysisMode) = update(Keys.MODE, mode.name)
 
     override suspend fun setModel(model: String) {
-        require(model == AppSettings.CURRENT_LIVE_MODEL) { "هذا الإصدار يستخدم Gemini Live الحالي فقط" }
+        require(model == AppSettings.CURRENT_FRAME_MODEL) { "هذا الإصدار يستخدم Gemini 3.6 Flash" }
         // Intentionally no persistence. Model selection was removed from the product.
     }
 

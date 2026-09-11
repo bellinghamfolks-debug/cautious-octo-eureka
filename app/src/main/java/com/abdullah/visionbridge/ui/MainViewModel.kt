@@ -57,11 +57,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setUseLocalOcr(enabled: Boolean) = viewModelScope.launch {
         container.settingsRepository.setUseLocalOcr(enabled)
-        if (!enabled) container.localOcrEngine.release("user_disabled_local_reader")
+        // Cloud reading still needs the local optical validator. Mode changes must not unload it
+        // while a frame-bound request is using its evidence.
         message.value = if (enabled) {
-            "تم تفعيل PP-OCRv5. ستتم قراءة النص على الجهاز، بينما يبقى وصف المشهد عبر Gemini Live."
+            "ستتم قراءة النص على الجهاز، ووصف المشهد عبر Gemini."
         } else {
-            "تم إيقاف PP-OCRv5. ستتم قراءة النص عبر Gemini Live فقط."
+            "ستتم قراءة النص عبر Gemini مع مراجعة الكلمات على الجهاز."
         }
     }
 

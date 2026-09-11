@@ -1,114 +1,73 @@
-# Frame integrity repair — incomplete development checkpoint
+# Frame integrity repair — current recovery checkpoint
 
-Base: `6c5799c6b704b641c67b06e6cb914872353a8ddd`, 3.8.3 (44),
+Status: development in progress; no release or performance acceptance.
+Base: `6c5799c6b704b641c67b06e6cb914872353a8ddd`, version 3.8.3 (44),
 `codex/visionbridge-3.7-esight-viewport-settings`.
+Durable work branch: `codex/visionbridge-frame-integrity`.
 
-Workspace maintenance removed the earlier uncommitted implementation. The repository and
-private diagnostic attachment were recovered. This checkpoint deliberately records what
-is actually present, rather than claiming the lost implementation is still installed.
-No private images, ZIP, transcripts or frame ledgers are part of this repository.
+## Recovery and preservation
 
-Present:
-- Materialized the exact effective source previously created by eleven preBuild Python
-  mutations; retired those mutations so reviewable Kotlin is the Kotlin being built.
-- Added immutable AnalysisTurn and synchronized TurnGate with race/identity tests.
-  **These foundations are not yet connected to the production result/TTS path.**
-- Added boundary-confirmed viewport resolution, explicit 1220x2712 handling, two rotations,
-  conservative unresolved reporting and synthetic geometry tests.
-- Corrected encoder timing to exclude connection setup; measured JPEG, copies, hash and
-  total separately while preserving every original resolution and quality profile.
-- Fixed the two-phase pending-frame release race by updating pending/processing atomically.
-- Added the performance acceptance contract and local-only aggregate/annotated replay tools.
-- Changed CI to validation only: no automatic APK/release publication or signing-key creation.
+On 2026-09-11 the local worktree reverted to an earlier snapshot again. All previous
+implementation was recovered from remote commit `ae09b56398f37db2b98a11ae290dfaa792a9dd85`,
+tree `d130eda33aa64c30611c939dae1e9b64bf51146e`. Old local branches were retained.
+Before resuming after interruption, fetch this work branch and inspect its latest HEAD.
+Do not overwrite a dirty worktree. GitHub commits may differ from earlier local checkpoint
+hashes; verify trees. Never merge the old reconstruction merely to reconcile those hashes.
+Commit and save incremental source checkpoints. Private captures, diagnostic ZIP, transcripts,
+frame ledgers and replay outputs remain outside this repository and all CI artifacts.
 
-Verified so far: 21 pure Kotlin/JUnit geometry and identity tests executed with the host
-Kotlin compiler; nine Python measurement tests; repository verification; diff whitespace.
-These are **not** the complete Gradle test suite or Android device tests.
-The required `./scripts/codex-check.sh` was attempted; initial failures were network/proxy
-resolution of Gradle and Android build dependencies. A retry with an isolated Gradle home
-is being investigated. No APK or performance acceptance has been established.
+## Verified before this checkpoint
 
-Outstanding before any release:
-1. Replace mutable Live result attribution with one stateless image+instruction request per
-   accepted frame; propagate exact turn/image identity through callbacks, runtime, UI and TTS.
-2. Integrate local PP-OCR grounding, stable-quality candidate retries and bounded analysis
-   scheduling independently of speech. Do not reuse the Live speech backpressure policy.
-3. Enforce stale-turn and utterance expiry checks at actual output boundaries; stream the
-   important scene clause before full Comprehensive completion; keep READ_TEXT and SCENE_TAIL separate.
-4. Complete cheap-first Smart Target changes, asynchronous bounded evidence writes and
-   invariant diagnostics. Test both scene styles and unavailable-image handling independently.
-5. Replay all private inputs locally, annotate golden failures, compare matching before/after
-   runs, verify >=95% clear-text presence recall and all user latency budgets on a device.
-6. Run full lint/unit/assemble/instrumented tests and diagnostics enabled/disabled A/B.
+Exact commit ae09b56: GitHub Actions run 34619350681 succeeded.
+- `./scripts/codex-check.sh`: lintDebug, testDebugUnitTest, assembleDebug succeeded.
+- Managed Pixel 6 API 30 emulator: 12 instrumented tests ran and completed successfully.
+- Nine Python measurement tests succeeded.
+- Earlier 49 targeted host Kotlin tests covered turn identity, grounding/retry, geometry,
+  tracking and Smart Target. This is not a count of the whole Gradle suite.
+These results do not establish correctness/latency on the user's phone or private golden set.
+The new speech deadline changes below still require their own complete Android CI gate.
 
-Official protocol basis: [Live API](https://ai.google.dev/api/live) documents concurrent
-realtime modality streams without cross-stream ordering guarantees;
-[generateContent](https://ai.google.dev/api/generate-content) provides image and task parts
-in one request. Model quality and real network latency still require measured validation.
+## Implemented
 
-## Subsequent recovery checkpoint (not compiled, not release-ready)
+- Materialized effective Kotlin formerly mutated by eleven preBuild scripts; removed those
+  mutations so reviewed source equals compiled source.
+- Immutable AnalysisTurn + TurnGate govern production frame submission, result, UI and TTS.
+  Retired GeminiLiveSession/LiveCloudCoordinator. FrameTurnTransport submits image and task
+  in one stateless request; callbacks capture that immutable request identity and image hash.
+- Mandatory local PP-OCR token grounding for cloud text; conservative NO_TEXT/low-confidence
+  retry; quality-aware stable candidates and optical duplicate verification without cancelling
+  an already accepted reading. Actual device precision and recall are not yet measured.
+- One analysis lane and one pending candidate independent of speech, atomic queue release.
+- READ_TEXT and optional SCENE_TAIL separated; comprehensive description streams clauses.
+- Boundary-confirmed dynamic viewport and explicit 1220x2712/rotation geometry tests.
+- Encoder component timings and transmitted JPEG hash, original quality profiles preserved.
+- Cheap-first structural tracker checks; bounded asynchronous diagnostic evidence with explicit
+  capacity skips and an export barrier.
+- Monotonic runtime/UI/TTS endpoint timestamps and local-only measurement/acceptance tools.
+- Validation-only CI: synthetic reports only; no APK/release publication or signing-key creation.
 
-Added FrameTurnTransport (stateless image+instruction SSE), FrameBoundCoordinator,
-TextGroundingGate, QualityRetryPolicy and tests. Added result/diagnostic turn fields and
-runtime rejection. **Integration is unfinished:** AppContainer still selects the old
-coordinator, MediaProjectionService does not yet pass Candidate, and BilingualTtsEngine
-still needs speakTurn/invalidateVisualContent plus atomic stale checks. These references
-must be implemented before the new source can compile. UI acknowledgement is also pending.
-Do not mistake this recovery checkpoint for a working application or validated repair.
+## Current additions
 
-Next exact steps:
-- Complete TTS turn/context propagation and expiry enforcement, then wire AppContainer and
-  PendingFrame/Candidate; remove production GeminiLiveSession and LiveCloudCoordinator.
-- Inspect coordinator concurrency (policy mutation under one authority, cancellation while
-  grounding, first-frame stable retry, scene deduplication). cropCompleteness=1.0 is currently
-  a placeholder and MUST be replaced with measured evidence before acceptance.
-- Compile the integrated source, run full tests, expand regression coverage, then device replay.
-- Fix remaining diagnostic evidence synchronous writes and tracking cost; implement full stage
-  timing and useful-output opportunity measurements. These are not implemented by the Python tools.
+- Enforce a one-second visual TTS start budget at submission, onStart and a start watchdog.
+  Late callbacks are validated atomically and cannot stop newer speech. A delivered same-turn
+  predecessor permits ordered continuation; original queue age remains reported separately
+  from engine waiting time. Scene tails cannot borrow a reading's continuation window.
+- Correct settings/UI model identity to the actual stateless model. Keep PP-OCR available
+  when cloud reading is selected because it remains the mandatory optical validator.
 
-A previous snapshot has GitHub Actions run 34591658552. It covers the earlier checkpoint,
-not the subsequent stateless-coordinator additions. Check its exact head SHA before using results.
+## Next work, in order
 
-## Integration checkpoint
+1. Validate speech deadline integration and add independent Brief/Comprehensive policies/tests,
+   semantic dedupe, unavailable-image lifecycle, latest/best candidate selection.
+2. Complete stage/opportunity instrumentation, invariant diagnostics, and diagnostics off/on tests.
+   Review grounding/network concurrency, scene confidence limitations, black frames with controls.
+3. Build synthetic replay fixtures (Arabic/English/mixed/numbers/small/tilted/blur/glare/black/
+   rotations/target transitions/scenes). Private replay stays local; rebuild its ledgers if lost.
+4. Run the full Android gates again. Reproduce private cases and >=95% clear-text presence recall;
+   measure every user latency budget with paired same-device/network runs before release.
+5. Produce an honest before/after report. Missing device/cloud replay measurements are NOT MEASURED,
+   never inferred from passing builds or simulated clocks. No APK link until all acceptance gates.
 
-AppContainer now selects FrameBoundCoordinator. MediaProjectionService carries Candidate
-with PendingFrame; cloud change detection allows stable-quality retries. BilingualTtsEngine
-now accepts immutable speakTurn context, rejects stale queue/segment/start callbacks, and
-performs the final speak submission under TurnGate. UI acknowledgement records after a
-Compose frame. These changes are saved for recovery but **not yet compiled or device tested**.
-The earlier 'integration unfinished' paragraph describes the prior checkpoint only.
-
-Still review: coordinator locking/cancellation, first-candidate quality settling, measured
-crop completeness, per-utterance hard start timeout and speech queue budgets; full telemetry,
-scene dedupe and tests. Existing unreferenced Live classes have not yet been deleted.
-
-## Review checkpoint after integration
-
-Retired GeminiLiveSession/LiveCloudCoordinator from source. Fixed metadata language header,
-rewrote atomic request JSON construction, moved retry-state mutation into turn activation,
-recorded missing-identity rejection and reused capture traceId as turnId. Replaced the crop
-completeness constant with an explicitly conservative edge-contact proxy (still needs optical
-box/crop validation). UI now includes scene tail. 26 pure Kotlin tests and nine Python tests pass.
-Full Gradle gate progressed to an explicit missing JAVA_COMPILER capability in system JRE;
-a full verified JDK 17 is being provisioned. No full Android build/device/performance pass yet.
-
-## Evidence/tracker checkpoint
-
-Fixed two viewport error-handler references reported by CI. Added cheap identity structural
-residual before expensive motion registration, preserving the existing thresholds and fallback.
-Moved opt-in evidence JPEG writes to one bounded worker (two bitmap snapshots maximum), with
-explicit skip/write/copy/queue telemetry and export barrier. Explicit discard invalidates queued
-writes under a shared lock; disabling new capture preserves already accepted snapshots.
-These additions still need full Android/unit/instrumented verification. Local full build now
-has a verified JDK but failed while resolving Android runtime dependencies due network access.
-
-## Candidate verification and timing checkpoint
-
-Moved active output-turn replacement to actual submission, after preprocessing/grounding.
-Periodic optical verification of an already-read target now remains possible; identical local
-text suppresses a cloud request without clearing the accepted result or interrupting speech.
-Negative/uncertain readings still retry. Target invalidation clears optical identity.
-Added actual monotonic runtime/UI/TTS endpoint timestamps and candidate quality/network-setup
-measurements. Full stage decomposition and opportunity-level replay instrumentation remain pending.
-Re-running tracker/Smart Target tests after the cheap-first change. Full Android Gradle dependency
-resolution remains unreliable locally; GitHub CI is also being checked against exact commit SHAs.
+Protocol basis: https://ai.google.dev/api/live documents concurrent realtime modalities without
+cross-stream ordering guarantees. https://ai.google.dev/api/generate-content provides image and
+task in one request. The selected Gemini 3.6 Flash model's actual accuracy/latency still needs replay.
