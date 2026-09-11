@@ -48,14 +48,20 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
         if(prior==null || difference>7) stableSince=now
         previous=pixels
         val mean=pixels.average();val contrast=sqrt(pixels.sumOf { (it-mean)*(it-mean) }/pixels.size)
-        var lap=0.0;var edges=0
+        var lap=0.0;var edges=0;var boundaryEdges=0
         for(y in 1 until plane.height-1) for(x in 1 until plane.width-1) {
             val i=y*plane.width+x
             val d=4*pixels[i]-pixels[i-1]-pixels[i+1]-pixels[i-plane.width]-pixels[i+plane.width]
-            lap+=d*d;if(abs(d)>30)edges++
+            lap+=d*d
+            if(abs(d)>30) {
+                edges++
+                if(x<=2 || y<=2 || x>=plane.width-3 || y>=plane.height-3) boundaryEdges++
+            }
         }
-        val q=QualityRetryPolicy.Quality(lap/pixels.size,contrast,edges.toDouble()/pixels.size,1.0,now-stableSince)
-        val turn=AnalysisTurn(UUID.randomUUID().toString(),trace.traceId,trace.frameId,gate.generation(),settings.mode,
+        // Conservative edge-contact proxy, not proof that every OCR box is complete.
+        val completeness=1.0-(boundaryEdges.toDouble()/edges.coerceAtLeast(1)*4).coerceIn(0.0,.6)
+        val q=QualityRetryPolicy.Quality(lap/pixels.size,contrast,edges.toDouble()/pixels.size,completeness,now-stableSince)
+        val turn=AnalysisTurn(trace.traceId,trace.traceId,trace.frameId,gate.generation(),settings.mode,
             trace.capturedAtEpochMs,trace.capturedAtElapsedNanos,
             if(settings.useLocalOcr && settings.mode==AnalysisMode.TEXT_READING) "PP-OCRv5" else FrameTurnTransport.MODEL,
             FrameTurnTransport.PROMPT_VERSION,UUID.randomUUID().toString())
@@ -64,6 +70,7 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
 
     suspend fun process(bitmap:Bitmap,c:Candidate)=lane.withLock {
         val capture=c.turn;val settings=c.settings
+        if(!runtime.analysing.value) { skip(c,"analysis_paused");return@withLock }
         if(capture.visualGeneration!=gate.generation()) { skip(c,"obsolete_candidate");return@withLock }
         if(c.blackRatio>=.94) {
             skip(c,"unavailable_image")
@@ -79,9 +86,11 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
             else QualityRetryPolicy.Decision(!sceneReliable || c.change>=2.5,"scene_duplicate")
         if(!decision.submit) { skip(c,decision.reason);return@withLock }
         activeJob=currentCoroutineContext()[Job]
-        if(!gate.activate(capture) { tts.invalidateVisualContent();runtime.clearVisualResult() }) return@withLock
+        if(!gate.activate(capture) {
+            tts.invalidateVisualContent();runtime.clearVisualResult()
+            policy.submitted(c.quality,SystemClock.elapsedRealtime());runtime.processing(true)
+        }) { activeJob=null;return@withLock }
         DiagnosticHub.record("TURN_ACTIVATED",capture.fields())
-        policy.submitted(c.quality,SystemClock.elapsedRealtime());runtime.processing(true)
         var bound:AnalysisTurn?=null;var readAccepted=false;var spokenScene=""
         try {
             withContext(c.trace) {
@@ -157,9 +166,9 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
     }
 
     fun onVisualTargetChanged(interruptSpeech:Boolean) {
-        gate.invalidate { runtime.clearVisualResult();tts.invalidateVisualContent() }
+        gate.invalidate { runtime.clearVisualResult();tts.invalidateVisualContent();policy.reset() }
         activeJob?.cancel()
-        synchronized(this) { previous=null;stableSince=0;sceneText="";sceneReliable=false;policy.reset() }
+        synchronized(this) { previous=null;stableSince=0;sceneText="";sceneReliable=false }
         DiagnosticHub.record("VISUAL_GENERATION_CHANGED",mapOf("visualGeneration" to gate.generation(),"interruptPreference" to interruptSpeech))
     }
     suspend fun speakNotice(message:String)=tts.speakFeedback(message)

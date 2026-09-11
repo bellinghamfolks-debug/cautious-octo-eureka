@@ -568,6 +568,7 @@ data class DiagnosticTrace(
     companion object Key : CoroutineContext.Key<DiagnosticTrace>
 
     fun fields(extra: Map<String, Any?> = emptyMap()): Map<String, Any?> = mapOf(
+        "turnId" to (turn?.turnId ?: traceId),
         "traceId" to traceId,
         "frameId" to frameId,
         "capturedAtEpochMs" to capturedAtEpochMs,

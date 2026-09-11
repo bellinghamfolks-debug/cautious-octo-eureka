@@ -34,7 +34,10 @@ class CaptureRuntime {
     }
     fun processing(active: Boolean) = update { copy(isProcessing = active) }
     fun result(value: AnalysisResult): Boolean {
-        val turn = value.turn ?: return false
+        val turn = value.turn ?: run {
+            com.abdullah.visionbridge.data.diagnostics.DiagnosticHub.record("RESULT_DROPPED",mapOf("reason" to "missing_turn_identity"))
+            return false
+        }
         val accepted = turnGate.commit(turn) {
             update { copy(lastResult=value, status="اكتمل التحليل", error=null) }
             com.abdullah.visionbridge.data.diagnostics.DiagnosticHub.record("RUNTIME_RESULT",turn.fields())

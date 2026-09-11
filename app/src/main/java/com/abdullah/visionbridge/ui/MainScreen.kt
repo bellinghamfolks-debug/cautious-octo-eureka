@@ -205,6 +205,7 @@ private fun StatusCard(state: MainUiState) {
             state.capture.lastResult?.let {
                 Text("آخر نتيجة", style = MaterialTheme.typography.titleMedium)
                 Text(it.text)
+                if (it.sceneTail.isNotBlank()) Text("وصف موجز: " + it.sceneTail)
                 Text("المصدر: " + when (it.source) {
                     AnalysisSource.LOCAL_OCR -> "PP-OCRv5 على الجهاز"
                     AnalysisSource.GEMINI -> "Gemini"

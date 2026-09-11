@@ -148,7 +148,7 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
                         "TTS_REQUEST_DROPPED",
                         request.trace.fieldsOrEmpty(
                             mapOf(
-                                "reason" to "superseded_by_newer_scene",
+                                "reason" to if (stale(request.trace)) "obsolete_turn" else if (request.expired()) "queue_expired" else "superseded_by_newer_scene",
                                 "text" to request.text,
                                 "requestLiveGeneration" to request.liveGeneration,
                                 "currentLiveGeneration" to liveGeneration.get(),

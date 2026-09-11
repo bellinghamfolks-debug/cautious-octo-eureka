@@ -81,3 +81,13 @@ The earlier 'integration unfinished' paragraph describes the prior checkpoint on
 Still review: coordinator locking/cancellation, first-candidate quality settling, measured
 crop completeness, per-utterance hard start timeout and speech queue budgets; full telemetry,
 scene dedupe and tests. Existing unreferenced Live classes have not yet been deleted.
+
+## Review checkpoint after integration
+
+Retired GeminiLiveSession/LiveCloudCoordinator from source. Fixed metadata language header,
+rewrote atomic request JSON construction, moved retry-state mutation into turn activation,
+recorded missing-identity rejection and reused capture traceId as turnId. Replaced the crop
+completeness constant with an explicitly conservative edge-contact proxy (still needs optical
+box/crop validation). UI now includes scene tail. 26 pure Kotlin tests and nine Python tests pass.
+Full Gradle gate progressed to an explicit missing JAVA_COMPILER capability in system JRE;
+a full verified JDK 17 is being provisioned. No full Android build/device/performance pass yet.
