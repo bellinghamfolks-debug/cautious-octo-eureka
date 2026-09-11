@@ -5,6 +5,7 @@ import com.abdullah.visionbridge.domain.model.CaptureState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 class CaptureRuntime {
     val turnGate = TurnGate()
@@ -61,6 +62,6 @@ class CaptureRuntime {
     }
 
     private inline fun update(block: CaptureState.() -> CaptureState) {
-        mutableState.value = mutableState.value.block()
+        mutableState.update { it.block() }
     }
 }

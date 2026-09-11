@@ -30,6 +30,7 @@ import com.abdullah.visionbridge.accessibility.EvidenceShortcut
 import com.abdullah.visionbridge.capture.vision.Viewport
 import com.abdullah.visionbridge.capture.vision.EsightViewportCalibration
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
+import com.abdullah.visionbridge.data.diagnostics.FrameStages
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
@@ -343,6 +344,7 @@ class MediaProjectionService : Service() {
             return
         } ?: return
 
+        val imageTimestampNanos=image.timestamp
         val conversionStarted = SystemClock.elapsedRealtimeNanos()
         val bitmap = try {
             ImageFrameConverter.toBitmap(image)
@@ -354,12 +356,10 @@ class MediaProjectionService : Service() {
         }
         image.close()
         val conversionMs = (SystemClock.elapsedRealtimeNanos() - conversionStarted) / 1_000_000.0
+        FrameStages.record(trace,"capture",acquiredAtElapsedNanos,extra=mapOf(
+            "imageTimestampNanos" to imageTimestampNanos,"captureClockBasis" to "image_reader_acquisition"))
         val settings = activeSettings
-        // LIVE_BACKPRESSURE_CAPTURE_V35: cloud work skips the expensive registration stack, but
-        // unlike 3.4 it does NOT announce every accepted cloud frame as a new visual target. The
-        // service already owns one active frame plus one latest pending frame; GeminiLiveSession now
-        // stays suspended until its turn really finishes so this existing queue becomes the single
-        // backpressure boundary. Local PP-OCR keeps the proven tracking/stability path unchanged.
+        // Capture scheduling is independent of speech; every cloud request owns one image.
         val cloudLive = settings.mode == AnalysisMode.SCENE_DESCRIPTION || !settings.useLocalOcr
         val now = System.currentTimeMillis()
 
@@ -427,55 +427,12 @@ class MediaProjectionService : Service() {
         }
 
         val detectorStarted = SystemClock.elapsedRealtimeNanos()
-        val cloudTextMeanThreshold =
-            if (settings.captureProfile == CaptureProfile.FAST_TEXT) 3.5 else 6.0
-        val cloudTextRatioThreshold =
-            if (settings.captureProfile == CaptureProfile.FAST_TEXT) 0.028 else 0.050
-        val changeDecision = when {
-            // Scene mode samples the newest usable view once a second. Semantic/proactive Gemini
-            // decides whether it is worth speaking. The service queue prevents those samples from
-            // piling on top of a response that is still being spoken.
-            cloudLive && settings.mode == AnalysisMode.SCENE_DESCRIPTION ->
-                frameChangeDetector.evaluateFast(bitmap, 0.0, 0.0)
-            // Cloud text gets a meaningfully changed frame immediately, without the old settling
-            // delay. While Gemini is busy, later frames replace only the single pending slot.
-            cloudLive -> frameChangeDetector.evaluateFast(
-                bitmap = bitmap,
-                minimumMeanDifference = 0.0,
-                minimumChangedRatio = 0.0,
-            )
-            settings.mode == AnalysisMode.SCENE_DESCRIPTION -> frameChangeDetector.evaluateFast(
-                bitmap = bitmap,
-                minimumMeanDifference = SCENE_MIN_MEAN_DIFFERENCE,
-                minimumChangedRatio = SCENE_MIN_CHANGED_RATIO,
-            )
-            settings.captureProfile == CaptureProfile.STABLE -> frameChangeDetector.evaluateStable(
-                bitmap = bitmap,
-                minimumMeanDifference = STABLE_MIN_MEAN_DIFFERENCE,
-                minimumChangedRatio = STABLE_MIN_CHANGED_RATIO,
-                stableForMs = STABLE_FRAME_DURATION_MS,
-                now = now,
-            )
-            else -> frameChangeDetector.evaluateFast(
-                bitmap = bitmap,
-                minimumMeanDifference = FAST_MIN_MEAN_DIFFERENCE,
-                minimumChangedRatio = FAST_MIN_CHANGED_RATIO,
-            )
-        }
-        val detectorMs = (SystemClock.elapsedRealtimeNanos() - detectorStarted) / 1_000_000.0
-        val changeThresholds = when {
-            cloudLive && settings.mode == AnalysisMode.SCENE_DESCRIPTION -> Pair(0.0, 0.0)
-            cloudLive -> Pair(cloudTextMeanThreshold, cloudTextRatioThreshold)
-            settings.mode == AnalysisMode.SCENE_DESCRIPTION -> Pair(
-                SCENE_MIN_MEAN_DIFFERENCE,
-                SCENE_MIN_CHANGED_RATIO,
-            )
-            settings.captureProfile == CaptureProfile.STABLE -> Pair(
-                STABLE_MIN_MEAN_DIFFERENCE,
-                STABLE_MIN_CHANGED_RATIO,
-            )
-            else -> Pair(FAST_MIN_MEAN_DIFFERENCE, FAST_MIN_CHANGED_RATIO)
-        }
+        // Usability is cheap. QualityRetryPolicy handles stability/retries for both cloud and local
+        // text, so an early detector acceptance cannot latch an unreadable stable target.
+        val changeDecision=frameChangeDetector.evaluateFast(bitmap,0.0,0.0)
+        val detectorMs=(SystemClock.elapsedRealtimeNanos()-detectorStarted)/1_000_000.0
+        FrameStages.record(trace,"changeDetection",detectorStarted)
+        val changeThresholds=Pair(0.0,0.0)
         val changeFields = mapOf(
             "shouldAnalyze" to changeDecision.accepted,
             "decisionReason" to changeDecision.reason,
@@ -486,8 +443,8 @@ class MediaProjectionService : Service() {
             "candidateMeanAbsoluteDifference" to changeDecision.candidateMeanAbsoluteDifference,
             "candidateChangedPixelRatio" to changeDecision.candidateChangedPixelRatio,
             "candidateStableElapsedMs" to changeDecision.candidateStableElapsedMs,
-            "requiredStableMs" to if (!cloudLive && settings.captureProfile == CaptureProfile.STABLE) STABLE_FRAME_DURATION_MS else 0L,
-            "thresholdLogic" to if (cloudLive) "LIVE_BACKPRESSURE" else if (settings.captureProfile == CaptureProfile.STABLE) "AND" else "OR",
+            "requiredStableMs" to 0L,
+            "thresholdLogic" to "QUALITY_CANDIDATE_POLICY",
             "detectorMs" to detectorMs,
             "mode" to settings.mode.name,
             "captureProfile" to settings.captureProfile.name,
@@ -533,9 +490,8 @@ class MediaProjectionService : Service() {
         val scene = settings.mode == AnalysisMode.SCENE_DESCRIPTION
 
         if (cloudLive) {
-            // SMART_TARGET_INTERRUPTION_V380: Live keeps its one-active/one-latest backpressure,
-            // while a separate observer decides whether speech should survive a real target swap.
-            // The observer never blocks a frame and never closes the WebSocket.
+            // Smart Target observes independently of the one-active/one-pending analysis lane.
+            // A confirmed replacement invalidates output and cancels its request immediately.
             val smartNow = SystemClock.elapsedRealtime()
             val smartDue = lastSmartTargetTrackAtElapsedMs == 0L ||
                 smartNow - lastSmartTargetTrackAtElapsedMs >= SMART_TARGET_TRACK_INTERVAL_MS
@@ -552,12 +508,13 @@ class MediaProjectionService : Service() {
                 )
                 val smartTrackingMs =
                     (SystemClock.elapsedRealtimeNanos() - smartStarted) / 1_000_000.0
+                FrameStages.record(trace,"tracking",smartStarted)
                 val policy = SmartTargetInterruptionPolicy.evaluate(decision, settings.mode)
                 DiagnosticHub.record(
                     "SMART_TARGET_POLICY_DECISION",
                     trace.fields(
                         mapOf(
-                            "lane" to "GEMINI_LIVE",
+                            "lane" to "FRAME_BOUND_GEMINI",
                             "action" to policy.action.name,
                             "policyReason" to policy.reason,
                             "confidence" to policy.confidence,
@@ -587,12 +544,11 @@ class MediaProjectionService : Service() {
                         "SMART_TARGET_TRANSITION_APPLIED",
                         trace.fields(
                             mapOf(
-                                "lane" to "GEMINI_LIVE",
+                                "lane" to "FRAME_BOUND_GEMINI",
                                 "action" to policy.action.name,
                                 "interruptSettingEnabled" to settings.interruptSpeechOnVisualChange,
-                                "speechInterruptedNow" to interruptNow,
-                                "networkTurnCancelled" to false,
-                                "webSocketClosed" to false,
+                                "speechInterruptedNow" to true,
+                                "obsoleteTurnCancellationRequested" to true,
                                 "latestFrameWillWin" to true,
                             ),
                         ),
@@ -603,9 +559,10 @@ class MediaProjectionService : Service() {
                 null
             }
 
+            val candidate=container.coordinator.candidate(view,trace,settings,smartDecision)
             DiagnosticHub.record(
                 "VISUAL_TARGET_DECISION",
-                trace.fields(
+                candidate.trace.fields(
                     mapOf(
                         "targetChanged" to (smartDecision?.targetChanged ?: false),
                         "decisionReason" to (smartDecision?.reason ?: "smart_target_observer_throttled"),
@@ -622,7 +579,7 @@ class MediaProjectionService : Service() {
                 bitmap = view,
                 frameId = frameId,
                 stage = "selected_input",
-                metadata = trace.fields(
+                metadata = candidate.trace.fields(
                     mapOf(
                         "mode" to settings.mode.name,
                         "captureProfile" to settings.captureProfile.name,
@@ -636,7 +593,7 @@ class MediaProjectionService : Service() {
             )
             DiagnosticHub.record(
                 "FRAME_SELECTED_FOR_ANALYSIS",
-                trace.fields(
+                candidate.trace.fields(
                     mapOf(
                         "cloudLiveDirect" to true,
                         "smartTargetObserver" to true,
@@ -644,7 +601,7 @@ class MediaProjectionService : Service() {
                     ),
                 ),
             )
-            submitLatestFrame(PendingFrame(view, trace, container.coordinator.candidate(view, trace, settings)))
+            submitLatestFrame(PendingFrame(view, candidate.trace, candidate))
             return
         }
 
@@ -652,6 +609,7 @@ class MediaProjectionService : Service() {
         val trackingStarted = SystemClock.elapsedRealtimeNanos()
         val targetDecision = tracker.evaluate(BitmapFrames.trackedFrame(view))
         val trackingMs = (SystemClock.elapsedRealtimeNanos() - trackingStarted) / 1_000_000.0
+        FrameStages.record(trace,"tracking",trackingStarted)
         val visualTargetChanged = targetDecision.targetChanged
         DiagnosticHub.record(
             "VISUAL_TARGET_DECISION",
@@ -714,17 +672,18 @@ class MediaProjectionService : Service() {
                         "lane" to "LOCAL_PPOCR",
                         "action" to localSmartPolicy.action.name,
                         "interruptSettingEnabled" to settings.interruptSpeechOnVisualChange,
-                        "speechInterruptedNow" to interruptNow,
+                        "speechInterruptedNow" to true,
                     ),
                 ),
             )
         }
 
+        val candidate=container.coordinator.candidate(view,trace,settings,targetDecision)
         DiagnosticHub.frame(
             bitmap = view,
             frameId = frameId,
             stage = "selected_input",
-            metadata = trace.fields(
+            metadata = candidate.trace.fields(
                 mapOf(
                     "mode" to settings.mode.name,
                     "captureProfile" to settings.captureProfile.name,
@@ -734,8 +693,8 @@ class MediaProjectionService : Service() {
                 ),
             ),
         )
-        DiagnosticHub.record("FRAME_SELECTED_FOR_ANALYSIS", trace.fields())
-        submitLatestFrame(PendingFrame(view, trace, container.coordinator.candidate(view, trace, settings)))
+        DiagnosticHub.record("FRAME_SELECTED_FOR_ANALYSIS", candidate.trace.fields())
+        submitLatestFrame(PendingFrame(view, candidate.trace, candidate))
     }
 
     private fun observeVisualFeedHealth(
@@ -750,6 +709,7 @@ class MediaProjectionService : Service() {
             return
         }
 
+        container.coordinator.imageUnavailable()
         if (unavailableFeedSince == 0L) unavailableFeedSince = now
         val unavailableForMs = now - unavailableFeedSince
         if (
@@ -802,7 +762,7 @@ class MediaProjectionService : Service() {
             mapOf("code" to "VISUAL_FEED_UNAVAILABLE", "text" to message),
         )
         container.runtime.notice(message)
-        serviceScope.launch { container.coordinator.speakNotice(message) }
+        // The outage announcement is shared with the post-crop check and occurs only once.
     }
 
     private fun recordDroppedFrame(
@@ -826,11 +786,19 @@ class MediaProjectionService : Service() {
                 true
             } else {
                 pendingFrame?.let { old ->
+                    fun ranked(f:PendingFrame)=PendingCandidatePolicy.Candidate(f.candidate.turn.visualGeneration,
+                        f.candidate.turn.capturedAtNanos,f.candidate.quality)
+                    val selection=PendingCandidatePolicy.choose(ranked(old),ranked(frame))
+                    if(!selection.replace) {
+                        DiagnosticHub.record("FRAME_SKIPPED",frame.trace.fields(mapOf("reason" to selection.reason)))
+                        frame.bitmap.recycle()
+                        return@synchronized false
+                    }
                     DiagnosticHub.record(
                         "FRAME_DROPPED",
                         old.trace.fields(
                             mapOf(
-                                "reason" to "replaced_in_latest_frame_queue",
+                                "reason" to selection.reason,
                                 "replacementFrameId" to frame.trace.frameId,
                             ),
                         ),
@@ -848,7 +816,8 @@ class MediaProjectionService : Service() {
     private fun launchFrame(frame: PendingFrame) {
         frameJob = serviceScope.launch {
             val dispatchStarted = SystemClock.elapsedRealtimeNanos()
-            DiagnosticHub.record("ANALYSIS_DISPATCH_STARTED", frame.trace.fields())
+            DiagnosticHub.record("ANALYSIS_DISPATCH_STARTED", frame.trace.fields(mapOf(
+                "dispatchStartedAtElapsedNanos" to dispatchStarted)))
             try {
                 withContext(frame.trace) {
                     container.coordinator.process(frame.bitmap, frame.candidate)
@@ -1073,7 +1042,10 @@ class MediaProjectionService : Service() {
         val bottomExclusive = (applied.bottom * source.height).toInt().coerceIn(top + 1, source.height)
         val width = rightExclusive - left
         val height = bottomExclusive - top
-        if (left == 0 && top == 0 && width == source.width && height == source.height) return source
+        if (left == 0 && top == 0 && width == source.width && height == source.height) {
+            FrameStages.record(trace,"preprocessing",started)
+            return source
+        }
 
         return runCatching {
             Bitmap.createBitmap(source, left, top, width, height).also { cropped ->
@@ -1095,7 +1067,7 @@ class MediaProjectionService : Service() {
                 ),
             )
             source
-        }
+        }.also { FrameStages.record(trace,"preprocessing",started) }
     }
 
     private fun settingsMap(settings: AppSettings): Map<String, Any?> = mapOf(

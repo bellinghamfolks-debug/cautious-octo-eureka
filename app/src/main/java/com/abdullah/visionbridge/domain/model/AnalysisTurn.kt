@@ -14,10 +14,12 @@ data class AnalysisTurn(
     val sessionId: String,
     val submittedAtNanos: Long? = null,
     val imageHash: String? = null,
+    val opportunityCapturedAtNanos:Long = capturedAtNanos,
 ) {
     init {
         require(listOf(turnId, traceId, frameId, model, promptVersion, sessionId).all { it.isNotBlank() })
         require(visualGeneration >= 0 && capturedAtNanos >= 0)
+        require(opportunityCapturedAtNanos in 0..capturedAtNanos)
         require((submittedAtNanos == null) == (imageHash == null))
         require(submittedAtNanos == null || submittedAtNanos >= capturedAtNanos)
         require(imageHash == null || imageHash.matches(Regex("[0-9a-f]{64}")))
@@ -34,5 +36,6 @@ data class AnalysisTurn(
         "submittedAtElapsedNanos" to submittedAtNanos, "model" to model,
         "promptVersion" to promptVersion, "transportSessionId" to sessionId,
         "imageHash" to imageHash,
+        "opportunityCapturedAtElapsedNanos" to opportunityCapturedAtNanos,
     )
 }

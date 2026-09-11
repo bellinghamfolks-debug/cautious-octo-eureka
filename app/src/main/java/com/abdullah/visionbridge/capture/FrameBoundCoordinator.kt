@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.os.SystemClock
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
+import com.abdullah.visionbridge.data.diagnostics.FrameStages
 import com.abdullah.visionbridge.data.gemini.FrameTurnTransport
 import com.abdullah.visionbridge.data.gemini.LiveFrameEncoder
 import com.abdullah.visionbridge.data.paddleocr.PaddleOcrEngine
@@ -14,6 +15,8 @@ import com.abdullah.visionbridge.domain.model.*
 import com.abdullah.visionbridge.domain.repository.ApiKeyStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
@@ -28,7 +31,8 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                             private val keys: ApiKeyStore, private val tts: BilingualTtsEngine,
                             private val runtime: CaptureRuntime) {
     data class Candidate(val turn: AnalysisTurn,val trace: DiagnosticTrace,val settings: AppSettings,
-                         val quality: QualityRetryPolicy.Quality,val blackRatio: Double,val change: Double)
+                         val quality: QualityRetryPolicy.Quality,val blackRatio: Double,val change: Double,
+                         val compensatedDifference:Double?,val chromaDifference:Double?)
     private val gate=runtime.turnGate
     private val lane=Mutex()
     private val policy=QualityRetryPolicy()
@@ -36,12 +40,13 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
     @Volatile private var activeJob: Job?=null
     private var previous: FloatArray?=null
     private var stableSince=0L
-    private var unavailableAnnounced=false
+    private var opportunityCapturedAt:Long?=null
+    private val availability=VisualAvailability()
     @Volatile private var acceptedOpticalText=""
-    private var sceneText=""
-    private var sceneReliable=false
+    private val scenePolicy=SceneDescriptionPolicy()
 
-    @Synchronized fun candidate(bitmap:Bitmap,trace:DiagnosticTrace,settings:AppSettings):Candidate {
+    @Synchronized fun candidate(bitmap:Bitmap,trace:DiagnosticTrace,settings:AppSettings,
+                                target:VisualTargetTracker.Decision?=null):Candidate {
         val qualityStarted=SystemClock.elapsedRealtimeNanos()
         val plane=BitmapFrames.aspectPlane(bitmap,256);val pixels=plane.luma
         val prior=previous
@@ -63,17 +68,22 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
         // Conservative edge-contact proxy, not proof that every OCR box is complete.
         val completeness=1.0-(boundaryEdges.toDouble()/edges.coerceAtLeast(1)*4).coerceIn(0.0,.6)
         val q=QualityRetryPolicy.Quality(lap/pixels.size,contrast,edges.toDouble()/pixels.size,completeness,now-stableSince)
+        val eligible=settings.mode==AnalysisMode.SCENE_DESCRIPTION || (q.sharpness>=12 && q.contrast>=10 &&
+            q.cropCompleteness>=.5 && (settings.captureProfile!=CaptureProfile.STABLE || q.stableForMs>=180))
+        if(eligible && opportunityCapturedAt==null)opportunityCapturedAt=trace.capturedAtElapsedNanos
         val turn=AnalysisTurn(trace.traceId,trace.traceId,trace.frameId,gate.generation(),settings.mode,
             trace.capturedAtEpochMs,trace.capturedAtElapsedNanos,
             if(settings.useLocalOcr && settings.mode==AnalysisMode.TEXT_READING) "PP-OCRv5" else FrameTurnTransport.MODEL,
-            FrameTurnTransport.PROMPT_VERSION,UUID.randomUUID().toString())
+            FrameTurnTransport.PROMPT_VERSION,UUID.randomUUID().toString(),
+            opportunityCapturedAtNanos=opportunityCapturedAt ?: trace.capturedAtElapsedNanos)
         val blackRatio=pixels.count { it<8 }.toDouble()/pixels.size
         DiagnosticHub.record("CANDIDATE_READY",turn.fields()+mapOf(
             "qualityProbeMs" to (SystemClock.elapsedRealtimeNanos()-qualityStarted)/1e6,
             "sharpness" to q.sharpness,"contrast" to q.contrast,"edgeDensityProxy" to q.textDensity,
             "cropCompletenessProxy" to q.cropCompleteness,"stableForMs" to q.stableForMs,"blackRatio" to blackRatio,
             "captureProfile" to settings.captureProfile.name,"sceneDescriptionStyle" to settings.sceneDescriptionStyle.name))
-        return Candidate(turn,trace.copy(turn=turn),settings,q,blackRatio,difference)
+        FrameStages.record(trace.copy(turn=turn),"quality",qualityStarted)
+        return Candidate(turn,trace.copy(turn=turn),settings,q,blackRatio,difference,target?.dissimilarity,target?.chromaDifference)
     }
 
     suspend fun process(bitmap:Bitmap,c:Candidate)=lane.withLock {
@@ -82,20 +92,18 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
         if(capture.visualGeneration!=gate.generation()) { skip(c,"obsolete_candidate");return@withLock }
         if(c.blackRatio>=.94) {
             skip(c,"unavailable_image")
-            if(!unavailableAnnounced) {
-                unavailableAnnounced=true;onVisualTargetChanged(true)
-                runtime.notice("الصورة غير متاحة");tts.speakFeedback("الصورة غير متاحة")
-            }
+            imageUnavailable()
             return@withLock
         }
-        unavailableAnnounced=false
+        availability.available()
         val textMode=settings.mode==AnalysisMode.TEXT_READING
         val decision=if(textMode) policy.consider(c.quality,SystemClock.elapsedRealtime(),settings.captureProfile==CaptureProfile.STABLE)
-            else QualityRetryPolicy.Decision(!sceneReliable || c.change>=2.5,"scene_duplicate")
+            else scenePolicy.shouldProbe(capture.visualGeneration,settings.sceneDescriptionStyle,SystemClock.elapsedRealtime(),
+                c.compensatedDifference,c.chromaDifference).let { QualityRetryPolicy.Decision(it.accepted,it.reason) }
         if(!decision.submit) { skip(c,decision.reason);return@withLock }
         activeJob=currentCoroutineContext()[Job]
         if (!gate.withinGeneration(capture.visualGeneration) {
-            policy.submitted(c.quality,SystemClock.elapsedRealtime());runtime.processing(true)
+            policy.submitted(c.quality,SystemClock.elapsedRealtime());scenePolicy.submitted(SystemClock.elapsedRealtime());runtime.processing(true)
         }) { activeJob=null;return@withLock }
         fun activateAndBind(turn: AnalysisTurn): Boolean {
             if(!gate.activate(capture) { tts.invalidateVisualContent();runtime.clearVisualResult();runtime.processing(true) }) return false
@@ -106,28 +114,35 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
         var bound:AnalysisTurn?=null;var readAccepted=false;var spokenScene=""
         try {
             withContext(c.trace) {
+                val encodingStarted=SystemClock.elapsedRealtimeNanos()
                 val encoded=encoder.encode(bitmap,settings)
+                FrameStages.record(c.trace,"encoding",encodingStarted,extra=mapOf("imageHash" to encoded.imageHash))
                 currentCoroutineContext().ensureActive()
-                val evidence=if(textMode) {
+                // New targets can upload while PP-OCR verifies the same transmitted JPEG. No
+                // text can pass accept() until that independent evidence has completed.
+                val evidenceTask=async(Dispatchers.Default) { if(textMode) {
                     local.ensureLoaded().getOrThrow()
                     val groundingStarted=SystemClock.elapsedRealtimeNanos()
                     val exact=checkNotNull(BitmapFactory.decodeByteArray(encoded.bytes,0,encoded.bytes.size))
                     val result=try { local.read(exact,LocalReadingQuality.MAXIMUM) } finally { exact.recycle() }
+                    FrameStages.record(c.trace,"localGrounding",groundingStarted,extra=mapOf("imageHash" to encoded.imageHash))
                     DiagnosticHub.record("LOCAL_GROUNDING_COMPLETED",capture.fields()+mapOf(
                         "durationMs" to (SystemClock.elapsedRealtimeNanos()-groundingStarted)/1e6,
                         "detectedBoxes" to result.detectedBoxCount,"localConfidence" to result.confidence,
                         "imageHash" to encoded.imageHash))
                     TextGroundingGate.Evidence(result.text,result.confidence,result.detectedBoxCount)
-                } else TextGroundingGate.Evidence("",0f,0)
-                if(textMode && evidence.confidence>=.80f && evidence.text.isNotBlank() &&
-                    TextGroundingGate.canonical(evidence.text)==acceptedOpticalText) {
+                } else TextGroundingGate.Evidence("",0f,0) }
+                val preflight=if(settings.useLocalOcr || acceptedOpticalText.isNotEmpty())evidenceTask.await() else null
+                if(textMode && preflight!=null && preflight.confidence>=.80f && preflight.text.isNotBlank() &&
+                    TextGroundingGate.canonical(preflight.text)==acceptedOpticalText) {
                     skip(c,"optically_verified_duplicate")
                     return@withContext
                 }
-                fun accept(o:FrameTurnTransport.Output) {
-                    if(gate.rejection(o.turn)!=null) { DiagnosticHub.record("RESULT_DROPPED",o.turn.fields());return }
+                suspend fun accept(o:FrameTurnTransport.Output) {
+                    if(gate.rejection(o.turn)!=null) { DiagnosticHub.record("RESULT_DROPPED",o.turn.fields()+mapOf("reason" to gate.rejection(o.turn)));return }
                     if(textMode) {
                         if(readAccepted) return
+                        val evidence=evidenceTask.await()
                         val d=TextGroundingGate.evaluate(o.text,o.confidence,o.legible,o.inferred,evidence)
                         DiagnosticHub.record("TEXT_GROUNDING_DECISION",o.turn.fields()+mapOf("accepted" to d.accepted,"retry" to d.retry,"reason" to d.reason))
                         if(!d.accepted) { gate.commit(o.turn) { policy.result(false);runtime.notice("النص غير واضح؛ وجّه الكاميرا بثبات") };return }
@@ -137,20 +152,21 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                             if(runtime.result(r)&&settings.speechEnabled)tts.speakTurn(r,settings.speechRate,"READ_TEXT")
                         }
                     } else {
-                        if(!o.legible||o.inferred||o.confidence<90||o.text.isBlank()||o.text.startsWith("NO_"))return
-                        val maxWords=if(settings.sceneDescriptionStyle==SceneDescriptionStyle.BRIEF)32 else 120
-                        if(o.text.split(Regex("\\s+")).size>maxWords)return
                         gate.commit(o.turn) {
+                            val d=scenePolicy.output(o.text,o.confidence,o.legible,o.inferred,settings.sceneDescriptionStyle,spokenScene)
+                            DiagnosticHub.record("SCENE_OUTPUT_DECISION",o.turn.fields()+mapOf("accepted" to d.accepted,"reason" to d.reason,
+                                "sceneDescriptionStyle" to settings.sceneDescriptionStyle.name))
+                            if(!d.accepted)return@commit
                             val r=AnalysisResult(o.text,AnalysisSource.GEMINI,turn=o.turn)
-                            if(runtime.result(r)&&settings.speechEnabled && o.text.startsWith(spokenScene)) {
-                                val delta=o.text.removePrefix(spokenScene).trim()
-                                if(delta.isNotBlank())tts.speakTurn(r.copy(text=delta),settings.speechRate,"SCENE_DESCRIPTION")
+                            if(runtime.result(r)&&settings.speechEnabled) {
+                                tts.speakTurn(r.copy(text=d.delta),settings.speechRate,"SCENE_DESCRIPTION")
                             }
-                            spokenScene=o.text;sceneText=o.text;sceneReliable=true
+                            spokenScene=o.text
                         }
                     }
                 }
                 if(settings.useLocalOcr&&textMode) {
+                    val evidence=evidenceTask.await()
                     val turn=capture.copy(submittedAtNanos=SystemClock.elapsedRealtimeNanos(),imageHash=encoded.imageHash)
                     if(!activateAndBind(turn))return@withContext
                     bound=turn;DiagnosticHub.record("LOCAL_FRAME_BOUND",turn.fields())
@@ -184,12 +200,18 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
     }
 
     fun onVisualTargetChanged(interruptSpeech:Boolean) {
-        gate.invalidate { runtime.clearVisualResult();tts.invalidateVisualContent();policy.reset();acceptedOpticalText="" }
+        gate.invalidate { runtime.clearVisualResult();tts.invalidateVisualContent();policy.reset();scenePolicy.reset();acceptedOpticalText="" }
         activeJob?.cancel()
-        synchronized(this) { previous=null;stableSince=0;sceneText="";sceneReliable=false }
+        synchronized(this) { previous=null;stableSince=0;opportunityCapturedAt=null }
         DiagnosticHub.record("VISUAL_GENERATION_CHANGED",mapOf("visualGeneration" to gate.generation(),"interruptPreference" to interruptSpeech))
     }
     suspend fun speakNotice(message:String)=tts.speakFeedback(message)
+    fun imageUnavailable(message:String="الصورة غير متاحة") {
+        if(!availability.missing())return
+        onVisualTargetChanged(true)
+        runtime.notice(message);tts.speakUrgentNotice(message)
+        DiagnosticHub.record("IMAGE_UNAVAILABLE_ANNOUNCED",mapOf("visualGeneration" to gate.generation()))
+    }
     fun stopSpeech()=onVisualTargetChanged(true)
     fun reset()=onVisualTargetChanged(true)
     private fun skip(c:Candidate,reason:String) {

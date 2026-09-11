@@ -65,7 +65,7 @@ object SessionVerdict {
 
     /** Ranked most severe first; an empty list means nothing known went wrong. */
     fun analyse(events: List<Event>): List<Finding> {
-        val findings = listOfNotNull(
+        val findings = (listOfNotNull(
             projectionDied(events),
             answersTruncated(events),
             speechFallenBehindTheView(events),
@@ -82,7 +82,7 @@ object SessionVerdict {
             boundNetworkNeverValidated(events),
             resolutionNeverSettled(events),
             analysisStarved(events),
-        ).sortedBy { it.severity.ordinal }
+        ) + FrameIntegrityVerdict.analyse(events)).sortedBy { it.severity.ordinal }
 
         // Last, and only when there is something it would have settled: a pointer at the one
         // control that turns the next bundle from an argument into a measurement.

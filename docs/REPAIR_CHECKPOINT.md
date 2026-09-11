@@ -71,3 +71,24 @@ The new speech deadline changes below still require their own complete Android C
 Protocol basis: https://ai.google.dev/api/live documents concurrent realtime modalities without
 cross-stream ordering guarantees. https://ai.google.dev/api/generate-content provides image and
 task in one request. The selected Gemini 3.6 Flash model's actual accuracy/latency still needs replay.
+
+## Latest work after the speech checkpoint
+
+Speech/settings checkpoint `a155a1b27d3dd1f32c7c856c4bade84cc99191ca` passed full CI
+(run 34658165845), including the emulator job. The following newer additions still need CI:
+- Independent Brief/Comprehensive prefix, quality, dedupe and first-scene/retry policies;
+  compensated tracker evidence drives subsequent probes, not raw shake/lighting difference.
+- One bounded pending candidate retains a sharper stable image for at most 750 ms; a new
+  generation always wins. Local text now shares the coordinator's retry policy.
+- Shared one-announcement outage lifecycle invalidates old results and speech immediately.
+- Parallel optical verification/cloud submission for new targets; optical duplicate checks
+  remain a preflight only for a previously accepted target. No result bypasses grounding.
+- Added explicit capture, change detection, tracking, crop, quality, encoding and local-grounding
+  intervals; first eligible target capture survives improved candidates in the same generation.
+- Export verdict detects stale output, wrong image identity, missing identity, excessive
+  suppression, persistent viewport fallback, NO_TEXT/optical conflicts and long speech queues.
+29 focused JVM tests covering these policies and the prior identity/grounding cases passed.
+These are policy tests, not proof of scene recognition, device latency or the private replay.
+Remaining immediate work: finish network/runtime/UI intervals and result revision telemetry,
+synthetic on-device regression fixtures, diagnostic off/on A/B, private golden replay and the
+full CI gate for these additions. The physical-phone/cloud acceptance remains unmeasured.

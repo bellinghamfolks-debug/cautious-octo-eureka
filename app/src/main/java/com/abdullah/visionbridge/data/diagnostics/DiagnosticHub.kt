@@ -95,7 +95,8 @@ object DiagnosticHub {
                                 task.fields+mapOf("frameId" to task.frameId,"reason" to task.reason,
                                     "file" to name,"evidenceQueueMs" to (start-task.queuedAt)/1e6,
                                     "evidenceWriteMs" to (SystemClock.elapsedRealtimeNanos()-start)/1e6))
-                        }
+                        } else record("EVIDENCE_FRAME_SKIPPED",task.fields+mapOf("frameId" to task.frameId,
+                            "reason" to "explicit_discard_invalidated_pending_write"))
                     }
                 } catch(error:Exception) {
                     record("EVIDENCE_WRITE_FAILED",task.fields+mapOf("errorType" to error.javaClass.simpleName))
@@ -377,8 +378,8 @@ object DiagnosticHub {
             fields = metadata + mapOf(
                 "evidenceRole" to "analysis_input",
                 "sourceStage" to stage,
-                "analysisInputCapturePolicy" to "every_selected_input",
-                "analysisInputThrottled" to false,
+                "analysisInputCapturePolicy" to "bounded_async_with_explicit_skips",
+                "analysisInputThrottled" to true,
             ),
         )
     }
