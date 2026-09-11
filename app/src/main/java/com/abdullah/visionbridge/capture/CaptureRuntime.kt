@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 class CaptureRuntime {
+    val turnGate = TurnGate()
     private val mutableState = MutableStateFlow(CaptureState())
     val state: StateFlow<CaptureState> = mutableState.asStateFlow()
 
@@ -32,8 +33,21 @@ class CaptureRuntime {
         copy(isRunning = true, status = "مشاركة الشاشة فعّالة", error = null)
     }
     fun processing(active: Boolean) = update { copy(isProcessing = active) }
-    fun result(value: AnalysisResult) = update {
-        copy(lastResult = value, status = if (value.urgent) "تنبيه عاجل" else "اكتمل التحليل", error = null)
+    fun result(value: AnalysisResult): Boolean {
+        val turn = value.turn ?: return false
+        val accepted = turnGate.commit(turn) {
+            update { copy(lastResult=value, status="اكتمل التحليل", error=null) }
+            com.abdullah.visionbridge.data.diagnostics.DiagnosticHub.record("RUNTIME_RESULT",turn.fields())
+        }
+        if (!accepted) com.abdullah.visionbridge.data.diagnostics.DiagnosticHub.record(
+            "RESULT_DROPPED",turn.fields()+mapOf("reason" to turnGate.rejection(turn)))
+        return accepted
+    }
+    fun clearVisualResult() = update { copy(lastResult=null, isProcessing=false) }
+    fun displayed(value: AnalysisResult) {
+        value.turn?.let { turnGate.commit(it) {
+            com.abdullah.visionbridge.data.diagnostics.DiagnosticHub.record("TEXT_DISPLAYED",it.fields())
+        } }
     }
     fun notice(message: String) = update {
         copy(status = message, error = null, isProcessing = false)

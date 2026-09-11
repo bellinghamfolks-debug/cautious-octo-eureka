@@ -45,3 +45,26 @@ Official protocol basis: [Live API](https://ai.google.dev/api/live) documents co
 realtime modality streams without cross-stream ordering guarantees;
 [generateContent](https://ai.google.dev/api/generate-content) provides image and task parts
 in one request. Model quality and real network latency still require measured validation.
+
+## Subsequent recovery checkpoint (not compiled, not release-ready)
+
+Added FrameTurnTransport (stateless image+instruction SSE), FrameBoundCoordinator,
+TextGroundingGate, QualityRetryPolicy and tests. Added result/diagnostic turn fields and
+runtime rejection. **Integration is unfinished:** AppContainer still selects the old
+coordinator, MediaProjectionService does not yet pass Candidate, and BilingualTtsEngine
+still needs speakTurn/invalidateVisualContent plus atomic stale checks. These references
+must be implemented before the new source can compile. UI acknowledgement is also pending.
+Do not mistake this recovery checkpoint for a working application or validated repair.
+
+Next exact steps:
+- Complete TTS turn/context propagation and expiry enforcement, then wire AppContainer and
+  PendingFrame/Candidate; remove production GeminiLiveSession and LiveCloudCoordinator.
+- Inspect coordinator concurrency (policy mutation under one authority, cancellation while
+  grounding, first-frame stable retry, scene deduplication). cropCompleteness=1.0 is currently
+  a placeholder and MUST be replaced with measured evidence before acceptance.
+- Compile the integrated source, run full tests, expand regression coverage, then device replay.
+- Fix remaining diagnostic evidence synchronous writes and tracking cost; implement full stage
+  timing and useful-output opportunity measurements. These are not implemented by the Python tools.
+
+A previous snapshot has GitHub Actions run 34591658552. It covers the earlier checkpoint,
+not the subsequent stateless-coordinator additions. Check its exact head SHA before using results.

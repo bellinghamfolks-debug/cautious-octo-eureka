@@ -350,7 +350,7 @@ class PaddleOcrEngine(
                 ),
             )
             if (page !== bitmap) page.recycle()
-            PaddleOcrResult(text, PageAssembler.meanConfidence(lines), lines.size)
+            PaddleOcrResult(text, PageAssembler.meanConfidence(lines), lines.size, boxes.size)
         }
     }
 
@@ -658,4 +658,4 @@ class PaddleOcrEngine(
     }
 }
 
-data class PaddleOcrResult(val text: String, val confidence: Float, val lineCount: Int)
+data class PaddleOcrResult(val text: String, val confidence: Float, val lineCount: Int, val detectedBoxCount: Int = lineCount)

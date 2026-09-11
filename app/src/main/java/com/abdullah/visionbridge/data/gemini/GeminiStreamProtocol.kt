@@ -30,6 +30,7 @@ class GeminiStreamAccumulator(
      */
     private val markerCandidate = StringBuilder()
     private var inSceneTail = false
+    val readingComplete: Boolean get() = inSceneTail
 
     /** The description that followed the transcription, empty when there was none. */
     val sceneTail: String

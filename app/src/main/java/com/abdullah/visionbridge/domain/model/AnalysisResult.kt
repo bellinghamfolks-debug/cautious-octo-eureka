@@ -20,4 +20,5 @@ data class AnalysisResult(
      * the time the reading finishes — a question only the coordinator can answer.
      */
     val sceneTail: String = "",
+    val turn: AnalysisTurn? = null,
 )

@@ -562,6 +562,8 @@ data class DiagnosticTrace(
     val frameId: String,
     val capturedAtEpochMs: Long,
     val capturedAtElapsedNanos: Long,
+    val turn: com.abdullah.visionbridge.domain.model.AnalysisTurn? = null,
+    val section: String? = null,
 ) : AbstractCoroutineContextElement(Key) {
     companion object Key : CoroutineContext.Key<DiagnosticTrace>
 
@@ -571,5 +573,5 @@ data class DiagnosticTrace(
         "capturedAtEpochMs" to capturedAtEpochMs,
         "capturedAtElapsedNanos" to capturedAtElapsedNanos,
         "sinceCaptureMs" to DiagnosticHub.sinceCaptureMs(capturedAtElapsedNanos),
-    ) + extra
+    ) + (turn?.fields() ?: emptyMap()) + mapOf("contentSection" to section) + extra
 }
