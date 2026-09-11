@@ -84,7 +84,6 @@ fun SettingsScreen(
     onMessageConsumed: () -> Unit,
 ) {
     var apiKey by remember { mutableStateOf("") }
-    var modelMenuExpanded by remember { mutableStateOf(false) }
     var speechRateDraft by remember(state.settings.speechRate) {
         mutableFloatStateOf(state.settings.speechRate)
     }
@@ -175,37 +174,16 @@ fun SettingsScreen(
                     }
                 }
 
-                SectionTitle("نموذج Gemini")
-                ExposedDropdownMenuBox(
-                    expanded = modelMenuExpanded,
-                    onExpandedChange = { modelMenuExpanded = !modelMenuExpanded },
-                ) {
-                    OutlinedTextField(
-                        value = state.settings.model,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("النموذج") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(modelMenuExpanded) },
-                        modifier = Modifier
-                            .menuAnchor()
-                            .fillMaxWidth()
-                            .semantics { contentDescription = "اختيار نموذج Gemini، الحالي ${state.settings.model}" },
-                    )
-                    ExposedDropdownMenu(
-                        expanded = modelMenuExpanded,
-                        onDismissRequest = { modelMenuExpanded = false },
-                    ) {
-                        AppSettings.SUPPORTED_MODELS.forEach { model ->
-                            DropdownMenuItem(
-                                text = { Text(model) },
-                                onClick = {
-                                    onModelChange(model)
-                                    modelMenuExpanded = false
-                                },
-                            )
-                        }
-                    }
-                }
+                // CURRENT_LIVE_MODEL_ONLY_V381
+                SectionTitle("Gemini Live")
+                Text(
+                    text = "Gemini 3.1 Flash Live هو النموذج السحابي الحالي الوحيد. لا توجد نماذج قديمة أو اختيار نموذج في هذا الإصدار.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.semantics {
+                        contentDescription =
+                            "النموذج السحابي الحالي الوحيد: Gemini 3.1 Flash Live. لا توجد نماذج قديمة."
+                    },
+                )
 
                 SectionTitle("القراءة مع الوصف")
                 AccessibleSwitchRow(
@@ -387,8 +365,14 @@ fun SettingsScreen(
                     onCheckedChange = onSpeechChange,
                 )
                 AccessibleSwitchRow(
-                    title = "إيقاف النطق عند تغيّر المحتوى",
-                    description = "يوقف النتيجة الحالية عند الانتقال إلى محتوى مختلف، ثم ينطق أحدث نتيجة.",
+                    title = "الانتقال الذكي بين الأهداف",
+                    description = if (state.settings.interruptSpeechOnVisualChange) {
+                        "مفعّل. يتجاهل اهتزاز النظارة والتقريب والدوران وتغيّر الإضاءة. " +
+                            "إذا تأكد انتقال قوي إلى هدف آخر يوقف الكلام فوراً، أما الانتقال المحتمل " +
+                            "فيترك العبارة الحالية تنتهي ثم ينتقل إلى أحدث هدف."
+                    } else {
+                        "معطّل. يظل VisionBridge يكتشف الهدف الجديد ويحلله، لكنه لا يقطع الكلام الجاري فوراً."
+                    },
                     checked = state.settings.interruptSpeechOnVisualChange,
                     onCheckedChange = onInterruptSpeechChange,
                 )
@@ -418,31 +402,34 @@ fun SettingsScreen(
                     checked = state.settings.forceCellular,
                     onCheckedChange = onForceCellularChange,
                 )
+                // DENSE_DIAGNOSTIC_EVIDENCE_V381
+                // TEN_MINUTE_DIAGNOSTIC_TIMELINE_V382
+                // EVERY_ANALYSIS_INPUT_EVIDENCE_V383
                 Text(
-                    "يسجل VisionBridge بيانات التشخيص تلقائيًا من دون صور، بما يشمل التوقيتات ونتائج OCR وGemini وحالة النطق.",
+                    "يسجل VisionBridge التشخيص تلقائيًا من دون صور افتراضيًا. عند تشغيل حفظ اللقطات، " +
+                        "ينشئ خطًا بصريًا يغطي عشر دقائق كاملة، مع ربط الصور بنتائج OCR وGemini والتوقيتات.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
 
                 // Off by default, and worded so the cost is plain before it is switched on. A frame
                 // is whatever the user was looking at, and that is theirs to decide about each time.
                 AccessibleSwitchRow(
-                    title = "حفظ صورة الشاشة عند فشل القراءة",
+                    title = "حفظ تشخيص بصري لمدة 10 دقائق",
                     description = if (state.settings.captureFailureEvidence) {
-                        "مُفعّل. تُحفظ صورة الشاشة الكاملة في لحظات الفشل فقط، بحد أقصى ٤٠ صورة، " +
-                            "وتُرسل داخل ملف التشخيص. أطفئه بعد إعادة إنتاج المشكلة."
+                        "مُفعّل. يحفظ لقطة زمنية كل ثانية لمدة عشر دقائق، أي نحو ٦٠٠ لقطة تغطي المدة كاملة، " +
+                            "ويحفظ أيضًا كل صورة تُختار فعليًا لتدخل OCR أو Gemini، سواء نجحت القراءة أم فشلت، " +
+                            "مع لقطات فشل الجودة. قد يصبح ملف التشخيص كبيرًا؛ أطفئ الخيار بعد انتهاء الاختبار."
                     } else {
-                        "مطفأ. لا تُحفظ لقطات جديدة. فعّله فقط أثناء إعادة إنتاج مشكلة قراءة، " +
-                            "لأن الصورة وحدها تفرّق بين نص لم يُكتشف ونص اكتُشف ثم رُمي. " +
-                            "اللقطات التي حُفظت سابقاً تبقى حتى تحذفها من الزر أدناه، " +
-                            "وعددها مذكور في اسم ملف التشخيص."
+                        "مطفأ. لا تُحفظ صور جديدة. فعّله عند بدء اختبار المشكلة؛ أول صورة فعلية تبدأ نافذة " +
+                            "العشر دقائق، ثم تُحفظ صورة كل ثانية حتى نهاية النافذة حتى لو ظل المحتوى ثابتًا."
                     },
                     checked = state.settings.captureFailureEvidence,
                     onCheckedChange = onCaptureFailureEvidenceChange,
                 )
                 if (state.settings.captureFailureEvidence) {
                     Text(
-                        text = "تنبيه: ملف التشخيص القادم سيحتوي صوراً لما كنت تنظر إليه عند الفشل. " +
-                            "اسم الملف سيذكر عدد الصور.",
+                        text = "تنبيه: ملف التشخيص القادم قد يحتوي نحو ٦٠٠ لقطة زمنية لعشر دقائق، " +
+                            "إضافة إلى لقطات الأخطاء. قد يكون الملف كبيرًا، واسم الملف سيذكر عدد الصور.",
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                     )
@@ -483,7 +470,7 @@ fun SettingsScreen(
                         .height(56.dp)
                         .semantics {
                             contentDescription =
-                                "حذف كل لقطات الفشل المحفوظة الآن، قبل مشاركة ملف التشخيص"
+                                "حذف كل لقطات التشخيص المحفوظة الآن، قبل مشاركة ملف التشخيص"
                         },
                 ) {
                     Icon(Icons.Filled.Delete, contentDescription = null)
@@ -497,7 +484,7 @@ fun SettingsScreen(
                         .height(56.dp)
                         .semantics {
                             contentDescription = if (state.settings.captureFailureEvidence) {
-                                "مشاركة ملف التشخيص، ويحتوي صور لحظات الفشل والتوقيتات ونتائج OCR وGemini وحالة النطق"
+                                "مشاركة ملف التشخيص، ويحتوي خطًا بصريًا لمدة عشر دقائق والتوقيتات ونتائج OCR وGemini وحالة النطق"
                             } else {
                                 "مشاركة ملف التشخيص من دون صور، ويشمل التوقيتات ونتائج OCR وGemini وحالة النطق"
                             }

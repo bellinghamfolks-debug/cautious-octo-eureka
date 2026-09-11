@@ -9,3 +9,8 @@ local.properties
 *.keystore
 captures/
 app/src/main/assets/ppocr/
+
+__pycache__/
+*.pyc
+private-investigation/
+replay-private/

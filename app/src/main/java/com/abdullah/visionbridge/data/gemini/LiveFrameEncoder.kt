@@ -7,6 +7,7 @@ import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
 import com.abdullah.visionbridge.domain.model.SceneDescriptionStyle
 import java.io.ByteArrayOutputStream
+import java.security.MessageDigest
 
 /**
  * Fast encoder dedicated to Gemini Live.
@@ -25,9 +26,14 @@ class LiveFrameEncoder {
         val quality: Int,
         val scaleMs: Double,
         val compressionMs: Double,
+        val copyMs: Double,
+        val hashMs: Double,
+        val totalMs: Double,
+        val imageHash: String,
     )
 
     fun encode(source: Bitmap, settings: AppSettings): EncodedFrame {
+        val encodeStarted = SystemClock.elapsedRealtimeNanos()
         val targetEdge = when (settings.mode) {
             AnalysisMode.TEXT_READING -> if (settings.captureProfile == CaptureProfile.STABLE) {
                 TEXT_STABLE_EDGE
@@ -56,10 +62,16 @@ class LiveFrameEncoder {
         val scaleMs = elapsedMs(scaleStarted)
         return try {
             val compressionStarted = SystemClock.elapsedRealtimeNanos()
-            val out = ByteArrayOutputStream()
-            scaled.compress(Bitmap.CompressFormat.JPEG, quality, out)
-            val bytes = out.toByteArray()
+            val out = ByteArrayOutputStream(256 * 1024)
+            check(scaled.compress(Bitmap.CompressFormat.JPEG, quality, out)) { "JPEG encoding failed" }
             val compressionMs = elapsedMs(compressionStarted)
+            val copyStarted = SystemClock.elapsedRealtimeNanos()
+            val bytes = out.toByteArray()
+            val copyMs = elapsedMs(copyStarted)
+            val hashStarted = SystemClock.elapsedRealtimeNanos()
+            val hash = MessageDigest.getInstance("SHA-256").digest(bytes)
+                .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+            val hashMs = elapsedMs(hashStarted)
             EncodedFrame(
                 bytes = bytes,
                 mimeType = "image/jpeg",
@@ -68,6 +80,10 @@ class LiveFrameEncoder {
                 quality = quality,
                 scaleMs = scaleMs,
                 compressionMs = compressionMs,
+                copyMs = copyMs,
+                hashMs = hashMs,
+                totalMs = elapsedMs(encodeStarted),
+                imageHash = hash,
             )
         } finally {
             if (scaled !== source) scaled.recycle()
@@ -90,12 +106,12 @@ class LiveFrameEncoder {
         (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0
 
     private companion object {
-        const val TEXT_STABLE_EDGE = 1440
-        const val TEXT_FAST_EDGE = 960
+        const val TEXT_STABLE_EDGE = 1800
+        const val TEXT_FAST_EDGE = 1440
         const val SCENE_BRIEF_EDGE = 640
         const val SCENE_COMPREHENSIVE_EDGE = 760
-        const val TEXT_STABLE_QUALITY = 88
-        const val TEXT_FAST_QUALITY = 82
+        const val TEXT_STABLE_QUALITY = 96
+        const val TEXT_FAST_QUALITY = 92
         const val SCENE_QUALITY = 74
     }
 }

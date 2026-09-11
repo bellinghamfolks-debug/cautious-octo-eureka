@@ -28,11 +28,13 @@ import com.abdullah.visionbridge.R
 import com.abdullah.visionbridge.VisionBridgeApp
 import com.abdullah.visionbridge.accessibility.EvidenceShortcut
 import com.abdullah.visionbridge.capture.vision.Viewport
+import com.abdullah.visionbridge.capture.vision.EsightViewportCalibration
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
+import com.abdullah.visionbridge.domain.model.ViewportMode
 import com.abdullah.visionbridge.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -48,6 +50,8 @@ import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
+// ESIGHT_FIXED_VIEWPORT_V370
+// SMART_TARGET_INTERRUPTION_V380
 class MediaProjectionService : Service() {
     private data class PendingFrame(
         val bitmap: Bitmap,
@@ -72,6 +76,21 @@ class MediaProjectionService : Service() {
         maximumDissimilarity = SCENE_TARGET_DISSIMILARITY,
         maximumChromaDifference = SCENE_TARGET_CHROMA,
     )
+
+    // Observer-only trackers for Gemini Live. They never gate or cancel capture. A 64px/two-level
+    // pyramid keeps motion compensation while avoiding the half-second tracking cost of the old
+    // cloud path. Two agreeing frames are still required before a target replacement is believed.
+    private val liveTextTargetTracker = VisualTargetTracker(
+        maximumDissimilarity = LIVE_TEXT_TARGET_DISSIMILARITY,
+        maximumChromaDifference = LIVE_TEXT_TARGET_CHROMA,
+        framesToConfirm = SMART_TARGET_CONFIRM_FRAMES,
+    )
+    private val liveSceneTargetTracker = VisualTargetTracker(
+        maximumDissimilarity = LIVE_SCENE_TARGET_DISSIMILARITY,
+        maximumChromaDifference = LIVE_SCENE_TARGET_CHROMA,
+        framesToConfirm = SMART_TARGET_CONFIRM_FRAMES,
+    )
+    private var lastSmartTargetTrackAtElapsedMs = 0L
     private val frameQueueLock = Any()
 
     private val container by lazy { (application as VisionBridgeApp).container }
@@ -144,6 +163,26 @@ class MediaProjectionService : Service() {
                 DiagnosticHub.setEvidenceCapture(newSettings.captureFailureEvidence)
                 val evidenceChanged =
                     newSettings.captureFailureEvidence != activeSettings.captureFailureEvidence
+                val viewportPolicyChanged =
+                    newSettings.viewportMode != activeSettings.viewportMode ||
+                        newSettings.mode != activeSettings.mode ||
+                        newSettings.useLocalOcr != activeSettings.useLocalOcr
+                if (viewportPolicyChanged) {
+                    DiagnosticHub.record(
+                        "VIEWPORT_POLICY_CHANGED",
+                        mapOf(
+                            "oldViewportMode" to activeSettings.viewportMode.name,
+                            "newViewportMode" to newSettings.viewportMode.name,
+                            "oldAnalysisMode" to activeSettings.mode.name,
+                            "newAnalysisMode" to newSettings.mode.name,
+                        ),
+                    )
+                    activeViewport = null
+                    lastViewportProbeAtElapsedMs = 0L
+                    liveTextTargetTracker.reset()
+                    liveSceneTargetTracker.reset()
+                    lastSmartTargetTrackAtElapsedMs = 0L
+                }
                 activeSettings = newSettings
                 // The notification action carries the state in its label, and that label is the
                 // only readout a user gets who reaches the switch through the shade rather than
@@ -315,6 +354,12 @@ class MediaProjectionService : Service() {
         image.close()
         val conversionMs = (SystemClock.elapsedRealtimeNanos() - conversionStarted) / 1_000_000.0
         val settings = activeSettings
+        // LIVE_BACKPRESSURE_CAPTURE_V35: cloud work skips the expensive registration stack, but
+        // unlike 3.4 it does NOT announce every accepted cloud frame as a new visual target. The
+        // service already owns one active frame plus one latest pending frame; GeminiLiveSession now
+        // stays suspended until its turn really finishes so this existing queue becomes the single
+        // backpressure boundary. Local PP-OCR keeps the proven tracking/stability path unchanged.
+        val cloudLive = settings.mode == AnalysisMode.SCENE_DESCRIPTION || !settings.useLocalOcr
         val now = System.currentTimeMillis()
 
         DiagnosticHub.record(
@@ -332,6 +377,11 @@ class MediaProjectionService : Service() {
         )
 
         val minimumInterval = when {
+            // SMART_TARGET_SCENE_OBSERVER_RATE_V381: sample locally for target switching at
+            // ~4 Hz. GeminiLiveSession still enforces its own 1 FPS transport limit, so this
+            // improves interruption reaction time without increasing model traffic.
+            cloudLive && settings.mode == AnalysisMode.SCENE_DESCRIPTION -> 260L
+            cloudLive -> 120L
             settings.mode == AnalysisMode.SCENE_DESCRIPTION -> SCENE_FRAME_INTERVAL_MS
             settings.captureProfile == CaptureProfile.FAST_TEXT -> FAST_FRAME_INTERVAL_MS
             else -> STABLE_FRAME_INTERVAL_MS
@@ -343,6 +393,22 @@ class MediaProjectionService : Service() {
             bitmap.recycle()
             return
         }
+
+        // TEN_MINUTE_DIAGNOSTIC_TIMELINE_V382: this happens before the normal analysis throttle.
+        // Therefore unchanged pages and frames later rejected by the detector remain represented
+        // across the full ten-minute diagnostic window when the user explicitly enables images.
+        DiagnosticHub.timelineFrame(
+            bitmap = bitmap,
+            frameId = trace.frameId,
+            fields = trace.fields(
+                mapOf(
+                    "mode" to settings.mode.name,
+                    "captureProfile" to settings.captureProfile.name,
+                    "captureWidth" to bitmap.width,
+                    "captureHeight" to bitmap.height,
+                ),
+            ),
+        )
 
         val intervalSincePrevious = if (lastFrameAt == 0L) Long.MAX_VALUE else now - lastFrameAt
         if (intervalSincePrevious < minimumInterval) {
@@ -360,7 +426,23 @@ class MediaProjectionService : Service() {
         }
 
         val detectorStarted = SystemClock.elapsedRealtimeNanos()
+        val cloudTextMeanThreshold =
+            if (settings.captureProfile == CaptureProfile.FAST_TEXT) 3.5 else 6.0
+        val cloudTextRatioThreshold =
+            if (settings.captureProfile == CaptureProfile.FAST_TEXT) 0.028 else 0.050
         val changeDecision = when {
+            // Scene mode samples the newest usable view once a second. Semantic/proactive Gemini
+            // decides whether it is worth speaking. The service queue prevents those samples from
+            // piling on top of a response that is still being spoken.
+            cloudLive && settings.mode == AnalysisMode.SCENE_DESCRIPTION ->
+                frameChangeDetector.evaluateFast(bitmap, 0.0, 0.0)
+            // Cloud text gets a meaningfully changed frame immediately, without the old settling
+            // delay. While Gemini is busy, later frames replace only the single pending slot.
+            cloudLive -> frameChangeDetector.evaluateFast(
+                bitmap = bitmap,
+                minimumMeanDifference = cloudTextMeanThreshold,
+                minimumChangedRatio = cloudTextRatioThreshold,
+            )
             settings.mode == AnalysisMode.SCENE_DESCRIPTION -> frameChangeDetector.evaluateFast(
                 bitmap = bitmap,
                 minimumMeanDifference = SCENE_MIN_MEAN_DIFFERENCE,
@@ -381,6 +463,8 @@ class MediaProjectionService : Service() {
         }
         val detectorMs = (SystemClock.elapsedRealtimeNanos() - detectorStarted) / 1_000_000.0
         val changeThresholds = when {
+            cloudLive && settings.mode == AnalysisMode.SCENE_DESCRIPTION -> Pair(0.0, 0.0)
+            cloudLive -> Pair(cloudTextMeanThreshold, cloudTextRatioThreshold)
             settings.mode == AnalysisMode.SCENE_DESCRIPTION -> Pair(
                 SCENE_MIN_MEAN_DIFFERENCE,
                 SCENE_MIN_CHANGED_RATIO,
@@ -401,8 +485,8 @@ class MediaProjectionService : Service() {
             "candidateMeanAbsoluteDifference" to changeDecision.candidateMeanAbsoluteDifference,
             "candidateChangedPixelRatio" to changeDecision.candidateChangedPixelRatio,
             "candidateStableElapsedMs" to changeDecision.candidateStableElapsedMs,
-            "requiredStableMs" to if (settings.captureProfile == CaptureProfile.STABLE) STABLE_FRAME_DURATION_MS else 0L,
-            "thresholdLogic" to if (settings.captureProfile == CaptureProfile.STABLE) "AND" else "OR",
+            "requiredStableMs" to if (!cloudLive && settings.captureProfile == CaptureProfile.STABLE) STABLE_FRAME_DURATION_MS else 0L,
+            "thresholdLogic" to if (cloudLive) "LIVE_BACKPRESSURE" else if (settings.captureProfile == CaptureProfile.STABLE) "AND" else "OR",
             "detectorMs" to detectorMs,
             "mode" to settings.mode.name,
             "captureProfile" to settings.captureProfile.name,
@@ -446,6 +530,123 @@ class MediaProjectionService : Service() {
         val view = cropToViewport(bitmap, trace)
 
         val scene = settings.mode == AnalysisMode.SCENE_DESCRIPTION
+
+        if (cloudLive) {
+            // SMART_TARGET_INTERRUPTION_V380: Live keeps its one-active/one-latest backpressure,
+            // while a separate observer decides whether speech should survive a real target swap.
+            // The observer never blocks a frame and never closes the WebSocket.
+            val smartNow = SystemClock.elapsedRealtime()
+            val smartDue = lastSmartTargetTrackAtElapsedMs == 0L ||
+                smartNow - lastSmartTargetTrackAtElapsedMs >= SMART_TARGET_TRACK_INTERVAL_MS
+            val smartDecision = if (smartDue) {
+                lastSmartTargetTrackAtElapsedMs = smartNow
+                val smartTracker = if (scene) liveSceneTargetTracker else liveTextTargetTracker
+                val smartStarted = SystemClock.elapsedRealtimeNanos()
+                val decision = smartTracker.evaluate(
+                    BitmapFrames.trackedFrame(
+                        view,
+                        baseSize = SMART_TARGET_BASE_SIZE,
+                        depth = SMART_TARGET_PYRAMID_DEPTH,
+                    ),
+                )
+                val smartTrackingMs =
+                    (SystemClock.elapsedRealtimeNanos() - smartStarted) / 1_000_000.0
+                val policy = SmartTargetInterruptionPolicy.evaluate(decision, settings.mode)
+                DiagnosticHub.record(
+                    "SMART_TARGET_POLICY_DECISION",
+                    trace.fields(
+                        mapOf(
+                            "lane" to "GEMINI_LIVE",
+                            "action" to policy.action.name,
+                            "policyReason" to policy.reason,
+                            "confidence" to policy.confidence,
+                            "trackerReason" to decision.reason,
+                            "targetChanged" to decision.targetChanged,
+                            "targetTrackId" to decision.trackId,
+                            "structuralDissimilarity" to decision.dissimilarity,
+                            "unalignedDissimilarity" to decision.unalignedDissimilarity,
+                            "chromaDifference" to decision.chromaDifference,
+                            "alignmentCoverage" to decision.coverage,
+                            "registrationMethod" to decision.method,
+                            "motionTranslationX" to decision.translationX,
+                            "motionTranslationY" to decision.translationY,
+                            "motionScale" to decision.scale,
+                            "motionRotationDegrees" to decision.rotationDegrees,
+                            "consecutiveCandidateFrames" to decision.consecutiveCandidateFrames,
+                            "trackingMs" to smartTrackingMs,
+                            "observerOnly" to true,
+                        ),
+                    ),
+                )
+                if (policy.action != SmartTargetInterruptionPolicy.Action.NONE) {
+                    val interruptNow = settings.interruptSpeechOnVisualChange &&
+                        policy.action == SmartTargetInterruptionPolicy.Action.IMMEDIATE
+                    container.coordinator.onVisualTargetChanged(interruptNow)
+                    DiagnosticHub.record(
+                        "SMART_TARGET_TRANSITION_APPLIED",
+                        trace.fields(
+                            mapOf(
+                                "lane" to "GEMINI_LIVE",
+                                "action" to policy.action.name,
+                                "interruptSettingEnabled" to settings.interruptSpeechOnVisualChange,
+                                "speechInterruptedNow" to interruptNow,
+                                "networkTurnCancelled" to false,
+                                "webSocketClosed" to false,
+                                "latestFrameWillWin" to true,
+                            ),
+                        ),
+                    )
+                }
+                decision
+            } else {
+                null
+            }
+
+            DiagnosticHub.record(
+                "VISUAL_TARGET_DECISION",
+                trace.fields(
+                    mapOf(
+                        "targetChanged" to (smartDecision?.targetChanged ?: false),
+                        "decisionReason" to (smartDecision?.reason ?: "smart_target_observer_throttled"),
+                        "targetTrackId" to smartDecision?.trackId,
+                        "registrationMethod" to (smartDecision?.method ?: "SMART_OBSERVER_THROTTLED"),
+                        "trackingMs" to 0.0,
+                        "cloudLiveDirect" to true,
+                        "smartTargetObserver" to true,
+                        "backpressure" to "ONE_ACTIVE_ONE_LATEST",
+                    ),
+                ),
+            )
+            DiagnosticHub.frame(
+                bitmap = view,
+                frameId = frameId,
+                stage = "selected_input",
+                metadata = trace.fields(
+                    mapOf(
+                        "mode" to settings.mode.name,
+                        "captureProfile" to settings.captureProfile.name,
+                        "targetChanged" to (smartDecision?.targetChanged ?: false),
+                        "cloudLiveDirect" to true,
+                        "smartTargetObserver" to true,
+                        "frameMeanAbsoluteDifference" to changeDecision.meanAbsoluteDifference,
+                        "frameChangedPixelRatio" to changeDecision.changedPixelRatio,
+                    ),
+                ),
+            )
+            DiagnosticHub.record(
+                "FRAME_SELECTED_FOR_ANALYSIS",
+                trace.fields(
+                    mapOf(
+                        "cloudLiveDirect" to true,
+                        "smartTargetObserver" to true,
+                        "backpressure" to "ONE_ACTIVE_ONE_LATEST",
+                    ),
+                ),
+            )
+            submitLatestFrame(PendingFrame(view, trace))
+            return
+        }
+
         val tracker = if (scene) sceneTargetTracker else textTargetTracker
         val trackingStarted = SystemClock.elapsedRealtimeNanos()
         val targetDecision = tracker.evaluate(BitmapFrames.trackedFrame(view))
@@ -480,8 +681,42 @@ class MediaProjectionService : Service() {
                 ),
             ),
         )
-        if (visualTargetChanged) {
-            container.coordinator.onVisualTargetChanged(settings.interruptSpeechOnVisualChange)
+        val localSmartPolicy = SmartTargetInterruptionPolicy.evaluate(targetDecision, settings.mode)
+        DiagnosticHub.record(
+            "SMART_TARGET_POLICY_DECISION",
+            trace.fields(
+                mapOf(
+                    "lane" to "LOCAL_PPOCR",
+                    "action" to localSmartPolicy.action.name,
+                    "policyReason" to localSmartPolicy.reason,
+                    "confidence" to localSmartPolicy.confidence,
+                    "trackerReason" to targetDecision.reason,
+                    "targetChanged" to visualTargetChanged,
+                    "targetTrackId" to targetDecision.trackId,
+                    "structuralDissimilarity" to targetDecision.dissimilarity,
+                    "unalignedDissimilarity" to targetDecision.unalignedDissimilarity,
+                    "chromaDifference" to targetDecision.chromaDifference,
+                    "alignmentCoverage" to targetDecision.coverage,
+                    "registrationMethod" to targetDecision.method,
+                    "trackingMs" to trackingMs,
+                ),
+            ),
+        )
+        if (localSmartPolicy.action != SmartTargetInterruptionPolicy.Action.NONE) {
+            val interruptNow = settings.interruptSpeechOnVisualChange &&
+                localSmartPolicy.action == SmartTargetInterruptionPolicy.Action.IMMEDIATE
+            container.coordinator.onVisualTargetChanged(interruptNow)
+            DiagnosticHub.record(
+                "SMART_TARGET_TRANSITION_APPLIED",
+                trace.fields(
+                    mapOf(
+                        "lane" to "LOCAL_PPOCR",
+                        "action" to localSmartPolicy.action.name,
+                        "interruptSettingEnabled" to settings.interruptSpeechOnVisualChange,
+                        "speechInterruptedNow" to interruptNow,
+                    ),
+                ),
+            )
         }
 
         DiagnosticHub.frame(
@@ -632,20 +867,12 @@ class MediaProjectionService : Service() {
             } finally {
                 frame.bitmap.recycle()
                 val next = synchronized(frameQueueLock) {
-                    pendingFrame.also { pendingFrame = null }
-                }
-                if (next != null) {
-                    launchFrame(next)
-                } else {
-                    processing.set(false)
-                    val raced = synchronized(frameQueueLock) {
-                        pendingFrame?.also {
-                            pendingFrame = null
-                            processing.set(true)
-                        }
+                    pendingFrame.also {
+                        pendingFrame = null
+                        if (it == null) processing.set(false)
                     }
-                    if (raced != null) launchFrame(raced)
                 }
+                if (next != null) launchFrame(next)
             }
         }
     }
@@ -784,6 +1011,11 @@ class MediaProjectionService : Service() {
         frameChangeDetector.reset()
         textTargetTracker.reset()
         sceneTargetTracker.reset()
+        liveTextTargetTracker.reset()
+        liveSceneTargetTracker.reset()
+        lastSmartTargetTrackAtElapsedMs = 0L
+        activeViewport = null
+        lastViewportProbeAtElapsedMs = 0L
     }
 
     private fun initialCaptureSize(): Triple<Int, Int, Int> {
@@ -811,41 +1043,56 @@ class MediaProjectionService : Service() {
      * while the user stays inside one app, and re-deciding it on every frame would let a moment of
      * darkness in the view change the geometry underneath the tracker.
      */
+    /**
+     * Crops the mirrored screen using the policy the user actually selected.
+     *
+     * ESIGHT_TEXT_SAFE deliberately does not inspect the photographed content at all while reading
+     * text. The real Share Your View geometry is stable even when the camera points at a dark room,
+     * a white page or a dense energy label, so content must never be allowed to move the crop.
+     */
     private fun cropToViewport(source: Bitmap, trace: DiagnosticTrace): Bitmap {
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastViewportProbeAtElapsedMs >= VIEWPORT_PROBE_INTERVAL_MS) {
-            lastViewportProbeAtElapsedMs = now
-            val measured = runCatching { Viewport.detect(BitmapFrames.aspectPlane(source)) }
-                .onFailure { DiagnosticHub.failure("VIEWPORT_DETECTION", it, trace.fields()) }
-                .getOrNull()
-            if (measured != activeViewport) {
-                DiagnosticHub.record(
-                    "VIEWPORT_CHANGED",
-                    trace.fields(
-                        (measured?.fields() ?: mapOf("viewportArea" to null)) + mapOf(
-                            "applied" to (measured != null),
-                            "sourceWidth" to source.width,
-                            "sourceHeight" to source.height,
-                        ),
-                    ),
-                )
-            }
-            activeViewport = measured
-        }
-
-        val rect = activeViewport ?: return source
-        val left = (rect.left * source.width).toInt().coerceIn(0, source.width - 1)
-        val top = (rect.top * source.height).toInt().coerceIn(0, source.height - 1)
-        val width = (rect.width * source.width).toInt().coerceIn(1, source.width - left)
-        val height = (rect.height * source.height).toInt().coerceIn(1, source.height - top)
-        if (width == source.width && height == source.height) return source
+        val started = SystemClock.elapsedRealtimeNanos()
+        val resolution = com.abdullah.visionbridge.capture.vision.ViewportResolver.resolve(
+            BitmapFrames.aspectPlane(source), source.width, source.height,
+            activeSettings.viewportMode, activeSettings.mode,
+        )
+        val applied = resolution.rect
+        activeViewport = applied
+        DiagnosticHub.record("VIEWPORT_RESOLVED", trace.fields(applied.fields() + mapOf(
+            "strategy" to resolution.strategy,
+            "sourceWidth" to source.width,
+            "sourceHeight" to source.height,
+            "mode" to activeSettings.mode.name,
+            "viewportMs" to (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0,
+            "unresolved" to resolution.strategy.contains("UNRESOLVED"),
+        )))
+        val left = (applied.left * source.width).toInt().coerceIn(0, source.width - 1)
+        val top = (applied.top * source.height).toInt().coerceIn(0, source.height - 1)
+        val rightExclusive = (applied.right * source.width).toInt().coerceIn(left + 1, source.width)
+        val bottomExclusive = (applied.bottom * source.height).toInt().coerceIn(top + 1, source.height)
+        val width = rightExclusive - left
+        val height = bottomExclusive - top
+        if (left == 0 && top == 0 && width == source.width && height == source.height) return source
 
         return runCatching {
             Bitmap.createBitmap(source, left, top, width, height).also { cropped ->
                 if (cropped !== source) source.recycle()
             }
         }.getOrElse {
-            DiagnosticHub.failure("VIEWPORT_CROP", it, trace.fields())
+            DiagnosticHub.failure(
+                "VIEWPORT_CROP",
+                it,
+                trace.fields(
+                    mapOf(
+                        "viewportMode" to mode.name,
+                        "analysisMode" to analysisMode.name,
+                        "leftPx" to left,
+                        "topPx" to top,
+                        "widthPx" to width,
+                        "heightPx" to height,
+                    ),
+                ),
+            )
             source
         }
     }
@@ -856,10 +1103,16 @@ class MediaProjectionService : Service() {
         "forceCellular" to settings.forceCellular,
         "speechEnabled" to settings.speechEnabled,
         "useLocalOcr" to settings.useLocalOcr,
+        "describeAlongsideText" to settings.describeAlongsideText,
         "trustGateEnabled" to settings.trustGateEnabled,
         "captureProfile" to settings.captureProfile.name,
         "interruptSpeechOnVisualChange" to settings.interruptSpeechOnVisualChange,
+        "smartTargetInterruptionEnabled" to settings.interruptSpeechOnVisualChange,
+        "smartTargetPolicyVersion" to "V380",
         "sceneDescriptionStyle" to settings.sceneDescriptionStyle.name,
+        "viewportMode" to settings.viewportMode.name,
+        "liveAccuracyGuard" to true,
+        "legacyCloudFallbackAllowed" to false,
         "captureFailureEvidence" to settings.captureFailureEvidence,
         "speechRate" to settings.speechRate,
     )
@@ -1026,6 +1279,18 @@ class MediaProjectionService : Service() {
          */
         private const val TEXT_TARGET_CHROMA = 26.0
         private const val SCENE_TARGET_CHROMA = 18.0
+
+        // The Live observer is smaller and slightly more conservative than the local full tracker.
+        // It is not an analysis gate; it exists only to decide speech freshness.
+        private const val LIVE_TEXT_TARGET_DISSIMILARITY = 0.30
+        private const val LIVE_SCENE_TARGET_DISSIMILARITY = 0.28
+        private const val LIVE_TEXT_TARGET_CHROMA = 32.0
+        private const val LIVE_SCENE_TARGET_CHROMA = 24.0
+        private const val SMART_TARGET_CONFIRM_FRAMES = 2
+        private const val SMART_TARGET_BASE_SIZE = 64
+        private const val SMART_TARGET_PYRAMID_DEPTH = 2
+        private const val SMART_TARGET_TRACK_INTERVAL_MS = 260L
+
         private const val DROPPED_PREVIEW_INTERVAL_MS = 1_000L
 
         private const val UNAVAILABLE_FEED_NOTICE_AFTER_MS = 1_500L

@@ -57,6 +57,7 @@ class AppContainer(context: Context) {
     private val liveSession = GeminiLiveSession(
         runtime = runtime,
         audioPlayer = liveAudioPlayer,
+        tts = tts,
     )
 
     /**

@@ -5,6 +5,7 @@ import android.os.SystemClock
 import android.util.Base64
 import com.abdullah.visionbridge.capture.CaptureRuntime
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
+import com.abdullah.visionbridge.data.speech.BilingualTtsEngine
 import com.abdullah.visionbridge.data.speech.LivePcmAudioPlayer
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AnalysisResult
@@ -40,11 +41,15 @@ import java.util.concurrent.TimeUnit
 class GeminiLiveSession(
     private val runtime: CaptureRuntime,
     private val audioPlayer: LivePcmAudioPlayer,
+    private val tts: BilingualTtsEngine,
 ) {
     private data class LiveProfile(
         val model: String,
         val proactiveAudio: Boolean,
         val semanticSceneGate: Boolean,
+        val mediaResolution: String,
+        val thinkingLevel: String? = null,
+        val thinkingBudget: Int? = null,
     )
 
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
@@ -70,6 +75,7 @@ class GeminiLiveSession(
     @Volatile private var activeTurnSentAtNanos = 0L
     @Volatile private var firstAudioSeenForEpoch = Long.MIN_VALUE
     @Volatile private var activeSpeechEnabled = true
+    @Volatile private var activeSpeechRate = 1.0f
     @Volatile private var activeResponseMode: AnalysisMode? = null
     @Volatile private var lastMode: AnalysisMode? = null
     @Volatile private var visualGeneration = 0L
@@ -85,6 +91,12 @@ class GeminiLiveSession(
     @Volatile private var responseInFlight = false
     @Volatile private var staleAudioBlocked = false
     @Volatile private var staleAudioPacketsBlocked = 0
+
+    // LIVE_TURN_BACKPRESSURE_V35: submitFrame does not return when bytes merely leave the phone.
+    // It stays suspended until Gemini closes the turn, allowing MediaProjectionService's existing
+    // one-active/one-latest queue to provide real backpressure.
+    @Volatile private var activeTurnCompletion: CompletableDeferred<Boolean>? = null
+    @Volatile private var activeFirstAudio: CompletableDeferred<Boolean>? = null
 
     private var transcript = StringBuilder()
     private var lastFrameSentAtElapsedMs = 0L
@@ -103,24 +115,22 @@ class GeminiLiveSession(
         val now = SystemClock.elapsedRealtime()
         val generation = visualGeneration
 
+        // LIVE_TEXT_LOCAL_TTS_V36: Gemini is the eye; Android TTS is the mouth. Do not
+        // buy another cloud reading while the current Live text is still being spoken.
+        if (settings.mode == AnalysisMode.TEXT_READING && tts.isLiveSpeechInProgress()) {
+            DiagnosticHub.record(
+                "LIVE_LOCAL_SPEECH_BACKPRESSURE",
+                mapOf("mode" to settings.mode.name, "reason" to "current_live_text_still_speaking"),
+            )
+            return true
+        }
+
         synchronized(sendLock) {
             if (lastMode != settings.mode) {
                 lastMode = settings.mode
                 lastFrameSentAtElapsedMs = 0L
                 sceneProbeOutstanding = false
                 sceneProbeStartedAtElapsedMs = 0L
-            }
-
-            if (
-                settings.mode == AnalysisMode.TEXT_READING &&
-                settings.captureProfile == CaptureProfile.STABLE &&
-                lastStableTextGenerationSent == generation
-            ) {
-                DiagnosticHub.record(
-                    "LIVE_TEXT_SAME_TARGET_SUPPRESSED",
-                    mapOf("visualGeneration" to generation),
-                )
-                return true
             }
 
             if (settings.mode == AnalysisMode.SCENE_DESCRIPTION && sceneProbeOutstanding) {
@@ -153,12 +163,12 @@ class GeminiLiveSession(
 
         return coroutineScope {
             val connection = async(Dispatchers.IO) { ensureConnected(apiKey, profile) }
-            val encodeStarted = SystemClock.elapsedRealtimeNanos()
+            val setupAndEncodeStarted = SystemClock.elapsedRealtimeNanos()
             val encoded = async(Dispatchers.Default) { frameEncoder.encode(bitmap, settings) }
 
             val connected = connection.await()
             val image = encoded.await()
-            val encodeTotalMs = (SystemClock.elapsedRealtimeNanos() - encodeStarted) / 1_000_000.0
+            val setupAndEncodeWallMs = (SystemClock.elapsedRealtimeNanos() - setupAndEncodeStarted) / 1_000_000.0
             if (!connected) {
                 DiagnosticHub.record(
                     "LIVE_FRAME_FALLBACK",
@@ -168,19 +178,33 @@ class GeminiLiveSession(
             }
 
             val currentSocket = socket ?: return@coroutineScope false
-            val supersedingActiveResponse = responseInFlight
+            if (responseInFlight) {
+                // This should be prevented by the service queue. Never supersede an audible answer
+                // if another caller slips through; keep that answer intact and let the next capture
+                // replace the pending slot instead.
+                DiagnosticHub.record(
+                    "LIVE_BACKPRESSURE_GUARD",
+                    mapOf("reason" to "turn_already_in_flight", "mode" to settings.mode.name),
+                )
+                return@coroutineScope true
+            }
+
+            val supersedingActiveResponse = false
+            val turnCompletion = CompletableDeferred<Boolean>()
+            val firstAudio = CompletableDeferred<Boolean>()
+            activeTurnCompletion = turnCompletion
+            activeFirstAudio = firstAudio
             activeSpeechEnabled = settings.speechEnabled
+            activeSpeechRate = settings.speechRate
             activeResponseMode = settings.mode
             firstAudioSeenForEpoch = Long.MIN_VALUE
             sceneProbeHadAudio = false
-            staleAudioBlocked = supersedingActiveResponse
+            staleAudioBlocked = false
             staleAudioPacketsBlocked = 0
             synchronized(transcriptLock) { transcript = StringBuilder() }
 
             if (settings.mode == AnalysisMode.TEXT_READING) {
-                activeTurnEpoch = audioPlayer.beginTurn(
-                    if (supersedingActiveResponse) "superseded_live_text_turn" else "new_live_text_turn"
-                )
+                activeTurnEpoch = audioPlayer.beginTurn("new_live_text_turn")
             }
 
             val base64Started = SystemClock.elapsedRealtimeNanos()
@@ -190,6 +214,7 @@ class GeminiLiveSession(
             // Set this immediately around network submission, not before image preprocessing. This
             // makes frameToFirstAudioMs a real model/network number instead of hiding local work.
             activeTurnSentAtNanos = SystemClock.elapsedRealtimeNanos()
+            responseInFlight = true
             val videoSent = currentSocket.send(videoMessage(imageBase64, image.mimeType))
             val instructionSent = currentSocket.send(realtimeTextMessage(instructionFor(settings)))
             if (!videoSent || !instructionSent) {
@@ -207,15 +232,8 @@ class GeminiLiveSession(
                 return@coroutineScope false
             }
 
-            responseInFlight = true
             synchronized(sendLock) {
                 lastFrameSentAtElapsedMs = SystemClock.elapsedRealtime()
-                if (
-                    settings.mode == AnalysisMode.TEXT_READING &&
-                    settings.captureProfile == CaptureProfile.STABLE
-                ) {
-                    lastStableTextGenerationSent = generation
-                }
                 if (settings.mode == AnalysisMode.SCENE_DESCRIPTION) {
                     sceneProbeOutstanding = true
                     sceneProbeStartedAtElapsedMs = lastFrameSentAtElapsedMs
@@ -236,7 +254,12 @@ class GeminiLiveSession(
                     "quality" to image.quality,
                     "scaleMs" to image.scaleMs,
                     "compressionMs" to image.compressionMs,
-                    "encodeTotalMs" to encodeTotalMs,
+                    "encodeTotalMs" to image.totalMs,
+                    "copyMs" to image.copyMs,
+                    "hashMs" to image.hashMs,
+                    "imageHash" to image.imageHash,
+                    "setupAndEncodeWallMs" to setupAndEncodeWallMs,
+                    "encodingMetricVersion" to 2,
                     "base64Ms" to base64Ms,
                     "nativeAudio" to settings.speechEnabled,
                     "cloudTransport" to "LIVE_WEBSOCKET",
@@ -253,22 +276,87 @@ class GeminiLiveSession(
                     mapOf("model" to profile.model, "visualGeneration" to generation),
                 )
             }
+
+            DiagnosticHub.record(
+                "LIVE_TURN_WAIT_STARTED",
+                mapOf("mode" to settings.mode.name, "epoch" to activeTurnEpoch, "model" to profile.model),
+            )
+
+            val turnTimeout = if (settings.mode == AnalysisMode.SCENE_DESCRIPTION) {
+                SCENE_TURN_TIMEOUT_MS
+            } else {
+                TEXT_TURN_TIMEOUT_MS
+            }
+            val completed = withTimeoutOrNull(turnTimeout) { turnCompletion.await() } == true
+            if (!completed) {
+                DiagnosticHub.record(
+                    "LIVE_TURN_WAIT_TIMEOUT",
+                    mapOf("timeoutMs" to turnTimeout, "mode" to settings.mode.name, "model" to profile.model),
+                )
+                completeActiveTurn(false, "turn_wait_timeout")
+                invalidateSocket("turn_wait_timeout")
+                return@coroutineScope false
+            }
+            DiagnosticHub.record(
+                "LIVE_TURN_WAIT_COMPLETED",
+                mapOf("mode" to settings.mode.name, "epoch" to activeTurnEpoch, "model" to profile.model),
+            )
+            if (settings.mode == AnalysisMode.TEXT_READING) {
+                DiagnosticHub.record(
+                    "LIVE_TEXT_CONTEXT_RESET",
+                    mapOf("reason" to "accuracy_fresh_context_per_text_turn", "model" to profile.model),
+                )
+                invalidateSocket("text_accuracy_context_reset")
+            }
             true
         }
     }
 
+    fun reportLiveRequiredFailure(reason: String) {
+        runtime.error("فشل Gemini Live: $reason. لم يتم تشغيل أي مسار احتياطي.")
+        DiagnosticHub.record(
+            "LIVE_REQUIRED_FAILURE",
+            mapOf("reason" to reason, "fallbackAllowed" to false),
+        )
+    }
+
+    // SMART_TARGET_LIVE_STALE_GUARD_V380
     fun onVisualTargetChanged(interruptSpeech: Boolean) {
+        val turnWasInFlight = responseInFlight
         visualGeneration += 1L
-        synchronized(sendLock) { lastFrameSentAtElapsedMs = 0L }
+        synchronized(sendLock) {
+            lastFrameSentAtElapsedMs = 0L
+            // A target transition invalidates the old semantic probe. The active network turn is
+            // still allowed to reach its normal boundary; the next frame starts after that gate.
+            sceneProbeOutstanding = false
+            sceneProbeStartedAtElapsedMs = 0L
+        }
+
+        // Never close or cancel the WebSocket here. Mark the old turn stale so its remaining
+        // transcription is ignored, let Gemini emit the normal turn boundary, then release the
+        // backpressure gate as a handled supersession rather than a Live failure.
+        if (turnWasInFlight) {
+            staleAudioBlocked = true
+            staleAudioPacketsBlocked = 0
+        }
         synchronized(transcriptLock) { transcript = StringBuilder() }
 
-        val scene = lastMode == AnalysisMode.SCENE_DESCRIPTION
-        if (!scene && interruptSpeech) audioPlayer.interrupt("visual_target_changed")
+        if (interruptSpeech) {
+            // Gemini PCM is intentionally not the audible path in this build. Stop the local Live
+            // TTS that is actually being heard. Keeping this separate from the socket is what makes
+            // immediate target switching safe.
+            tts.supersedeLiveSpeech("smart_target_immediate_change")
+            audioPlayer.interrupt("smart_target_immediate_change")
+        }
+
         DiagnosticHub.record(
             "LIVE_VISUAL_TARGET_CHANGED",
             mapOf(
                 "interruptSpeechSetting" to interruptSpeech,
-                "audioInterruptDeferredToSemanticGate" to scene,
+                "smartTargetPolicy" to true,
+                "activeTurnMarkedStale" to turnWasInFlight,
+                "networkTurnCancelled" to false,
+                "webSocketClosed" to false,
                 "visualGeneration" to visualGeneration,
             ),
         )
@@ -308,7 +396,7 @@ class GeminiLiveSession(
     }
 
     private suspend fun ensureConnected(apiKey: String, profile: LiveProfile): Boolean {
-        val fingerprint = fingerprint("$apiKey|${profile.model}|${profile.proactiveAudio}")
+        val fingerprint = fingerprint("$apiKey|${profile.model}|${profile.proactiveAudio}|${profile.mediaResolution}|${profile.thinkingLevel}|${profile.thinkingBudget}")
         val ready: CompletableDeferred<Boolean>
         synchronized(socketLock) {
             val existing = setupReady
@@ -435,6 +523,8 @@ class GeminiLiveSession(
             releaseStaleBoundary("interrupted")
             firstAudioSeenForEpoch = Long.MIN_VALUE
             synchronized(transcriptLock) { transcript = StringBuilder() }
+            completeActiveTurn(false, "server_interrupted")
+            audioPlayer.interrupt("live_server_interrupted")
             DiagnosticHub.record(
                 "LIVE_MODEL_INTERRUPTED",
                 mapOf(
@@ -448,9 +538,32 @@ class GeminiLiveSession(
         serverContent["modelTurn"]?.jsonObject
             ?.get("parts")?.jsonArray
             ?.forEach { partElement ->
-                val inlineData = partElement.jsonObject["inlineData"]?.jsonObject ?: return@forEach
+                val part = partElement.jsonObject
+                val textPart = part["text"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                if (textPart.isNotBlank() && !staleAudioBlocked) {
+                    synchronized(transcriptLock) { transcript.append(textPart) }
+                    DiagnosticHub.record(
+                        "LIVE_TEXT_PART_RECEIVED",
+                        mapOf(
+                            "characters" to textPart.length,
+                            "mode" to activeResponseMode?.name,
+                            "model" to activeProfile?.model,
+                        ),
+                    )
+                }
+                val inlineData = part["inlineData"]?.jsonObject ?: return@forEach
                 val mimeType = inlineData["mimeType"]?.jsonPrimitive?.contentOrNull.orEmpty()
                 val data = inlineData["data"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                // LIVE_REQUIRED_AUDIO_TRANSCRIPT_V361: AUDIO is requested only because the Live
+                // protocol requires it. Native PCM is deliberately never played; the corresponding
+                // outputAudioTranscription is the source of truth and local Android TTS speaks it.
+                if (mimeType.startsWith("audio/") && data.isNotBlank()) {
+                    DiagnosticHub.record(
+                        "LIVE_NATIVE_AUDIO_DISCARDED",
+                        mapOf("mimeType" to mimeType, "bytesBase64" to data.length, "mode" to activeResponseMode?.name),
+                    )
+                    return@forEach
+                }
                 if (!mimeType.startsWith("audio/pcm") || data.isBlank()) return@forEach
 
                 if (staleAudioBlocked) {
@@ -460,6 +573,7 @@ class GeminiLiveSession(
 
                 val scene = activeResponseMode == AnalysisMode.SCENE_DESCRIPTION
                 if (firstAudioSeenForEpoch == Long.MIN_VALUE) {
+                    activeFirstAudio?.let { if (!it.isCompleted) it.complete(true) }
                     if (scene) {
                         activeTurnEpoch = audioPlayer.beginTurn("semantic_change_confirmed")
                         sceneProbeHadAudio = true
@@ -496,6 +610,14 @@ class GeminiLiveSession(
             ?.get("text")?.jsonPrimitive?.contentOrNull.orEmpty()
         if (delta.isNotBlank() && !staleAudioBlocked) {
             synchronized(transcriptLock) { transcript.append(delta) }
+            DiagnosticHub.record(
+                "LIVE_AUDIO_TRANSCRIPT_DELTA",
+                mapOf(
+                    "characters" to delta.length,
+                    "mode" to activeResponseMode?.name,
+                    "model" to activeProfile?.model,
+                ),
+            )
         }
 
         if (serverContent["turnComplete"]?.jsonPrimitive?.contentOrNull == "true") {
@@ -506,10 +628,12 @@ class GeminiLiveSession(
                 releaseStaleBoundary("turn_complete")
                 firstAudioSeenForEpoch = Long.MIN_VALUE
                 synchronized(transcriptLock) { transcript = StringBuilder() }
+                completeActiveTurn(true, "smart_target_superseded")
                 return
             }
 
             responseInFlight = false
+            activeFirstAudio?.let { if (!it.isCompleted) it.complete(false) }
             val scene = activeResponseMode == AnalysisMode.SCENE_DESCRIPTION
             val finalText = synchronized(transcriptLock) {
                 transcript.toString().trim().also { transcript = StringBuilder() }
@@ -519,18 +643,34 @@ class GeminiLiveSession(
                     sceneProbeOutstanding = false
                     sceneProbeStartedAtElapsedMs = 0L
                 }
-                if (!sceneProbeHadAudio) {
-                    DiagnosticHub.record(
-                        "LIVE_SEMANTIC_SILENCE",
-                        mapOf(
-                            "reason" to "no_meaningful_scene_change",
-                            "model" to activeProfile?.model,
-                            "visualGeneration" to visualGeneration,
-                        ),
-                    )
-                }
             }
-            if (finalText.isNotBlank()) {
+            val textNoReliableContent = !scene && (
+                finalText.trim().equals("NO_TEXT", ignoreCase = true) ||
+                    finalText.trim().equals("NO_CHANGE", ignoreCase = true)
+            )
+            val semanticNoChange = scene && finalText.trim().equals("NO_CHANGE", ignoreCase = true)
+            if (textNoReliableContent) {
+                DiagnosticHub.record(
+                    "LIVE_TEXT_NO_RELIABLE_CONTENT",
+                    mapOf(
+                        "reason" to finalText.trim(),
+                        "model" to activeProfile?.model,
+                        "accuracyPolicy" to "OMIT_UNVERIFIED_DO_NOT_GUESS",
+                    ),
+                )
+            } else if (semanticNoChange) {
+                DiagnosticHub.record(
+                    "LIVE_SEMANTIC_SILENCE",
+                    mapOf(
+                        "reason" to "explicit_no_change_marker",
+                        "model" to activeProfile?.model,
+                        "visualGeneration" to visualGeneration,
+                    ),
+                )
+            } else if (finalText.isNotBlank()) {
+                val turnLatencyMs = if (activeTurnSentAtNanos > 0L) {
+                    (SystemClock.elapsedRealtimeNanos() - activeTurnSentAtNanos) / 1_000_000.0
+                } else null
                 runtime.result(
                     AnalysisResult(
                         text = finalText,
@@ -538,6 +678,32 @@ class GeminiLiveSession(
                         language = if (finalText.any { it in '\u0600'..'\u06FF' }) "mixed" else "en",
                     )
                 )
+                DiagnosticHub.record(
+                    "LIVE_TEXT_TURN_READY",
+                    mapOf(
+                        "characters" to finalText.length,
+                        "mode" to activeResponseMode?.name,
+                        "turnLatencyMs" to turnLatencyMs,
+                    ),
+                )
+                if (activeSpeechEnabled) {
+                    if (scene) tts.supersedeLiveSpeech("new_live_scene_text_ready")
+                    tts.speakLiveResult(
+                        text = finalText,
+                        rate = activeSpeechRate,
+                        interruptPrevious = false,
+                        live = true,
+                    )
+                    DiagnosticHub.record(
+                        "LIVE_LOCAL_TTS_DISPATCHED",
+                        mapOf(
+                            "characters" to finalText.length,
+                            "rate" to activeSpeechRate,
+                            "mode" to activeResponseMode?.name,
+                            "voicePolicy" to "FEMALE_FIRST_LOCAL_TTS",
+                        ),
+                    )
+                }
                 DiagnosticHub.record(
                     "LIVE_TURN_COMPLETE",
                     mapOf(
@@ -547,7 +713,20 @@ class GeminiLiveSession(
                     ),
                 )
             }
+            completeActiveTurn(true, "turn_complete")
         }
+    }
+
+    private fun completeActiveTurn(success: Boolean, reason: String) {
+        activeFirstAudio?.let { if (!it.isCompleted) it.complete(false) }
+        activeTurnCompletion?.let { if (!it.isCompleted) it.complete(success) }
+        activeFirstAudio = null
+        activeTurnCompletion = null
+        responseInFlight = false
+        DiagnosticHub.record(
+            "LIVE_TURN_GATE_RELEASED",
+            mapOf("success" to success, "reason" to reason, "mode" to activeResponseMode?.name),
+        )
     }
 
     private fun releaseStaleBoundary(reason: String) {
@@ -571,7 +750,10 @@ class GeminiLiveSession(
             put("model", "models/${profile.model}")
             put("generationConfig", buildJsonObject {
                 put("responseModalities", buildJsonArray { add(JsonPrimitive("AUDIO")) })
-                put("mediaResolution", "MEDIA_RESOLUTION_MEDIUM")
+                put("mediaResolution", profile.mediaResolution)
+                put("thinkingConfig", buildJsonObject {
+                    profile.thinkingLevel?.let { put("thinkingLevel", it) }
+                })
             })
             put("systemInstruction", buildJsonObject {
                 put("parts", buildJsonArray { add(buildJsonObject { put("text", SYSTEM_INSTRUCTION) }) })
@@ -600,17 +782,17 @@ class GeminiLiveSession(
     private fun instructionFor(settings: AppSettings): String = when (settings.mode) {
         AnalysisMode.TEXT_READING -> {
             val descriptionTail = if (settings.describeAlongsideText) {
-                " بعد قراءة النص، أضف جملة قصيرة جداً تضع النص في سياقه المكاني إن بقي المشهد نفسه، دون إعادة النص."
+                " بعد القراءة الحرفية فقط، يمكنك إضافة جملة واحدة تبدأ بكلمة الوصف:. صف فقط شيئاً مرئياً مباشرة في اللقطة الحالية ومكانه التقريبي. لا تستنتج نوع المنتج أو اسم الشيء من النص المقروء أو من شكل مألوف، ولا تصف ظلاماً أو ضبابية أو عدم وضوح إلا إذا كان ذلك حقيقة بصرية قاطعة. إذا لم تكن واثقاً من الوصف فلا تضفه. وإذا لم يوجد نص موثوق فلا تحاول تعويضه بوصف تخميني."
             } else ""
             if (settings.captureProfile == CaptureProfile.STABLE) {
-                "MODE=TEXT_ACCURATE. اقرأ النص الظاهر الآن مباشرة وبهدوء ووضوح. ابدأ بأول سطر واضح بلا مقدمة، ولا تصحح أو تكمل أو تترجم. إذا تعذرت كلمة قل غير واضح. تجاهل واجهة eSight.$descriptionTail"
+                "MODE=TEXT_ACCURATE_V362. هذه اللقطة الحالية وحدها هي المصدر. اقرأ حرفياً فقط الأحرف والكلمات والأرقام التي تراها فعلاً في البكسلات الحالية. ممنوع تماماً التخمين أو إكمال كلمة أو رقم أو موديل أو معيار أو رمز شائع من الذاكرة أو من شكل الملصق، وممنوع إنشاء بدائل مثل X أو XX أو XYZ أو XXXXX. لا تستخدم أي نص من إطار أو رد سابق. إذا لم تستطع التحقق بصرياً من جزء فاحذفه ولا تقل غير واضح. إذا لم يوجد نص يمكن الوثوق به فقل NO_TEXT فقط. لا تصف الإضاءة أو الضبابية أو الظلام داخل جزء القراءة. تجاهل واجهة eSight.$descriptionTail"
             } else {
-                "MODE=TEXT_FAST. اقرأ فوراً أول عبارة واضحة ثم أكمل النص المرئي فقط. لا تنتظر الصفحة كاملة ولا تشرح أو تترجم أو تتوقع حروفاً غير ظاهرة. تجاهل واجهة eSight.$descriptionTail"
+                "MODE=TEXT_FAST_V362. استخدم اللقطة الحالية وحدها. اقرأ فقط النص المرئي المؤكد حرفياً وبالترتيب. لا تكمل أنماطاً مألوفة ولا تخمن أرقاماً أو رموزاً أو موديلات ولا تستخدم محتوى من رد سابق. إذا لم يوجد نص موثوق فقل NO_TEXT فقط. تجاهل واجهة eSight.$descriptionTail"
             }
         }
         AnalysisMode.SCENE_DESCRIPTION -> when (settings.sceneDescriptionStyle) {
-            SceneDescriptionStyle.BRIEF -> "MODE=SCENE_BRIEF_SEMANTIC. قارن المعنى بالمشهد السابق. اهتزاز الكاميرا أو الالتفات أو التكبير أو الإضاءة ليس تغيراً. إن لم يتغير شيء مهم فابق صامتاً تماماً. عند تغير حقيقي اذكر أهم تغير أولاً بجملة قصيرة واضحة، خصوصاً الخطر أو العائق أو الشخص أو الاتجاه أو النص المفيد. لا تخمن."
-            SceneDescriptionStyle.COMPREHENSIVE -> "MODE=SCENE_COMPREHENSIVE_SEMANTIC. قارن المعنى بالمشهد السابق لا البكسلات. تجاهل حركة الكاميرا والدوران والتكبير والإضاءة والتركيز وواجهة eSight. ابق صامتاً إذا بقي المحتوى العملي نفسه. تكلم فقط عند ظهور أو اختفاء أو تغير شيء حقيقي ومفيد، وابدأ بالأهم ثم أكمل باختصار ووضوح بلا تخمين."
+            SceneDescriptionStyle.BRIEF -> "MODE=SCENE_BRIEF_SEMANTIC. إذا كانت هذه أول لقطة وصف في الجلسة فأعد وصفاً قصيراً دائماً. بعد ذلك قارن المعنى بالمشهد السابق. تجاهل اهتزاز الكاميرا والالتفات والتكبير وتغير الإضاءة البسيط إذا بقي المحتوى نفسه. تشغيل النور الذي يكشف أشياء جديدة أو انطفاؤه الذي يخفيها تغير حقيقي. إذا لم يتغير المحتوى العملي فأعد بالضبط NO_CHANGE فقط. عند تغير حقيقي أعد وصفاً عربياً قصيراً يبدأ بالأهم، خصوصاً الخطر أو العائق أو الشخص أو الاتجاه أو النص المفيد. لا تخمن."
+            SceneDescriptionStyle.COMPREHENSIVE -> "MODE=SCENE_COMPREHENSIVE_SEMANTIC. إذا كانت هذه أول لقطة وصف في الجلسة فأعد وصفاً واضحاً دائماً. بعد ذلك قارن المعنى لا البكسلات. تجاهل حركة الكاميرا والدوران والتكبير والتركيز وتغير الإضاءة الصغير إذا بقي المحتوى العملي نفسه. إذا كشف تشغيل النور محتوى كان مخفياً أو أخفى انطفاؤه محتوى كان ظاهراً فهذا تغير حقيقي. إذا لم يتغير شيء عملي فأعد بالضبط NO_CHANGE فقط. عند ظهور أو اختفاء أو تغير شيء مفيد أعد وصفاً عربياً يبدأ بالأهم ثم يكمل باختصار ووضوح بلا تخمين."
         }
     }
 
@@ -619,11 +801,16 @@ class GeminiLiveSession(
             model = TEXT_LIVE_MODEL,
             proactiveAudio = false,
             semanticSceneGate = false,
+            // LIVE_TEXT_ACCURACY_V362: dense text needs more visual detail than the old latency-first profile.
+            mediaResolution = "MEDIA_RESOLUTION_HIGH",
+            thinkingLevel = "MEDIUM",
         )
         AnalysisMode.SCENE_DESCRIPTION -> LiveProfile(
-            model = SCENE_SEMANTIC_LIVE_MODEL,
-            proactiveAudio = true,
+            model = TEXT_LIVE_MODEL,
+            proactiveAudio = false,
             semanticSceneGate = true,
+            mediaResolution = "MEDIA_RESOLUTION_LOW",
+            thinkingLevel = "MINIMAL",
         )
     }
 
@@ -636,12 +823,14 @@ class GeminiLiveSession(
             connectionFingerprint = null
             activeProfile = null
         }
-        responseInFlight = false
+        completeActiveTurn(false, "socket_invalidated_$reason")
         staleAudioBlocked = false
         DiagnosticHub.record("LIVE_SOCKET_INVALIDATED", mapOf("reason" to reason))
     }
 
+    // STALE_SOCKET_CALLBACK_GUARD_V35: a close callback for a replaced socket is harmless.
     private fun clearSocketIfCurrent(webSocket: WebSocket) {
+        var clearedCurrent = false
         synchronized(socketLock) {
             if (socket === webSocket) {
                 socket = null
@@ -649,10 +838,13 @@ class GeminiLiveSession(
                 setupSucceeded = false
                 connectionFingerprint = null
                 activeProfile = null
+                clearedCurrent = true
             }
         }
-        responseInFlight = false
-        staleAudioBlocked = false
+        if (clearedCurrent) {
+            completeActiveTurn(false, "socket_cleared")
+            staleAudioBlocked = false
+        }
     }
 
     private fun fingerprint(value: String): String = MessageDigest.getInstance("SHA-256")
@@ -668,14 +860,17 @@ class GeminiLiveSession(
         const val LIVE_SETUP_TIMEOUT_MS = 5_000L
         const val LIVE_VIDEO_INTERVAL_MS = 1_000L
         const val SCENE_PROBE_TIMEOUT_MS = 3_500L
+        const val TEXT_FIRST_AUDIO_TIMEOUT_MS = 3_500L
+        const val TEXT_TURN_TIMEOUT_MS = 12_000L
+        const val SCENE_TURN_TIMEOUT_MS = 6_000L
         const val NORMAL_CLOSE_CODE = 1000
         val SAMPLE_RATE_REGEX = Regex("rate=(\\d+)", RegexOption.IGNORE_CASE)
 
         val SYSTEM_INSTRUCTION = """
             أنت VisionBridge، مساعد رؤية لحظي لمستخدم كفيف أو ضعيف البصر يشاهد بث eSight Go على الهاتف.
-            تكلم بالعربية الطبيعية الواضحة مباشرة بلا مقدمة أو Markdown، وانطق الإنجليزية والأرقام كما تظهر عند الحاجة.
+            أنشئ استجابة عربية طبيعية واضحة مباشرة بلا مقدمة أو Markdown، وانطق الإنجليزية والأرقام كما تظهر عند الحاجة.
             نفذ أحدث إطار ومهمة فقط. لا تخمن نصاً غير واضح أو هوية شخص أو مسافة دقيقة أو شيئاً خارج الإطار.
-            في القراءة اقرأ البكسلات الحالية نفسها. في الوصف تجاهل حركة الكاميرا وابق صامتاً إذا لم يتغير معنى المشهد.
+            في القراءة اقرأ البكسلات الحالية نفسها كاملة. إذا طُلبت جملة وصفية مع النص فاجعلها جملة واحدة بعد القراءة. في الوصف المنفصل تجاهل حركة الكاميرا، وإذا لم يتغير معنى المشهد فقل NO_CHANGE فقط.
         """.trimIndent()
     }
 }

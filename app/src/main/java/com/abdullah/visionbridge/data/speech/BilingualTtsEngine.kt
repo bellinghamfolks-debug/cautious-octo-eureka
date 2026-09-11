@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.os.SystemClock
 import android.speech.tts.TextToSpeech
+import android.speech.tts.Voice
 import android.speech.tts.UtteranceProgressListener
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
@@ -17,6 +18,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -352,6 +354,31 @@ class BilingualTtsEngine(context: Context) {
             liveGeneration = if (live) liveGeneration.get() else NOT_LIVE,
         )
     }
+
+    /**
+     * LIVE_TEXT_LOCAL_TTS_V36: non-suspending entry point for a WebSocket callback. The request is
+     * stamped as live speech so its outstanding counter remains true until the actual utterance
+     * finishes, giving cloud text a real speech backpressure signal.
+     */
+    fun speakLiveResult(
+        text: String,
+        rate: Float = 1.0f,
+        interruptPrevious: Boolean = false,
+        live: Boolean = true,
+    ) {
+        if (text.isBlank()) return
+        scope.launch {
+            speak(
+                text = text,
+                rate = rate,
+                interruptPrevious = interruptPrevious,
+                live = live,
+            )
+        }
+    }
+
+    /** True while a Live result is queued or physically being spoken. */
+    fun isLiveSpeechInProgress(): Boolean = liveBlocksOutstanding.get() > 0
 
     /** Status speech intentionally bypasses content deduplication. */
     suspend fun speakFeedback(
@@ -697,7 +724,23 @@ class BilingualTtsEngine(context: Context) {
             if (availability >= TextToSpeech.LANG_AVAILABLE) {
                 engine.language = segment.language.locale
             }
+            // FEMALE_FIRST_VOICE_V36: prefer a female Google/engine voice for every spoken segment.
+            // Android does not expose a universal gender field, so explicit female voice names and
+            // known Google Speech Services female variants are preferred; if this engine exposes no
+            // such metadata we keep its locale default instead of selecting a random voice.
+            val selectedVoice = selectPreferredFemaleVoice(engine, segment.language.locale)
             engine.setSpeechRate(request.rate)
+            DiagnosticHub.record(
+                "TTS_VOICE_ACTIVE",
+                request.trace.fieldsOrEmpty(
+                    mapOf(
+                        "voiceName" to selectedVoice?.name,
+                        "voiceLocale" to selectedVoice?.locale?.toLanguageTag(),
+                        "femaleHintScore" to selectedVoice?.let(::femaleVoiceScore),
+                        "networkRequired" to selectedVoice?.isNetworkConnectionRequired,
+                    ),
+                ),
+            )
 
             val utteranceId = "vision-${UUID.randomUUID()}"
             val completion = CompletableDeferred<SpeechOutcome>()
@@ -781,6 +824,48 @@ class BilingualTtsEngine(context: Context) {
             consecutiveTimeouts = 0
         }
         return SpeechOutcome.COMPLETED
+    }
+
+    private fun selectPreferredFemaleVoice(engine: TextToSpeech, locale: Locale): Voice? {
+        val candidates = engine.voices.orEmpty()
+            .filter { it.locale.language.equals(locale.language, ignoreCase = true) }
+        val chosen = candidates
+            .sortedWith(
+                compareByDescending<Voice> { femaleVoiceScore(it) }
+                    .thenBy { it.isNetworkConnectionRequired }
+                    .thenByDescending { it.quality }
+                    .thenBy { it.latency }
+                    .thenBy { it.name },
+            )
+            .firstOrNull { femaleVoiceScore(it) > 0 }
+        if (chosen != null) {
+            if (engine.voice?.name != chosen.name) {
+                engine.voice = chosen
+                DiagnosticHub.record(
+                    "TTS_FEMALE_VOICE_SELECTED",
+                    mapOf(
+                        "voiceName" to chosen.name,
+                        "locale" to chosen.locale.toLanguageTag(),
+                        "score" to femaleVoiceScore(chosen),
+                        "networkRequired" to chosen.isNetworkConnectionRequired,
+                    ),
+                )
+            }
+            return chosen
+        }
+        return engine.voice
+    }
+
+    private fun femaleVoiceScore(voice: Voice): Int {
+        val name = voice.name.lowercase(Locale.ROOT)
+        val features = voice.features.orEmpty().joinToString(" " ).lowercase(Locale.ROOT)
+        var score = 0
+        if ("female" in name || "female" in features || "#female" in name) score += 100
+        if (name == "ar-language" || "ar-xa-x-arc" in name || "ar-xa-x-arz" in name) score += 80
+        if (name == "en-us-language" || "en-us-x-sfg" in name) score += 80
+        // Many engines expose numbered female variants through feature/name suffixes.
+        if (Regex("female[_-]?[1-9]").containsMatchIn(name + " " + features)) score += 40
+        return score
     }
 
     private fun recoverEngineIfNeeded(reason: String, trace: DiagnosticTrace?) {

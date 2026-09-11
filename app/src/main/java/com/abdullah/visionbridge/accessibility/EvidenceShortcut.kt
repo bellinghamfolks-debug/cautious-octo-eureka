@@ -14,6 +14,8 @@ package com.abdullah.visionbridge.accessibility
  * that will not read. Reaching the switch meant leaving eSight's shared view, which ends the
  * capture, which loses the moment.
  */
+// DENSE_DIAGNOSTIC_EVIDENCE_V381
+// TEN_MINUTE_DIAGNOSTIC_TIMELINE_V382
 object EvidenceShortcut {
 
     /**
@@ -49,7 +51,7 @@ object EvidenceShortcut {
                         append(if (framesAlreadyHeld == 1) "لقطة" else "لقطة")
                         append(" وستُرسل داخل ملف التشخيص.")
                     } else {
-                        append(" لم تُحفظ أي لقطة، لأن القراءة لم تُخفق أثناء التشغيل.")
+                        append(" لم تُحفظ أي لقطة خلال فترة تشغيل الحفظ.")
                     }
                 },
                 markProblem = false,
@@ -58,8 +60,8 @@ object EvidenceShortcut {
         return Action(
             enable = true,
             announcement = buildString {
-                append("شُغّل حفظ لقطات التشخيص.")
-                append(" ستُحفظ صورة الشاشة عند كل إخفاق قراءة، بحد أقصى $FRAME_LIMIT لقطة.")
+                append("شُغّل التشخيص البصري لعشر دقائق.")
+                append(" سيُحفظ نحو ٦٠٠ لقطة زمنية، صورة كل ثانية، مع مساحة للقطات فشل إضافية. الحد الكلي $FRAME_LIMIT لقطة.")
                 if (!captureRunning) {
                     append(" مشاركة الشاشة متوقفة الآن، لذلك لن تُحفظ لقطة حتى تبدأ الالتقاط.")
                 } else {
@@ -75,5 +77,5 @@ object EvidenceShortcut {
         "VisionBridge لم يكتمل تشغيله بعد، لذلك لم يتغير حفظ لقطات التشخيص. أعد المحاولة بعد لحظة."
 
     /** Mirrors [com.abdullah.visionbridge.data.diagnostics.EvidenceStore]'s own ceiling. */
-    const val FRAME_LIMIT = 40
+    const val FRAME_LIMIT = 820
 }

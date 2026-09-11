@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
@@ -25,8 +26,17 @@ import kotlin.coroutines.CoroutineContext
  * as non-reconstructive aggregate fingerprints only; no bitmap copy, thumbnail, or encoded image is
  * queued or written. Export remains a queue barrier, so every event submitted before it is included.
  */
+// DENSE_DIAGNOSTIC_EVIDENCE_V381
+// TEN_MINUTE_DIAGNOSTIC_TIMELINE_V382
+// TEN_MINUTE_DIAGNOSTIC_TIMELINE_HARDENING_V382
+// EVERY_ANALYSIS_INPUT_EVIDENCE_V383
 object DiagnosticHub {
     private const val FATAL_FLUSH_TIMEOUT_MS = 2_000L
+    // The 10-minute timeline is the primary visual record. Selected-input snapshots are
+    // supplemental and deliberately sparse so they cannot consume the timeline budget.
+    private const val DENSE_SELECTED_EVIDENCE_INTERVAL_MS = 5_000L
+    private const val TIMELINE_EVIDENCE_INTERVAL_MS = 1_000L
+    private const val TIMELINE_EVIDENCE_WINDOW_MS = 10L * 60L * 1_000L
 
     /**
      * Ten seconds. Frequent enough that a stall of any consequence is bracketed by two beats, rare
@@ -63,6 +73,11 @@ object DiagnosticHub {
     private val commands = Channel<Command>(Channel.UNLIMITED)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val latestTrace = AtomicReference<DiagnosticTrace?>(null)
+    private val lastDenseEvidenceAtElapsedMs = AtomicLong(0L)
+    private val timelineWindowStartedAtElapsedMs = AtomicLong(0L)
+    // Absolute one-second slots avoid cumulative drift from JPEG encoding time.
+    private val lastTimelineEvidenceSecond = AtomicLong(-1L)
+    private val timelineCompletionRecorded = AtomicLong(0L)
 
     @Volatile
     private var recorder: DiagnosticRecorder? = null
@@ -119,8 +134,9 @@ object DiagnosticHub {
             mapOf(
                 "automaticRecording" to true,
                 "requiresProblemButton" to false,
-                "storesImages" to false,
-                "visualEvidence" to "aggregate_fingerprint",
+                "storesImagesByDefault" to false,
+                "optInDenseImageEvidence" to true,
+                "visualEvidence" to "aggregate_fingerprint_plus_opt_in_dense_frames",
             ),
         )
     }
@@ -140,9 +156,20 @@ object DiagnosticHub {
         val store = evidence ?: return
         if (store.enabled == enabled) return
         store.enabled = enabled
+        timelineWindowStartedAtElapsedMs.set(0L)
+        lastTimelineEvidenceSecond.set(-1L)
+        timelineCompletionRecorded.set(0L)
+        lastDenseEvidenceAtElapsedMs.set(0L)
         record(
             "EVIDENCE_CAPTURE_SETTING",
-            mapOf("enabled" to enabled, "framesHeld" to store.frameCount()),
+            mapOf(
+                "enabled" to enabled,
+                "framesHeld" to store.frameCount(),
+                "captureMode" to "ten_minute_timeline_plus_supplemental_failures",
+                "timelineIntervalMs" to TIMELINE_EVIDENCE_INTERVAL_MS,
+                "timelineWindowMs" to TIMELINE_EVIDENCE_WINDOW_MS,
+                "selectedInputCapturePolicy" to "every_selected_input",
+            ),
         )
     }
 
@@ -167,10 +194,98 @@ object DiagnosticHub {
     fun evidence(bitmap: Bitmap, frameId: String, reason: String, fields: Map<String, Any?> = emptyMap()) {
         val store = evidence ?: return
         if (!store.enabled) return
+        val started = SystemClock.elapsedRealtimeNanos()
         val name = store.capture(bitmap, frameId, reason) ?: return
+        val completed = SystemClock.elapsedRealtimeNanos()
         record(
             "EVIDENCE_FRAME_CAPTURED",
-            fields + mapOf("frameId" to frameId, "reason" to reason, "file" to name),
+            fields + mapOf(
+                "frameId" to frameId,
+                "reason" to reason,
+                "file" to name,
+                "evidenceWriteMs" to (completed - started) / 1_000_000.0,
+            ),
+        )
+    }
+
+    /**
+     * Keeps one real screen frame per second for ten minutes while image evidence is enabled.
+     * This runs before change-detection throttling, so a static page is still represented across
+     * the whole diagnostic window rather than by a single accepted analysis frame.
+     */
+    fun timelineFrame(
+        bitmap: Bitmap,
+        frameId: String,
+        fields: Map<String, Any?> = emptyMap(),
+    ) {
+        val store = evidence ?: return
+        if (!store.enabled) return
+        val now = SystemClock.elapsedRealtime()
+        var windowStart = timelineWindowStartedAtElapsedMs.get()
+        if (windowStart == 0L) {
+            if (timelineWindowStartedAtElapsedMs.compareAndSet(0L, now)) {
+                windowStart = now
+                record(
+                    "EVIDENCE_TIMELINE_STARTED",
+                    mapOf(
+                        "durationMs" to TIMELINE_EVIDENCE_WINDOW_MS,
+                        "intervalMs" to TIMELINE_EVIDENCE_INTERVAL_MS,
+                        "targetFrames" to 600,
+                    ),
+                )
+            } else {
+                windowStart = timelineWindowStartedAtElapsedMs.get()
+            }
+        }
+        val elapsed = (now - windowStart).coerceAtLeast(0L)
+        if (elapsed >= TIMELINE_EVIDENCE_WINDOW_MS) {
+            if (timelineCompletionRecorded.compareAndSet(0L, 1L)) {
+                record(
+                    "EVIDENCE_TIMELINE_COMPLETED",
+                    mapOf(
+                        "elapsedMs" to elapsed,
+                        "framesHeld" to store.frameCount(),
+                        "targetFrames" to 600,
+                        "coverageWindowSeconds" to 600,
+                    ),
+                )
+            }
+            return
+        }
+
+        // Save at most once in each absolute second of the ten-minute window. Compression time can
+        // delay a frame inside its slot, but it cannot push every later frame progressively later.
+        val timelineSecond = elapsed / TIMELINE_EVIDENCE_INTERVAL_MS
+        while (true) {
+            val previousSecond = lastTimelineEvidenceSecond.get()
+            if (previousSecond >= timelineSecond) return
+            if (lastTimelineEvidenceSecond.compareAndSet(previousSecond, timelineSecond)) {
+                val missedSeconds = (timelineSecond - previousSecond - 1L).coerceAtLeast(0L)
+                if (missedSeconds > 0L && previousSecond >= 0L) {
+                    record(
+                        "EVIDENCE_TIMELINE_SLOT_GAP",
+                        mapOf(
+                            "previousSecond" to previousSecond,
+                            "currentSecond" to timelineSecond,
+                            "missedSeconds" to missedSeconds,
+                        ),
+                    )
+                }
+                break
+            }
+        }
+
+        evidence(
+            bitmap = bitmap,
+            frameId = frameId,
+            reason = "timeline_1s",
+            fields = fields + mapOf(
+                "evidenceRole" to "timeline",
+                "timelineElapsedMs" to elapsed,
+                "timelineSecond" to timelineSecond,
+                "timelineIntervalMs" to TIMELINE_EVIDENCE_INTERVAL_MS,
+                "timelineWindowMs" to TIMELINE_EVIDENCE_WINDOW_MS,
+            ),
         )
     }
 
@@ -205,6 +320,30 @@ object DiagnosticHub {
             reason = stage,
             eventType = "FRAME_VISUAL_FINGERPRINT",
             metadata = metadata,
+        )
+        captureExactAnalysisInputEvidence(bitmap, frameId, stage, metadata)
+    }
+
+    /** Save every selected OCR/Gemini visual input while opt-in diagnostics are enabled. */
+    private fun captureExactAnalysisInputEvidence(
+        bitmap: Bitmap,
+        frameId: String,
+        stage: String,
+        metadata: Map<String, Any?>,
+    ) {
+        val store = evidence ?: return
+        if (!store.enabled) return
+        val safeStage = stage.replace(Regex("[^A-Za-z0-9_-]"), "_").take(20)
+        evidence(
+            bitmap = bitmap,
+            frameId = frameId,
+            reason = "analysis_input_$safeStage",
+            fields = metadata + mapOf(
+                "evidenceRole" to "analysis_input",
+                "sourceStage" to stage,
+                "analysisInputCapturePolicy" to "every_selected_input",
+                "analysisInputThrottled" to false,
+            ),
         )
     }
 
@@ -341,6 +480,10 @@ object DiagnosticHub {
             }
             is Command.StartSession -> complete(command.completion) {
                 VisualFingerprintAnalyzer.reset()
+                lastDenseEvidenceAtElapsedMs.set(0L)
+                timelineWindowStartedAtElapsedMs.set(0L)
+                lastTimelineEvidenceSecond.set(-1L)
+                timelineCompletionRecorded.set(0L)
                 target.startSession(command.settings)
             }
             is Command.EndSession -> complete(command.completion) {

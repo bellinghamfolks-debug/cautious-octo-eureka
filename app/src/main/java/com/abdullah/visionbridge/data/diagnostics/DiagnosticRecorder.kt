@@ -24,7 +24,9 @@ import java.util.zip.Deflater
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
-/** Continuous, automatic, image-free diagnostic flight recorder. */
+/** Continuous diagnostic flight recorder; images remain opt-in only. */
+// DENSE_DIAGNOSTIC_EVIDENCE_V381
+// TEN_MINUTE_DIAGNOSTIC_TIMELINE_V382
 class DiagnosticRecorder(context: Context) {
     data class StorageStatus(
         val sessionCount: Int,
@@ -167,7 +169,8 @@ class DiagnosticRecorder(context: Context) {
                 "EXPORT_STARTED",
                 mapOf(
                     "automaticRecording" to true,
-                    "includesImages" to false,
+                    "includesImages" to (evidenceStore.frameCount() > 0),
+                    "imageCount" to evidenceStore.frameCount(),
                     "manualMarkerRequired" to false,
                 ),
                 forceDurable = true,
@@ -224,7 +227,7 @@ class DiagnosticRecorder(context: Context) {
                         put("exportedAtEpochMs", System.currentTimeMillis())
                         put("automaticContinuousRecording", true)
                         put("manualProblemMarkerRequired", false)
-                        put("includesImages", false)
+                        put("includesImages", evidenceStore.frameCount() > 0)
                         put("includesThumbnails", false)
                         put("includesPixelGrids", false)
                         put("includesVisualFingerprints", true)
@@ -245,7 +248,11 @@ class DiagnosticRecorder(context: Context) {
                         put("maximumRawBytes", MAX_TOTAL_BYTES)
                         put(
                             "privacyWarning",
-                            "Contains recognized text, model output, app settings and timing data. It contains no screen images and excludes API keys and authorization headers.",
+                            if (evidenceStore.frameCount() > 0) {
+                                "Contains recognized text, model output, app settings, timing data and opt-in screen evidence frames. Excludes API keys and authorization headers."
+                            } else {
+                                "Contains recognized text, model output, app settings and timing data. It contains no screen images and excludes API keys and authorization headers."
+                            },
                         )
                     }.toString(2),
                 )
@@ -264,7 +271,7 @@ class DiagnosticRecorder(context: Context) {
             StorageStatus(
                 sessionCount = all.size,
                 totalBytes = all.sumOf(::directoryBytes),
-                imageCount = 0,
+                imageCount = evidenceStore.frameCount(),
                 currentSessionId = sessionId,
             )
         }
@@ -633,7 +640,8 @@ class DiagnosticRecorder(context: Context) {
             put("generatedAtEpochMs", System.currentTimeMillis())
             put("automaticContinuousRecording", true)
             put("manualMarkerRequired", false)
-            put("containsImages", false)
+            put("containsImages", evidenceStore.frameCount() > 0)
+            put("evidenceFrameCount", evidenceStore.frameCount())
             put("sessionCount", sessionSummaries.length())
             put("eventCount", globalEvents)
             put("automaticFindingCount", globalFindings)
@@ -1062,14 +1070,15 @@ class DiagnosticRecorder(context: Context) {
             README_AR
                 .replace(
                     "- الحزمة لا تحتوي أي صورة أو معاينة أو شبكة بكسلات.",
-                    "- الحزمة تحتوي $evidenceFrames صورة شاشة، حفظتها بنفسك بتفعيل خيار " +
-                        "«حفظ صورة الشاشة عند فشل القراءة». مجلد evidence/.",
+                    "- الحزمة تحتوي $evidenceFrames لقطة تشخيص بصرية، حفظتها بنفسك بتفعيل خيار " +
+                        "«حفظ تشخيص بصري لمدة 10 دقائق». تشمل لقطة زمنية كل ثانية ولقطات فشل إضافية. مجلد evidence/.",
                 )
                 .replace(
                     "- لا توجد صور شاشة.",
-                    "- توجد $evidenceFrames صورة شاشة في مجلد evidence/، كل واحدة باسم سبب الفشل " +
-                        "الذي حفظها. إيقاف الحفظ (من زر إمكانية الوصول العائم، أو من إشعار " +
-                        "VisionBridge، أو من الإعدادات) يوقف حفظ لقطات جديدة ويُبقي المحفوظ؛ " +
+                    "- توجد $evidenceFrames لقطة تشخيص في مجلد evidence/. اللقطات المسماة " +
+                        "timeline_1s تكوّن الخط الزمني، صورة كل ثانية حتى عشر دقائق، وselected_input_dense " +
+                        "عينات إضافية من مدخلات التحليل، مع لقطات أعطال الجودة. إيقاف الحفظ من إشعار " +
+                        "VisionBridge أو من الإعدادات يوقف حفظ لقطات جديدة ويُبقي المحفوظ؛ " +
                         "«حذف اللقطات المحفوظة» في الإعدادات يمسحها فتعود الحزم بلا صور.",
                 )
         }

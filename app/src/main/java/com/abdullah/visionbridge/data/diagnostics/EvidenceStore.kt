@@ -24,9 +24,18 @@ import java.util.concurrent.atomic.AtomicLong
  * - **Declared.** The count is in the manifest and in the archive's own readme, so a bundle that
  *   contains screen images can never look like one that does not.
  */
+// DENSE_DIAGNOSTIC_EVIDENCE_V381
+// TEN_MINUTE_DIAGNOSTIC_TIMELINE_V382
+// TEN_MINUTE_DIAGNOSTIC_TIMELINE_HARDENING_V382
+// EVERY_ANALYSIS_INPUT_EVIDENCE_V383
 class EvidenceStore(val directory: File) {
 
     private val written = AtomicInteger(0)
+    private val supplementalWritten = AtomicInteger(0)
+    private val supplementalBytes = AtomicLong(0L)
+    private val analysisInputWritten = AtomicInteger(0)
+    private val analysisInputBytes = AtomicLong(0L)
+    private val analysisInputSkipped = AtomicInteger(0)
     private val skipped = AtomicInteger(0)
     private val bytes = AtomicLong(0L)
 
@@ -41,7 +50,20 @@ class EvidenceStore(val directory: File) {
      */
     fun capture(bitmap: Bitmap, frameId: String, reason: String): String? {
         if (!enabled) return null
+        val timelineFrame = reason == "timeline_1s"
+        val analysisInputFrame = reason.startsWith("analysis_input_")
+        val supplementalFrame = !timelineFrame && !analysisInputFrame
+        if (analysisInputFrame && (analysisInputWritten.get() >= MAX_ANALYSIS_INPUT_FRAMES || analysisInputBytes.get() >= MAX_ANALYSIS_INPUT_BYTES)) {
+            analysisInputSkipped.incrementAndGet()
+            skipped.incrementAndGet()
+            return null
+        }
+        if (supplementalFrame && (supplementalWritten.get() >= MAX_SUPPLEMENTAL_FRAMES || supplementalBytes.get() >= MAX_SUPPLEMENTAL_BYTES)) {
+            skipped.incrementAndGet()
+            return null
+        }
         if (written.get() >= MAX_FRAMES || bytes.get() >= MAX_TOTAL_BYTES) {
+            if (analysisInputFrame) analysisInputSkipped.incrementAndGet()
             skipped.incrementAndGet()
             return null
         }
@@ -62,6 +84,10 @@ class EvidenceStore(val directory: File) {
                 }
             }
             written.incrementAndGet()
+            when {
+                analysisInputFrame -> { analysisInputWritten.incrementAndGet(); analysisInputBytes.addAndGet(file.length()) }
+                supplementalFrame -> { supplementalWritten.incrementAndGet(); supplementalBytes.addAndGet(file.length()) }
+            }
             bytes.addAndGet(file.length())
             name
         }.getOrElse {
@@ -80,11 +106,32 @@ class EvidenceStore(val directory: File) {
         "evidenceBytes" to bytes.get(),
         "evidenceFrameLimit" to MAX_FRAMES,
         "evidenceByteLimit" to MAX_TOTAL_BYTES,
+        "evidenceCaptureMode" to "ten_minute_timeline_plus_supplemental_failures",
+        "evidenceTimelineIntervalMs" to 1_000L,
+        "evidenceTimelineWindowMs" to 600_000L,
+        "evidenceTimelineTargetFrames" to 600,
+        "evidenceAnalysisInputCapturePolicy" to "every_selected_input",
+        "evidenceAnalysisInputFrameCount" to analysisInputWritten.get(),
+        "evidenceAnalysisInputFrameLimit" to MAX_ANALYSIS_INPUT_FRAMES,
+        "evidenceAnalysisInputFramesSkipped" to analysisInputSkipped.get(),
+        "evidenceAnalysisInputBytes" to analysisInputBytes.get(),
+        "evidenceAnalysisInputByteLimit" to MAX_ANALYSIS_INPUT_BYTES,
+        "evidenceSupplementalFrameCount" to supplementalWritten.get(),
+        "evidenceSupplementalFrameLimit" to MAX_SUPPLEMENTAL_FRAMES,
+        "evidenceSupplementalBytes" to supplementalBytes.get(),
+        "evidenceSupplementalByteLimit" to MAX_SUPPLEMENTAL_BYTES,
+        "evidenceLongEdgeLimitPx" to MAX_EDGE,
+        "evidenceJpegQuality" to JPEG_QUALITY,
     )
 
     fun clear() {
         runCatching { directory.listFiles()?.forEach { it.delete() } }
         written.set(0)
+        supplementalWritten.set(0)
+        supplementalBytes.set(0L)
+        analysisInputWritten.set(0)
+        analysisInputBytes.set(0L)
+        analysisInputSkipped.set(0)
         skipped.set(0)
         bytes.set(0L)
     }
@@ -107,10 +154,17 @@ class EvidenceStore(val directory: File) {
 
     private companion object {
         /** Enough moments to see a pattern, few enough that a bundle stays sendable. */
-        const val MAX_FRAMES = 40
-        const val MAX_TOTAL_BYTES = 24L * 1024 * 1024
+        // 600 timeline frames cover ten minutes at one frame per second. The separate
+        // supplemental cap leaves room for failures and selected analysis inputs without allowing
+        // them to exhaust the timeline allocation early.
+        const val MAX_ANALYSIS_INPUT_FRAMES = 2_400
+        const val MAX_ANALYSIS_INPUT_BYTES = 768L * 1024 * 1024
+        const val MAX_SUPPLEMENTAL_FRAMES = 200
+        const val MAX_SUPPLEMENTAL_BYTES = 96L * 1024 * 1024
+        const val MAX_FRAMES = 3_200
+        const val MAX_TOTAL_BYTES = 1_280L * 1024 * 1024
         const val MAX_EDGE = 1600
-        const val JPEG_QUALITY = 78
+        const val JPEG_QUALITY = 82
         val REASON_UNSAFE = Regex("[^A-Za-z0-9_-]")
     }
 }

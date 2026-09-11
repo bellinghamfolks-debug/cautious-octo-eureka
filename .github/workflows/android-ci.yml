@@ -1,4 +1,4 @@
-name: Android CI
+name: Android validation
 
 on:
   push:
@@ -12,217 +12,41 @@ concurrency:
   group: android-${{ github.ref }}
   cancel-in-progress: true
 
+# Development validation never publishes APKs or creates signing material.
+# A release requires separate device, grounding, privacy and measured performance acceptance.
 jobs:
-  signing:
-    name: Restore persistent signing identity
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    outputs:
-      cert_sha256: ${{ steps.identity.outputs.cert_sha256 }}
-    steps:
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Restore or create private VisionBridge signing identity
-        id: identity
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag="visionbridge-private-signing-v1"
-          mkdir -p signing-private
-
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
-              -p 'visionbridge-signing-v1.jks' \
-              -p 'visionbridge-signing-v1.pass' \
-              -D signing-private --clobber
-            echo "Restored existing private signing identity."
-          else
-            password=$(openssl rand -hex 32)
-            printf '%s' "$password" > signing-private/visionbridge-signing-v1.pass
-            keytool -genkeypair -noprompt \
-              -keystore signing-private/visionbridge-signing-v1.jks \
-              -storepass "$password" \
-              -keypass "$password" \
-              -alias visionbridge \
-              -keyalg RSA -keysize 4096 -validity 10000 \
-              -dname 'CN=VisionBridge, OU=Accessibility, O=VisionBridge, C=SA'
-            gh release create "$tag" \
-              signing-private/visionbridge-signing-v1.jks \
-              signing-private/visionbridge-signing-v1.pass \
-              --repo "$GITHUB_REPOSITORY" \
-              --draft \
-              --title 'PRIVATE: VisionBridge signing identity' \
-              --notes 'Private CI-only signing material. Never publish this draft release.'
-            echo "Created private persistent signing identity."
-          fi
-
-          password=$(cat signing-private/visionbridge-signing-v1.pass)
-          cert=$(keytool -list -v \
-            -keystore signing-private/visionbridge-signing-v1.jks \
-            -storepass "$password" -alias visionbridge \
-            | sed -n 's/^[[:space:]]*SHA256: //p' | head -n1 | tr -d ':')
-          test -n "$cert"
-          echo "cert_sha256=$cert" >> "$GITHUB_OUTPUT"
-          echo "Signing certificate SHA-256: $cert"
-
   build:
-    name: Lint, tests, and ARM64 stable-signed APK
-    needs: signing
+    name: Lint, unit tests and assemble
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: write
+    timeout-minutes: 35
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
           cache: gradle
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android 36 SDK
-        run: yes | sdkmanager "platforms;android-36" "build-tools;36.0.0"
-
-      - name: Restore private signing material
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p signing
-          gh release download visionbridge-private-signing-v1 --repo "$GITHUB_REPOSITORY" \
-            -p 'visionbridge-signing-v1.jks' \
-            -p 'visionbridge-signing-v1.pass' \
-            -D signing --clobber
-          password=$(cat signing/visionbridge-signing-v1.pass)
-          echo "VISIONBRIDGE_KEYSTORE_PASSWORD=$password" >> "$GITHUB_ENV"
-          rm signing/visionbridge-signing-v1.pass
-
-      - name: Verify repository structure and secrets
-        run: python3 scripts/verify_project.py
-
-      - name: Fetch and checksum the bundled PP-OCR models
-        run: python3 scripts/fetch_ocr_models.py
-
-      - name: Confirm the models are staged for packaging
-        run: python3 scripts/fetch_ocr_models.py --check
-
-      - name: Lint, unit tests, and assemble
-        shell: bash
-        run: |
-          source .github/gradle-retry.sh
-          status=0
-          gradle_with_network_retry build.log \
-            lintDebug testDebugUnitTest assembleDebug || status=$?
-          cat build.log
-          exit "$status"
-
-      - name: Confirm persistent APK signing certificate
-        env:
-          EXPECTED_CERT: ${{ needs.signing.outputs.cert_sha256 }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          apk=app/build/outputs/apk/debug/app-debug.apk
-          actual=$($ANDROID_HOME/build-tools/36.0.0/apksigner verify --print-certs "$apk" \
-            | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n1 | tr -d ':' | tr '[:lower:]' '[:upper:]')
-          expected=$(printf '%s' "$EXPECTED_CERT" | tr -d ':' | tr '[:lower:]' '[:upper:]')
-          echo "APK signing certificate SHA-256: $actual"
-          if [ "$actual" != "$expected" ]; then
-            echo "::error::Signing identity changed. Refusing to publish an uninstall-required update."
-            exit 1
-          fi
-
-      - name: Confirm the APK carries arm64 only
-        shell: bash
-        run: |
-          set -euo pipefail
-          apk=app/build/outputs/apk/debug/app-debug.apk
-          libs=$(unzip -Z1 "$apk" 'lib/*' | cut -d/ -f2 | sort -u)
-          echo "ABIs in APK: ${libs:-none}"
-          test -n "$libs"
-          test "$libs" = "arm64-v8a"
-
-      - name: Confirm the OCR models are inside the APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          apk=app/build/outputs/apk/debug/app-debug.apk
-          for model in ppocr-det.onnx ppocr-rec-ar.onnx ppocr-rec-en.onnx ppocr-cls.onnx; do
-            unzip -Z1 "$apk" "assets/ppocr/$model" >/dev/null 2>&1 || exit 1
-          done
-
-      - name: Name the APK after the version
-        id: apk
-        shell: bash
-        run: |
-          set -euo pipefail
-          version=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n1)
-          name="VisionBridge-${version}-arm64.apk"
-          cp app/build/outputs/apk/debug/app-debug.apk "$name"
-          echo "name=$name" >> "$GITHUB_OUTPUT"
-
-      - name: Upload the installable APK
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Validate measurement harness
+        run: python3 -m unittest discover -s scripts/tests -v
+      - name: Required project gate
+        run: ./scripts/codex-check.sh
+      - name: Upload synthetic test reports only
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: VisionBridge-arm64-stable-signed-apk
-          path: ${{ steps.apk.outputs.name }}
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Publish the APK to a release with a stable download link
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          version=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n1)
-          build=$(sed -n 's/.*versionCode = \([0-9]*\).*/\1/p' app/build.gradle.kts | head -n1)
-          tag="v${version}"
-          cp app/build/outputs/apk/debug/app-debug.apk VisionBridge.apk
-          notes=$(printf '%s\n' \
-            "الإصدار ${version}، Build ${build}" \
-            "" \
-            "توقيع VisionBridge ثابت ومحفوظ في أصل خاص غير منشور داخل CI." \
-            "التحديثات القادمة الموقعة بهذه الهوية تُثبت فوق التطبيق مباشرة." \
-            "" \
-            "commit: ${GITHUB_SHA}")
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$tag" VisionBridge.apk "${{ steps.apk.outputs.name }}" \
-              --repo "$GITHUB_REPOSITORY" --clobber
-            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" \
-              --title "VisionBridge ${version} (Build ${build})" --notes "$notes" --latest
-          else
-            gh release create "$tag" VisionBridge.apk "${{ steps.apk.outputs.name }}" \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "VisionBridge ${version} (Build ${build})" --notes "$notes" --latest
-          fi
-
-      - name: Upload build diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: build.log
-          if-no-files-found: error
-          retention-days: 3
+          name: unit-and-lint-reports
+          path: |
+            app/build/reports/tests/
+            app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
+          retention-days: 7
 
   device:
     name: On-device tests
-    needs: signing
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

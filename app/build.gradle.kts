@@ -5,104 +5,6 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
-val applyUltraLiveLatencyPatch by tasks.registering(Exec::class) {
-    group = "build setup"
-    description = "Applies the backpressured low-latency Gemini Live capture path"
-    workingDir = rootDir
-    commandLine("python3", "scripts/apply_ultra_live_latency_patch.py")
-    inputs.file(rootProject.file("scripts/apply_ultra_live_latency_patch.py"))
-}
-
-val finalizeLiveBackpressure by tasks.registering(Exec::class) {
-    group = "build setup"
-    description = "Hardens Live turn gating and mode feedback after the main patch"
-    workingDir = rootDir
-    commandLine("python3", "scripts/finalize_live_backpressure.py")
-    inputs.file(rootProject.file("scripts/finalize_live_backpressure.py"))
-    dependsOn(applyUltraLiveLatencyPatch)
-}
-
-val applyLiveTextFemaleVoicePatch by tasks.registering(Exec::class) {
-    group = "build setup"
-    description = "Adds local female-first TTS and Live transcript result handling"
-    workingDir = rootDir
-    commandLine("python3", "scripts/apply_live_text_female_voice_patch.py")
-    inputs.file(rootProject.file("scripts/apply_live_text_female_voice_patch.py"))
-    dependsOn(finalizeLiveBackpressure)
-}
-
-val applyLiveRequiredAudioTranscriptPatch by tasks.registering(Exec::class) {
-    group = "build setup"
-    description = "Requires real Gemini Live using AUDIO plus output transcription, with no cloud fallback"
-    workingDir = rootDir
-    commandLine("python3", "scripts/apply_live_required_audio_transcript_patch.py")
-    inputs.file(rootProject.file("scripts/apply_live_required_audio_transcript_patch.py"))
-    dependsOn(applyLiveTextFemaleVoicePatch)
-}
-
-val applyLiveAccuracyGuardV362 by tasks.registering(Exec::class) {
-    group = "build setup"
-    description = "Raises Live OCR fidelity, resets text context, and prevents crop-driven hallucinations"
-    workingDir = rootDir
-    commandLine("python3", "scripts/apply_live_accuracy_guard_v362.py")
-    inputs.file(rootProject.file("scripts/apply_live_accuracy_guard_v362.py"))
-    dependsOn(applyLiveRequiredAudioTranscriptPatch)
-}
-
-val applyEsightViewportSettingsV370 by tasks.registering(Exec::class) {
-    group = "build setup"
-    description = "Applies the calibrated eSight viewport and verified settings audit"
-    workingDir = rootDir
-    commandLine("python3", "scripts/apply_esight_viewport_settings_v370.py")
-    inputs.file(rootProject.file("scripts/apply_esight_viewport_settings_v370.py"))
-    dependsOn(applyLiveAccuracyGuardV362)
-}
-
-val applySmartTargetInterruptionV380 by tasks.registering(Exec::class) {
-    group = "build setup"
-    description = "Adds motion-compensated Smart Target Interruption to Gemini Live and local PP-OCR"
-    workingDir = rootDir
-    commandLine("python3", "scripts/apply_smart_target_interruption_v380.py")
-    inputs.file(rootProject.file("scripts/apply_smart_target_interruption_v380.py"))
-    dependsOn(applyEsightViewportSettingsV370)
-}
-
-val applyCurrentLiveOnlyV381 by tasks.registering(Exec::class) {
-    group = "build setup"
-    description = "Removes the legacy Gemini model chooser, accelerates Smart Target observation, and applies dense opt-in diagnostic image evidence"
-    workingDir = rootDir
-    commandLine("python3", "scripts/apply_current_live_only_v381.py")
-    inputs.file(rootProject.file("scripts/apply_current_live_only_v381.py"))
-    dependsOn(applySmartTargetInterruptionV380)
-}
-
-val applyTenMinuteDiagnosticTimelineV382 by tasks.registering(Exec::class) {
-    group = "build setup"
-    description = "Adds a one-frame-per-second opt-in diagnostic timeline covering ten minutes"
-    workingDir = rootDir
-    commandLine("python3", "scripts/apply_10min_diagnostic_timeline_v382.py")
-    inputs.file(rootProject.file("scripts/apply_10min_diagnostic_timeline_v382.py"))
-    dependsOn(applyCurrentLiveOnlyV381)
-}
-
-val hardenTenMinuteDiagnosticTimelineV382 by tasks.registering(Exec::class) {
-    group = "build setup"
-    description = "Hardens ten-minute diagnostics against timing drift and supplemental evidence exhaustion"
-    workingDir = rootDir
-    commandLine("python3", "scripts/harden_10min_diagnostic_timeline_v382.py")
-    inputs.file(rootProject.file("scripts/harden_10min_diagnostic_timeline_v382.py"))
-    dependsOn(applyTenMinuteDiagnosticTimelineV382)
-}
-
-val applyEveryAnalysisInputEvidenceV383 by tasks.registering(Exec::class) {
-    group = "build setup"
-    description = "Captures every selected OCR/Gemini visual input during opt-in diagnostics"
-    workingDir = rootDir
-    commandLine("python3", "scripts/apply_every_analysis_input_evidence_v383.py")
-    inputs.file(rootProject.file("scripts/apply_every_analysis_input_evidence_v383.py"))
-    dependsOn(hardenTenMinuteDiagnosticTimelineV382)
-}
-
 val fetchOcrModels by tasks.registering(Exec::class) {
     group = "build setup"
     description = "Fetches and checksums the bundled PP-OCR models"
@@ -113,7 +15,7 @@ val fetchOcrModels by tasks.registering(Exec::class) {
 }
 
 tasks.matching { it.name == "preBuild" }.configureEach {
-    dependsOn(applyEveryAnalysisInputEvidenceV383, fetchOcrModels)
+    dependsOn(fetchOcrModels)
 }
 
 android {
