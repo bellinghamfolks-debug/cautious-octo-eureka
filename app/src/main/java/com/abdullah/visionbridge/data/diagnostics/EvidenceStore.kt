@@ -48,8 +48,8 @@ class EvidenceStore(val directory: File) {
      * Returns the file name recorded, or null when nothing was written — which is the normal case
      * and never an error.
      */
-    fun capture(bitmap: Bitmap, frameId: String, reason: String): String? {
-        if (!enabled) return null
+    fun capture(bitmap: Bitmap, frameId: String, reason: String, capturedWhileEnabled: Boolean = false): String? {
+        if (!enabled && !capturedWhileEnabled) return null
         val timelineFrame = reason == "timeline_1s"
         val analysisInputFrame = reason.startsWith("analysis_input_")
         val supplementalFrame = !timelineFrame && !analysisInputFrame

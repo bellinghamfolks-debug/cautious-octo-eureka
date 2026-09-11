@@ -91,3 +91,13 @@ completeness constant with an explicitly conservative edge-contact proxy (still 
 box/crop validation). UI now includes scene tail. 26 pure Kotlin tests and nine Python tests pass.
 Full Gradle gate progressed to an explicit missing JAVA_COMPILER capability in system JRE;
 a full verified JDK 17 is being provisioned. No full Android build/device/performance pass yet.
+
+## Evidence/tracker checkpoint
+
+Fixed two viewport error-handler references reported by CI. Added cheap identity structural
+residual before expensive motion registration, preserving the existing thresholds and fallback.
+Moved opt-in evidence JPEG writes to one bounded worker (two bitmap snapshots maximum), with
+explicit skip/write/copy/queue telemetry and export barrier. Explicit discard invalidates queued
+writes under a shared lock; disabling new capture preserves already accepted snapshots.
+These additions still need full Android/unit/instrumented verification. Local full build now
+has a verified JDK but failed while resolving Android runtime dependencies due network access.

@@ -1085,8 +1085,8 @@ class MediaProjectionService : Service() {
                 it,
                 trace.fields(
                     mapOf(
-                        "viewportMode" to mode.name,
-                        "analysisMode" to analysisMode.name,
+                        "viewportMode" to activeSettings.viewportMode.name,
+                        "analysisMode" to activeSettings.mode.name,
                         "leftPx" to left,
                         "topPx" to top,
                         "widthPx" to width,

@@ -72,6 +72,37 @@ object DiagnosticHub {
 
     private val commands = Channel<Command>(Channel.UNLIMITED)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private sealed interface EvidenceTask {
+        data class Capture(val bitmap: Bitmap,val frameId: String,val reason: String,
+                           val fields: Map<String,Any?>,val epoch: Long,val queuedAt: Long):EvidenceTask
+        data class Barrier(val completion: CompletableDeferred<Unit>):EvidenceTask
+    }
+    private val evidenceTasks=Channel<EvidenceTask>(3)
+    private val evidenceSlots=java.util.concurrent.Semaphore(2)
+    private val evidenceEpoch=AtomicLong(0)
+    private val evidenceWriteLock=Any()
+
+    init {
+        scope.launch {
+            for(task in evidenceTasks) when(task) {
+                is EvidenceTask.Barrier -> task.completion.complete(Unit)
+                is EvidenceTask.Capture -> try {
+                    synchronized(evidenceWriteLock) {
+                        if(task.epoch==evidenceEpoch.get()) {
+                            val start=SystemClock.elapsedRealtimeNanos()
+                            val name=evidence?.capture(task.bitmap,task.frameId,task.reason,capturedWhileEnabled=true)
+                            record(if(name==null) "EVIDENCE_FRAME_SKIPPED" else "EVIDENCE_FRAME_CAPTURED",
+                                task.fields+mapOf("frameId" to task.frameId,"reason" to task.reason,
+                                    "file" to name,"evidenceQueueMs" to (start-task.queuedAt)/1e6,
+                                    "evidenceWriteMs" to (SystemClock.elapsedRealtimeNanos()-start)/1e6))
+                        }
+                    }
+                } catch(error:Exception) {
+                    record("EVIDENCE_WRITE_FAILED",task.fields+mapOf("errorType" to error.javaClass.simpleName))
+                } finally { task.bitmap.recycle();evidenceSlots.release() }
+            }
+        }
+    }
     private val latestTrace = AtomicReference<DiagnosticTrace?>(null)
     private val lastDenseEvidenceAtElapsedMs = AtomicLong(0L)
     private val timelineWindowStartedAtElapsedMs = AtomicLong(0L)
@@ -168,7 +199,7 @@ object DiagnosticHub {
                 "captureMode" to "ten_minute_timeline_plus_supplemental_failures",
                 "timelineIntervalMs" to TIMELINE_EVIDENCE_INTERVAL_MS,
                 "timelineWindowMs" to TIMELINE_EVIDENCE_WINDOW_MS,
-                "selectedInputCapturePolicy" to "every_selected_input",
+                "selectedInputCapturePolicy" to "bounded_async_with_explicit_skips",
             ),
         )
     }
@@ -176,9 +207,12 @@ object DiagnosticHub {
     /** Deletes every stored failure frame. The user's own answer to changing their mind. */
     fun discardEvidence() {
         val store = evidence ?: return
-        val held = store.frameCount()
-        store.clear()
-        record("EVIDENCE_FRAMES_DISCARDED", mapOf("framesDeleted" to held))
+        synchronized(evidenceWriteLock) {
+            evidenceEpoch.incrementAndGet()
+            val held = store.frameCount()
+            store.clear()
+            record("EVIDENCE_FRAMES_DISCARDED", mapOf("framesDeleted" to held))
+        }
     }
 
     /** How many failure frames are currently held, for anything that has to say so out loud. */
@@ -194,18 +228,20 @@ object DiagnosticHub {
     fun evidence(bitmap: Bitmap, frameId: String, reason: String, fields: Map<String, Any?> = emptyMap()) {
         val store = evidence ?: return
         if (!store.enabled) return
-        val started = SystemClock.elapsedRealtimeNanos()
-        val name = store.capture(bitmap, frameId, reason) ?: return
-        val completed = SystemClock.elapsedRealtimeNanos()
-        record(
-            "EVIDENCE_FRAME_CAPTURED",
-            fields + mapOf(
-                "frameId" to frameId,
-                "reason" to reason,
-                "file" to name,
-                "evidenceWriteMs" to (completed - started) / 1_000_000.0,
-            ),
-        )
+        if(!evidenceSlots.tryAcquire()) {
+            record("EVIDENCE_FRAME_SKIPPED",fields+mapOf("frameId" to frameId,"reason" to "writer_capacity"))
+            return
+        }
+        val epoch=evidenceEpoch.get()
+        val started=SystemClock.elapsedRealtimeNanos()
+        val snapshot=try { bitmap.copy(Bitmap.Config.ARGB_8888,false) } catch(error:Exception) { null }
+        if(snapshot==null) { evidenceSlots.release();record("EVIDENCE_FRAME_SKIPPED",fields+mapOf("reason" to "snapshot_failed"));return }
+        val task=EvidenceTask.Capture(snapshot,frameId,reason,fields+mapOf(
+            "evidenceSnapshotCopyMs" to (SystemClock.elapsedRealtimeNanos()-started)/1e6),epoch,started)
+        if(!evidenceTasks.trySend(task).isSuccess) {
+            snapshot.recycle();evidenceSlots.release()
+            record("EVIDENCE_FRAME_SKIPPED",fields+mapOf("frameId" to frameId,"reason" to "writer_queue_full"))
+        }
     }
 
     /**
@@ -428,6 +464,9 @@ object DiagnosticHub {
     }
 
     suspend fun export(): File {
+        val barrier=CompletableDeferred<Unit>()
+        evidenceTasks.send(EvidenceTask.Barrier(barrier))
+        barrier.await()
         val completion = CompletableDeferred<File>()
         commands.send(Command.Export(completion))
         return completion.await()

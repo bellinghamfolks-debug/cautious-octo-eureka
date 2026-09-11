@@ -98,8 +98,9 @@ class VisualTargetTracker(
             )
         }
 
-        val registration = register(previous, frame)
         val unaligned = StructuralResidual.measure(previous.plane, frame.plane, Warp.identity())
+        val identity = Registration(Warp.identity(),unaligned,"identity_structural",null)
+        val registration = if (!isDifferentSubject(identity)) identity else register(previous, frame)
 
         if (registration != null && !isDifferentSubject(registration)) {
             // The same subject, wherever it has drifted, turned or zoomed to. The reference moves
@@ -164,6 +165,9 @@ class VisualTargetTracker(
     private fun register(from: TrackedFrame, to: TrackedFrame): Registration? {
         // Aligned down to the analysis level rather than the finest, and started from the warp the
         // last frame produced so continuous motion is followed instead of re-derived.
+        val identity = Registration(Warp.identity(),
+            StructuralResidual.measure(from.plane,to.plane,Warp.identity()),"identity_structural",null)
+        if (!isDifferentSubject(identity)) return identity
         val level = from.analysisLevel
         val direct = LucasKanade.align(from.pyramid, to.pyramid, motionPrior, finestLevel = level)
             ?: LucasKanade.align(from.pyramid, to.pyramid, finestLevel = level)
