@@ -496,6 +496,8 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
                             "queueWaitMs" to
                                 (state.startedAtElapsedNanos - state.enqueuedAtElapsedNanos) / 1_000_000.0,
                             "queueAgeMs" to (state.startedAtElapsedNanos - state.enqueuedAtElapsedNanos) / 1_000_000.0,
+                            "ttsStartedAtElapsedNanos" to state.startedAtElapsedNanos,
+                            "ttsEligibleAtElapsedNanos" to state.enqueuedAtElapsedNanos,
                             "submitToStartMs" to
                                 (state.startedAtElapsedNanos - state.submittedAtElapsedNanos) / 1_000_000.0,
                         ),

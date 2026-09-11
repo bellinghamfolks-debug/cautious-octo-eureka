@@ -28,7 +28,8 @@ class GroundingAndRetryTest {
         assertTrue(policy.consider(q.copy(sharpness=200.0),300,true).submit)
         assertTrue(policy.consider(q,1000,true).submit)
         policy.result(true)
-        assertFalse(policy.consider(q,5000,true).submit)
+        assertFalse(policy.consider(q,1200,true).submit)
+        assertTrue(policy.consider(q,5000,true).submit) // optical verification must continue within a generation
         policy.reset();assertTrue(policy.consider(q,5001,true).submit)
     }
     @Test fun fastDoesNotWaitStableBudgetAndBlurDoesNotLatch() {

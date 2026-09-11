@@ -101,3 +101,14 @@ explicit skip/write/copy/queue telemetry and export barrier. Explicit discard in
 writes under a shared lock; disabling new capture preserves already accepted snapshots.
 These additions still need full Android/unit/instrumented verification. Local full build now
 has a verified JDK but failed while resolving Android runtime dependencies due network access.
+
+## Candidate verification and timing checkpoint
+
+Moved active output-turn replacement to actual submission, after preprocessing/grounding.
+Periodic optical verification of an already-read target now remains possible; identical local
+text suppresses a cloud request without clearing the accepted result or interrupting speech.
+Negative/uncertain readings still retry. Target invalidation clears optical identity.
+Added actual monotonic runtime/UI/TTS endpoint timestamps and candidate quality/network-setup
+measurements. Full stage decomposition and opportunity-level replay instrumentation remain pending.
+Re-running tracker/Smart Target tests after the cheap-first change. Full Android Gradle dependency
+resolution remains unreliable locally; GitHub CI is also being checked against exact commit SHAs.

@@ -40,7 +40,7 @@ class CaptureRuntime {
         }
         val accepted = turnGate.commit(turn) {
             update { copy(lastResult=value, status="اكتمل التحليل", error=null) }
-            com.abdullah.visionbridge.data.diagnostics.DiagnosticHub.record("RUNTIME_RESULT",turn.fields())
+            com.abdullah.visionbridge.data.diagnostics.DiagnosticHub.record("RUNTIME_RESULT",turn.fields()+mapOf("acceptedAtElapsedNanos" to android.os.SystemClock.elapsedRealtimeNanos()))
         }
         if (!accepted) com.abdullah.visionbridge.data.diagnostics.DiagnosticHub.record(
             "RESULT_DROPPED",turn.fields()+mapOf("reason" to turnGate.rejection(turn)))
@@ -49,7 +49,7 @@ class CaptureRuntime {
     fun clearVisualResult() = update { copy(lastResult=null, isProcessing=false) }
     fun displayed(value: AnalysisResult) {
         value.turn?.let { turnGate.commit(it) {
-            com.abdullah.visionbridge.data.diagnostics.DiagnosticHub.record("TEXT_DISPLAYED",it.fields())
+            com.abdullah.visionbridge.data.diagnostics.DiagnosticHub.record("TEXT_DISPLAYED",it.fields()+mapOf("displayedAtElapsedNanos" to android.os.SystemClock.elapsedRealtimeNanos()))
         } }
     }
     fun notice(message: String) = update {

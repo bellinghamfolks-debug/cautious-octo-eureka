@@ -22,6 +22,12 @@ class TurnGate {
         return generation
     }
 
+    @Synchronized fun withinGeneration(expected: Long, action: () -> Unit): Boolean {
+        if (generation != expected) return false
+        action()
+        return true
+    }
+
     @Synchronized fun activate(turn: AnalysisTurn, clearOutput: () -> Unit = {}): Boolean {
         if (turn.visualGeneration != generation || turn.imageHash != null || !seenTurns.add(turn.turnId)) return false
         active = turn

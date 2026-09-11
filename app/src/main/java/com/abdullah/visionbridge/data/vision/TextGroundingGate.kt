@@ -26,6 +26,8 @@ object TextGroundingGate {
         return Decision(true, false, "all_tokens_optically_supported")
     }
 
+    fun canonical(text: String): String = tokens(text).joinToString("\u001f")
+
     private fun tokens(text: String): List<String> {
         val normalized = Normalizer.normalize(text, Normalizer.Form.NFKC)
             .lowercase(Locale.ROOT).replace(Regex("[\\p{M}ـ]"), "")

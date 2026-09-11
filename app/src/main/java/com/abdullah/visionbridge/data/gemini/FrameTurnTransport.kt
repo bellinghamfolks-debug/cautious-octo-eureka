@@ -38,7 +38,10 @@ class FrameTurnTransport(private val networkManager: CellularNetworkManager) {
                         settings: AppSettings, apiKey: String,
                         onSubmitted: (AnalysisTurn) -> Boolean,
                         onPartial: suspend (Output) -> Unit): Output = withContext(Dispatchers.IO) {
+        val networkSetupStarted=SystemClock.elapsedRealtimeNanos()
         networkManager.withNetwork(settings.forceCellular) { network ->
+            DiagnosticHub.record("NETWORK_SETUP_COMPLETED",capture.fields()+mapOf(
+                "networkSetupMs" to (SystemClock.elapsedRealtimeNanos()-networkSetupStarted)/1e6))
             val activeClient = if (network == null) client else client.newBuilder()
                 .socketFactory(network.socketFactory).dns(object : Dns {
                     override fun lookup(hostname: String): List<InetAddress> = network.getAllByName(hostname).toList()
@@ -82,7 +85,7 @@ class FrameTurnTransport(private val networkManager: CellularNetworkManager) {
                 for (data in events) {
                     if (data=="[DONE]") break
                     val candidate=JSONObject(data).optJSONArray("candidates")?.optJSONObject(0) ?: continue
-                    if(first) { first=false;DiagnosticHub.record("FIRST_CHUNK",turn.fields()) }
+                    if(first) { first=false;DiagnosticHub.record("FIRST_CHUNK",turn.fields()+mapOf("receivedAtElapsedNanos" to SystemClock.elapsedRealtimeNanos())) }
                     val parts=candidate.optJSONObject("content")?.optJSONArray("parts")
                     if(parts!=null) for(i in 0 until parts.length()) {
                         val part=parts.getJSONObject(i)

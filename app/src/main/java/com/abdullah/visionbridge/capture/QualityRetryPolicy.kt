@@ -17,9 +17,9 @@ class QualityRetryPolicy {
         if (q.sharpness < 12 || q.contrast < 10 || q.cropCompleteness < .5)
             return Decision(false, "insufficient_quality")
         if (stable && q.stableForMs < 180) return Decision(false, "awaiting_stability")
-        if (reliableScore?.let { q.score < it + .3 } == true)
-            return Decision(false, "reliable_target_duplicate")
         val elapsed = lastSubmittedAt?.let { nowMs - it }
+        if (reliableScore?.let { q.score < it + .3 } == true && elapsed != null && elapsed < 1800)
+            return Decision(false, "reliable_target_duplicate")
         if (elapsed != null && elapsed < if (q.score >= lastScore + .25) 250 else 1000)
             return Decision(false, "retry_cooldown")
         return Decision(true, if (elapsed == null) "first_stable_candidate" else "retry_or_improved_candidate")
