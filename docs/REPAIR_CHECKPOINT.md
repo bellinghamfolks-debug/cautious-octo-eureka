@@ -142,3 +142,15 @@ Frequent durable saves no longer cancel an already-running device suite; the lat
 checkpoint is validated afterwards. No acceptance gate or test was removed.
 The exact local project check still cannot download Gradle (services.gradle.org DNS failure).
 Current phone latency, private golden post-fix replay and actual cloud accuracy remain unverified.
+
+## Runtime, rendering and speech intervals
+
+Run 34951179380 on 6ce8cf4 completed successfully: lint/unit/assemble and all 16 managed
+Pixel 6 API 30 tests, including the synthetic PP-OCR diagnostics-off/on replay. This is not
+evidence of phone/cloud end-to-end performance. Device log confirms 16 tests finished.
+New instrumentation records runtimeAcceptance, uiRender, ttsQueue and ttsEngineStart intervals
+with the accepted content hash. UI callbacks for superseded prefixes of the same turn are ignored,
+and each current revision is acknowledged at most once. A new Android regression checks the
+exported events and monotonic intervals; it awaits validation on this subsequent checkpoint.
+Speech queue timing starts at eligibility, with original utterance queue age still reported
+separately. An earlier delivered clause does not silently erase original queue age.

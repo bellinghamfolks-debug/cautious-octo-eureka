@@ -492,6 +492,14 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
                             mapOf("reason" to "engine_start_expired","queueAgeMs" to (now-state.enqueuedAtElapsedNanos)/1e6))
                     } else {
                 state.startedAtElapsedNanos = now
+                state.trace?.let { trace ->
+                    val details = mapOf("utteranceId" to id)
+                    com.abdullah.visionbridge.data.diagnostics.FrameStages.record(trace,
+                        "ttsQueue", state.window?.eligibleAtNanos ?: state.enqueuedAtElapsedNanos,
+                        state.submittedAtElapsedNanos, details)
+                    com.abdullah.visionbridge.data.diagnostics.FrameStages.record(trace,
+                        "ttsEngineStart", state.submittedAtElapsedNanos, now, details)
+                }
                 DiagnosticHub.record(
                     "TTS_UTTERANCE_STARTED",
                     state.trace.fieldsOrEmpty(

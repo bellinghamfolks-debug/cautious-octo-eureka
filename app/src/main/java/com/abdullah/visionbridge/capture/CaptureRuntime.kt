@@ -2,6 +2,10 @@ package com.abdullah.visionbridge.capture
 
 import com.abdullah.visionbridge.domain.model.AnalysisResult
 import com.abdullah.visionbridge.domain.model.CaptureState
+import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
+import com.abdullah.visionbridge.data.diagnostics.FrameStages
+import android.os.SystemClock
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -10,6 +14,8 @@ import kotlinx.coroutines.flow.update
 class CaptureRuntime {
     val turnGate = TurnGate()
     private val mutableState = MutableStateFlow(CaptureState())
+    private data class DisplayRevision(val result: AnalysisResult, val acceptedAt: Long)
+    private val awaitingDisplay = AtomicReference<DisplayRevision?>(null)
     val state: StateFlow<CaptureState> = mutableState.asStateFlow()
 
     private val mutableAnalysing = MutableStateFlow(true)
@@ -35,23 +41,42 @@ class CaptureRuntime {
     }
     fun processing(active: Boolean) = update { copy(isProcessing = active) }
     fun result(value: AnalysisResult): Boolean {
+        val runtimeStartedAt = SystemClock.elapsedRealtimeNanos()
         val turn = value.turn ?: run {
             com.abdullah.visionbridge.data.diagnostics.DiagnosticHub.record("RESULT_DROPPED",mapOf("reason" to "missing_turn_identity"))
             return false
         }
         val accepted = turnGate.commit(turn) {
             update { copy(lastResult=value, status="اكتمل التحليل", error=null) }
-            com.abdullah.visionbridge.data.diagnostics.DiagnosticHub.record("RUNTIME_RESULT",turn.fields()+mapOf("acceptedAtElapsedNanos" to android.os.SystemClock.elapsedRealtimeNanos(),"acceptedContentHash" to value.contentHash,"readText" to value.text,"sceneTail" to value.sceneTail))
+            val acceptedAt = SystemClock.elapsedRealtimeNanos()
+            awaitingDisplay.set(DisplayRevision(value, acceptedAt))
+            com.abdullah.visionbridge.data.diagnostics.DiagnosticHub.record("RUNTIME_RESULT",turn.fields()+mapOf("acceptedAtElapsedNanos" to acceptedAt,"acceptedContentHash" to value.contentHash,"readText" to value.text,"sceneTail" to value.sceneTail))
+            FrameStages.record(value.trace(), "runtimeAcceptance", runtimeStartedAt, acceptedAt)
         }
         if (!accepted) com.abdullah.visionbridge.data.diagnostics.DiagnosticHub.record(
             "RESULT_DROPPED",turn.fields()+mapOf("reason" to turnGate.rejection(turn)))
         return accepted
     }
-    fun clearVisualResult() = update { copy(lastResult=null, isProcessing=false) }
+    fun clearVisualResult() {
+        awaitingDisplay.set(null)
+        update { copy(lastResult=null, isProcessing=false) }
+    }
     fun displayed(value: AnalysisResult) {
         value.turn?.let { turnGate.commit(it) {
-            com.abdullah.visionbridge.data.diagnostics.DiagnosticHub.record("TEXT_DISPLAYED",it.fields()+mapOf("displayedAtElapsedNanos" to android.os.SystemClock.elapsedRealtimeNanos(),"acceptedContentHash" to value.contentHash))
+            val revision = awaitingDisplay.get()
+            // A cancelled Compose effect must not acknowledge an older streaming prefix.
+            if(revision?.result == value && mutableState.value.lastResult == value &&
+                awaitingDisplay.compareAndSet(revision, null)) {
+                val displayedAt = SystemClock.elapsedRealtimeNanos()
+                com.abdullah.visionbridge.data.diagnostics.DiagnosticHub.record("TEXT_DISPLAYED",it.fields()+mapOf("displayedAtElapsedNanos" to displayedAt,"acceptedContentHash" to value.contentHash))
+                FrameStages.record(value.trace(), "uiRender", revision.acceptedAt, displayedAt)
+            }
         } }
+    }
+    private fun AnalysisResult.trace(): DiagnosticTrace {
+        val owner = requireNotNull(turn)
+        return DiagnosticTrace(owner.traceId, owner.frameId, owner.capturedAt,
+            owner.capturedAtNanos, owner, acceptedContentHash=contentHash)
     }
     fun notice(message: String) = update {
         copy(status = message, error = null, isProcessing = false)

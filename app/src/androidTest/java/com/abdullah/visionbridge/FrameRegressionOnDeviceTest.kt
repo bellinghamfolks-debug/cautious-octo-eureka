@@ -22,6 +22,33 @@ import java.security.MessageDigest
 @RunWith(AndroidJUnit4::class)
 class FrameRegressionOnDeviceTest {
     private val context get()=InstrumentationRegistry.getInstrumentation().targetContext
+    @Test fun onlyCurrentRevisionAcknowledgesDisplayAndRecordsMonotonicStages()=runBlocking<Unit> {
+        val runtime=CaptureRuntime()
+        val id="synthetic-revision-${java.util.UUID.randomUUID()}"
+        val now=SystemClock.elapsedRealtimeNanos()
+        val capture=AnalysisTurn(id,id,id,0,AnalysisMode.TEXT_READING,System.currentTimeMillis(),now,
+            "synthetic","synthetic",id)
+        assertTrue(runtime.turnGate.activate(capture))
+        val turn=capture.copy(submittedAtNanos=SystemClock.elapsedRealtimeNanos(),imageHash="a".repeat(64))
+        assertTrue(runtime.turnGate.bindSubmission(turn))
+        val first=AnalysisResult("Synthetic first line",AnalysisSource.LOCAL_OCR,turn=turn)
+        val second=first.copy(text="Synthetic first line\nSynthetic second line")
+        assertTrue(runtime.result(first));assertTrue(runtime.result(second))
+        runtime.displayed(first) // Obsolete Compose callback within the same turn.
+        runtime.displayed(second);runtime.displayed(second) // Acknowledge once.
+        val events=java.util.zip.ZipFile(DiagnosticHub.export()).use { zip ->
+            zip.entries().asSequence().filter { it.name.endsWith("events.jsonl") }.flatMap { entry ->
+                zip.getInputStream(entry).bufferedReader().use { it.readLines() }.asSequence()
+            }.map { org.json.JSONObject(it) }.filter { it.optString("turnId")==id }.toList()
+        }
+        val displayed=events.filter { it.optString("type")=="TEXT_DISPLAYED" }
+        assertEquals(1,displayed.size)
+        assertEquals(second.contentHash,displayed.single().getString("acceptedContentHash"))
+        val stages=events.filter { it.optString("type")=="FRAME_STAGE" }
+        assertEquals(2,stages.count { it.optString("stage")=="runtimeAcceptance" })
+        assertEquals(1,stages.count { it.optString("stage")=="uiRender" })
+        stages.forEach { assertTrue(it.getLong("stageEndedAtElapsedNanos")>=it.getLong("stageStartedAtElapsedNanos")) }
+    }
     @Test fun clearTextPresenceAndDiagnosticsOffOnUseTheSameSyntheticReplay()=runBlocking<Unit> {
         val engine=PaddleOcrEngine(context);assertTrue(engine.ensureLoaded().isSuccess)
         val texts=mutableListOf<List<String>>()

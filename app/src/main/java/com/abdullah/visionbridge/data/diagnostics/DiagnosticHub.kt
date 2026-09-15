@@ -23,8 +23,9 @@ import kotlin.coroutines.CoroutineContext
  * Process-wide ordered diagnostic actor.
  *
  * The recorder is always active once the application container is created. Visual evidence is stored
- * as non-reconstructive aggregate fingerprints only; no bitmap copy, thumbnail, or encoded image is
- * queued or written. Export remains a queue barrier, so every event submitted before it is included.
+ * as aggregate fingerprints when evidence capture is disabled. When explicitly enabled, bounded
+ * local bitmap copies are encoded by the evidence worker. Export remains a queue barrier for
+ * accepted evidence and events; capacity drops are recorded explicitly.
  */
 // DENSE_DIAGNOSTIC_EVIDENCE_V381
 // TEN_MINUTE_DIAGNOSTIC_TIMELINE_V382
