@@ -214,3 +214,12 @@ failed Gradle download DNS; an explicit standard proxy allowed that download. Do
 these local environment failures with source test failures. CI with a complete JDK remains
 the full project gate. Run 34993503859 on 06bde7c3 completed both jobs successfully.
 Latest prior durable application checkpoint: b8e019ae2b87015c5c8404df0dd9a6a76468dad9.
+
+The production TextGroundingGate was compiled and exercised locally by GroundingEvidenceProbe.kt
+against the 11 catastrophic claims and exploratory optical readings. All 11 were rejected with
+retry allowed. This stress test deliberately gives both model and optical evidence maximum
+confidence and includes both raw recognition heads, so rejection does not rely on a low-confidence
+shortcut. It verifies the production gate on those supplied observations, not equivalence of the
+host OCR probe to Android OCR, strict old wire-image association, new Gemini outputs or latency.
+Private input claims/readings and per-case results remain outside git. The helper emits decisions
+only. The complete 207-frame host optical investigation and 157-frame viewport probe are finished.
