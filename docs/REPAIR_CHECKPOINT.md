@@ -192,3 +192,25 @@ Moved the TTS submission clock read after the synchronized eligibility-window re
 a concurrent predecessor completion from producing a negative queue interval. This small timing
 change requires the following checkpoint's validation. Previous durable helper checkpoint is
 06bde7c3f29659dfa4e3dab186a25381a14644bf.
+
+## Completed local sequence probes and reproducible environment
+
+The host optical investigation finished all 207 selected evidence frames. Outputs and the
+11-case detailed comparison remain PRIVATE LOCAL ONLY in private-replay-current. Detection
+also sees camera UI elements; detected-box presence is not equivalent to useful target text.
+The generic ViewportEvidenceProbe.kt executes production viewport/session logic over full
+capture evidence using desktop JPEG decoding/resampling. On 157 full timeline images it
+returned 8 explicitly unresolved frames, 2 dynamic boundaries and 147 retained confirmed
+layouts. This is evidence about the pure viewport logic, not Android/device performance or
+proof that all overlaid controls were removed. No private images or paths are in the helper.
+The seven production ViewportResolverTest tests also passed locally via the Kotlin compiler
+and JUnit jars bundled in Gradle 8.14.3.
+
+Toolchain recovery found existing Android 36 SDK and Gradle caches under ../toolchain.
+Running the exact project script with GRADLE_USER_HOME=../toolchain/gradle-user and
+ANDROID_HOME/ANDROID_SDK_ROOT=../toolchain/android-sdk advanced beyond dependency lookup,
+but this local Java 17 installation lacks JAVA_COMPILER (javac). Earlier default-home attempts
+failed Gradle download DNS; an explicit standard proxy allowed that download. Do not confuse
+these local environment failures with source test failures. CI with a complete JDK remains
+the full project gate. Run 34993503859 on 06bde7c3 completed both jobs successfully.
+Latest prior durable application checkpoint: b8e019ae2b87015c5c8404df0dd9a6a76468dad9.
