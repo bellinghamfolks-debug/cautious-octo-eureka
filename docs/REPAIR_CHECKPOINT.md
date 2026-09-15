@@ -124,3 +124,8 @@ Also fixed the PP-OCR deskew bitmap lifetime: a finally block now recycles it on
 failure and cancellation. Stable candidate timing now respects Smart Target's motion-compensated
 stability, so camera shake alone need not perpetually restart the settling interval.
 The synthetic device replay and these changes still require successful full CI.
+
+Recovery files and subsequent fixes are now saved remotely, including the formerly local-only
+synthetic replay. CI run 34951021443 got past the repaired SDK setup and entered the exact
+project gate. A review also made the replay test explicitly return Unit (its export barrier
+returns a File, which otherwise gives JUnit an invalid non-void test method).

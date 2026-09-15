@@ -22,7 +22,7 @@ import java.security.MessageDigest
 @RunWith(AndroidJUnit4::class)
 class FrameRegressionOnDeviceTest {
     private val context get()=InstrumentationRegistry.getInstrumentation().targetContext
-    @Test fun clearTextPresenceAndDiagnosticsOffOnUseTheSameSyntheticReplay()=runBlocking {
+    @Test fun clearTextPresenceAndDiagnosticsOffOnUseTheSameSyntheticReplay()=runBlocking<Unit> {
         val engine=PaddleOcrEngine(context);assertTrue(engine.ensureLoaded().isSuccess)
         val texts=mutableListOf<List<String>>()
         try {
