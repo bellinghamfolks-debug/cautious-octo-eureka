@@ -92,3 +92,14 @@ These are policy tests, not proof of scene recognition, device latency or the pr
 Remaining immediate work: finish network/runtime/UI intervals and result revision telemetry,
 synthetic on-device regression fixtures, diagnostic off/on A/B, private golden replay and the
 full CI gate for these additions. The physical-phone/cloud acceptance remains unmeasured.
+
+## 2026-09-15 recovery
+
+Remote checkpoint 45a1673713cf9dd0040b333164710543f23e5b01 passed full Android CI
+(run 34658859136). The scratch workspace reverted again. Local-only commit 84d326d
+was not preserved remotely before interruption. Its patches are being reconstructed
+from the work transcript and saved in smaller remote checkpoints. Old branches were retained.
+Restored accepted-result content hashes and speech deltas carrying the original accepted revision.
+Still restoring streaming lines, transport timing, viewport memory, synthetic Android replay and
+private-ledger reconstruction. These restorations need their own Android validation.
+No private image, ZIP, ledger or transcript was placed in GitHub or CI.

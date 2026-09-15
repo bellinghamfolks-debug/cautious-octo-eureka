@@ -42,13 +42,13 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
     private val visualTimeline = VisualSpeechTimeline()
     fun invalidateVisualContent() { visualTimeline.invalidate();interruptInternal("visual_turn_invalidated") }
 
-    fun speakTurn(result: com.abdullah.visionbridge.domain.model.AnalysisResult, rate: Float, section: String) {
+    fun speakTurn(result: com.abdullah.visionbridge.domain.model.AnalysisResult, rate: Float, section: String, spokenText:String=result.text) {
         val turn = result.turn ?: return
         val queuedAt = SystemClock.elapsedRealtimeNanos()
-        val trace = DiagnosticTrace(turn.traceId,turn.frameId,turn.capturedAt,turn.capturedAtNanos,turn,section)
+        val trace = DiagnosticTrace(turn.traceId,turn.frameId,turn.capturedAt,turn.capturedAtNanos,turn,section,result.contentHash)
         scope.launch(trace) {
             if (turnGate?.rejection(turn) != null) return@launch
-            enqueue(result.text,rate,false,NO_READING,trace=trace,originalEnqueuedAt=queuedAt)
+            enqueue(spokenText,rate,false,NO_READING,trace=trace,originalEnqueuedAt=queuedAt)
         }
     }
 

@@ -21,4 +21,9 @@ data class AnalysisResult(
      */
     val sceneTail: String = "",
     val turn: AnalysisTurn? = null,
-)
+) {
+    /** Immutable accepted revision shared by runtime, UI and spoken continuations. */
+    val contentHash:String get()=java.security.MessageDigest.getInstance("SHA-256")
+        .digest((text+"\u0000"+sceneTail).toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it.toInt() and 255) }
+}

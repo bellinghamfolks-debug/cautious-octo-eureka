@@ -159,7 +159,7 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                             if(!d.accepted)return@commit
                             val r=AnalysisResult(o.text,AnalysisSource.GEMINI,turn=o.turn)
                             if(runtime.result(r)&&settings.speechEnabled) {
-                                tts.speakTurn(r.copy(text=d.delta),settings.speechRate,"SCENE_DESCRIPTION")
+                                tts.speakTurn(r,settings.speechRate,"SCENE_DESCRIPTION",spokenText=d.delta)
                             }
                             spokenScene=o.text
                         }
@@ -181,7 +181,7 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                         gate.commit(output.turn) {
                             val r=AnalysisResult(output.text,AnalysisSource.GEMINI,sceneTail=output.tail,turn=output.turn)
                             runtime.result(r)
-                            if(settings.speechEnabled)tts.speakTurn(r.copy(text=output.tail),settings.speechRate,"SCENE_TAIL")
+                            if(settings.speechEnabled)tts.speakTurn(r,settings.speechRate,"SCENE_TAIL",spokenText=output.tail)
                         }
                     }
                 }
