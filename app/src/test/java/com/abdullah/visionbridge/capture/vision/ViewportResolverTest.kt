@@ -57,4 +57,26 @@ class ViewportResolverTest {
         val result=ViewportResolver.resolve(p,1220,2712,ViewportMode.ESIGHT_FIXED,AnalysisMode.TEXT_READING)
         assertEquals("PORTRAIT_1220_UNRESOLVED_FULL_FRAME",result.strategy)
     }
+
+    @Test fun confirmedPortraitRegionSurvivesBlackCameraButNotChangedControls() {
+        val r=Viewport.Rect(0f,.20f,1f,.80f);val resolver=ViewportSessionResolver()
+        val original=resolver.resolve(plane(122,271,r),1220,2712,ViewportMode.ESIGHT_TEXT_SAFE,AnalysisMode.TEXT_READING)
+        val black=ImagePlane(122,271,FloatArray(122*271),FloatArray(122*271),FloatArray(122*271))
+        val retained=resolver.resolve(black,1220,2712,ViewportMode.ESIGHT_TEXT_SAFE,AnalysisMode.TEXT_READING)
+        assertEquals("CONFIRMED_EXTERNAL_LAYOUT",retained.strategy)
+        assertEquals(original.rect,retained.rect)
+        val different=ImagePlane(122,271,FloatArray(122*271) { 220f },FloatArray(122*271),FloatArray(122*271))
+        assertNotEquals("CONFIRMED_EXTERNAL_LAYOUT",resolver.resolve(different,1220,2712,
+            ViewportMode.ESIGHT_TEXT_SAFE,AnalysisMode.TEXT_READING).strategy)
+    }
+
+    @Test fun rotationDoesNotReusePreviousPortraitGeometry() {
+        val resolver=ViewportSessionResolver()
+        resolver.resolve(plane(122,271,Viewport.Rect(0f,.2f,1f,.8f)),1220,2712,
+            ViewportMode.ESIGHT_TEXT_SAFE,AnalysisMode.TEXT_READING)
+        val r=EsightViewportCalibration.rect
+        val rotated=resolver.resolve(plane(272,122,r),2712,1220,ViewportMode.ESIGHT_TEXT_SAFE,AnalysisMode.TEXT_READING)
+        assertNotEquals("CONFIRMED_EXTERNAL_LAYOUT",rotated.strategy)
+        assertEquals(r.left,rotated.rect.left,.02f)
+    }
 }

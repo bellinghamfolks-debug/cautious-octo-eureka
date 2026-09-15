@@ -64,6 +64,7 @@ class MediaProjectionService : Service() {
     private val processing = AtomicBoolean(false)
     private val frameSequence = AtomicLong(0L)
     private val frameChangeDetector = FrameChangeDetector()
+    private val viewportResolver=com.abdullah.visionbridge.capture.vision.ViewportSessionResolver()
 
     /**
      * One tracker per mode, because a scene and a page tolerate very different amounts of residual
@@ -1022,7 +1023,7 @@ class MediaProjectionService : Service() {
      */
     private fun cropToViewport(source: Bitmap, trace: DiagnosticTrace): Bitmap {
         val started = SystemClock.elapsedRealtimeNanos()
-        val resolution = com.abdullah.visionbridge.capture.vision.ViewportResolver.resolve(
+        val resolution = viewportResolver.resolve(
             BitmapFrames.aspectPlane(source), source.width, source.height,
             activeSettings.viewportMode, activeSettings.mode,
         )

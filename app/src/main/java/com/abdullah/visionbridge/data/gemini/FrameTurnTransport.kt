@@ -3,6 +3,8 @@ package com.abdullah.visionbridge.data.gemini
 import android.os.SystemClock
 import android.util.Base64
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
+import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
+import com.abdullah.visionbridge.data.diagnostics.FrameStages
 import com.abdullah.visionbridge.data.network.CellularNetworkManager
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AnalysisTurn
@@ -29,7 +31,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 /** Every callback closes over a single immutable submitted image; no 'current frame' globals. */
 class FrameTurnTransport(private val networkManager: CellularNetworkManager) {
     data class Output(val turn: AnalysisTurn, val text: String, val tail: String,
-                      val confidence: Int, val legible: Boolean, val inferred: Boolean)
+                      val confidence: Int, val legible: Boolean, val inferred: Boolean, val readingComplete:Boolean=true)
     private val client = OkHttpClient.Builder().connectTimeout(8,TimeUnit.SECONDS)
         .readTimeout(18,TimeUnit.SECONDS).callTimeout(25,TimeUnit.SECONDS)
         .retryOnConnectionFailure(false).build()
@@ -47,21 +49,27 @@ class FrameTurnTransport(private val networkManager: CellularNetworkManager) {
                     override fun lookup(hostname: String): List<InetAddress> = network.getAllByName(hostname).toList()
                 }).build()
             val base64Started = SystemClock.elapsedRealtimeNanos()
-            val body = payload(Base64.encodeToString(image.bytes,Base64.NO_WRAP),settings)
+            val base64 = Base64.encodeToString(image.bytes,Base64.NO_WRAP)
             val base64Ms = (SystemClock.elapsedRealtimeNanos()-base64Started)/1e6
+            val payloadStarted=SystemClock.elapsedRealtimeNanos()
+            val body=payload(base64,settings).toString()
+            val payloadMs=(SystemClock.elapsedRealtimeNanos()-payloadStarted)/1e6
             val turn = capture.copy(submittedAtNanos=SystemClock.elapsedRealtimeNanos(),imageHash=image.imageHash)
+            val trace=DiagnosticTrace(turn.traceId,turn.frameId,turn.capturedAt,turn.capturedAtNanos,turn)
+            FrameStages.record(trace,"networkSetup",networkSetupStarted,base64Started)
+            FrameStages.record(trace,"requestEncoding",base64Started)
             check(onSubmitted(turn)) { "Obsolete image before submission" }
             val events = Channel<String>(64)
             val closed = AtomicBoolean(false)
             val request = Request.Builder()
                 .url("https://generativelanguage.googleapis.com/v1beta/models/${turn.model}:streamGenerateContent?alt=sse")
                 .header("x-goog-api-key",apiKey)
-                .post(body.toString().toRequestBody("application/json".toMediaType())).build()
+                .post(body.toRequestBody("application/json".toMediaType())).build()
             DiagnosticHub.record("FRAME_REQUEST_SENT",turn.fields()+mapOf(
                 "outputWidth" to image.width,"outputHeight" to image.height,"encodedBytes" to image.bytes.size,
                 "quality" to image.quality,"scaleMs" to image.scaleMs,"compressionMs" to image.compressionMs,
                 "copyMs" to image.copyMs,"hashMs" to image.hashMs,"encodeTotalMs" to image.totalMs,
-                "base64Ms" to base64Ms,"captureProfile" to settings.captureProfile.name,
+                "base64Ms" to base64Ms,"payloadMs" to payloadMs,"captureProfile" to settings.captureProfile.name,
                 "sceneDescriptionStyle" to settings.sceneDescriptionStyle.name,"socketId" to "STATELESS_HTTP",
             ))
             val source = EventSources.createFactory(activeClient).newEventSource(request,object:EventSourceListener() {
@@ -73,14 +81,23 @@ class FrameTurnTransport(private val networkManager: CellularNetworkManager) {
                 }
                 override fun onClosed(eventSource:EventSource) { events.close() }
                 override fun onFailure(eventSource:EventSource,t:Throwable?,response:Response?) {
+                    if(closed.get()) {
+                        DiagnosticHub.record("FRAME_CALLBACK_DROPPED",turn.fields()+mapOf("reason" to "request_already_closed"))
+                        return
+                    }
                     // Do not log request headers or bodies; the exception can contain credentials.
                     DiagnosticHub.record("FRAME_REQUEST_FAILURE",turn.fields()+mapOf("httpCode" to response?.code))
                     events.close(IllegalStateException("Gemini request failed (${response?.code ?: 0})"))
                 }
             })
             val accumulator=GeminiStreamAccumulator(requireQualityHeader=true,acceptSceneTail=settings.describeAlongsideText)
-            var first=true;var finish="";var deliveredReading=false;var deliveredSceneChars=0
-            fun output()=Output(turn,accumulator.fullText,accumulator.sceneTail,accumulator.confidence,accumulator.legible,accumulator.inferred)
+            var first=true;var finish="";var deliveredReading=false;var deliveredReadingChars=0;var deliveredSceneChars=0
+            var firstContent=true
+            fun contentReady() {
+                if(firstContent) { firstContent=false;FrameStages.record(trace,"networkModel",checkNotNull(turn.submittedAtNanos)) }
+            }
+            fun output()=Output(turn,accumulator.fullText,accumulator.sceneTail,accumulator.confidence,accumulator.legible,accumulator.inferred,
+                accumulator.readingComplete || finish=="STOP")
             try {
                 for (data in events) {
                     if (data=="[DONE]") break
@@ -95,13 +112,23 @@ class FrameTurnTransport(private val networkManager: CellularNetworkManager) {
                     val terminal=candidate.optString("finishReason","")
                     if(terminal.isNotEmpty()) finish=terminal
                     DiagnosticHub.record("TEXT_CHUNK",turn.fields()+mapOf("characters" to accumulator.fullText.length))
-                    if(settings.mode==AnalysisMode.TEXT_READING && accumulator.readingComplete && !deliveredReading) {
-                        deliveredReading=true;onPartial(output())
+                    if(settings.mode==AnalysisMode.TEXT_READING && accumulator.ocrAccepted && !deliveredReading) {
+                        if(accumulator.readingComplete || finish=="STOP") {
+                            deliveredReading=true;contentReady();onPartial(output())
+                        } else {
+                            val text=accumulator.fullText
+                            val end=text.lastIndexOf('\n')+1
+                            if(end>deliveredReadingChars) {
+                                contentReady();onPartial(output().copy(text=text.substring(0,end),readingComplete=false))
+                                deliveredReadingChars=end
+                            }
+                        }
                     } else if(settings.mode==AnalysisMode.SCENE_DESCRIPTION && accumulator.ocrAccepted) {
                         // Emit only complete clauses, never a partial word or protocol header.
                         val text=accumulator.fullText
                         val end=text.indexOfLast { it in ".!?؟\n" }+1
                         if(end>deliveredSceneChars) {
+                            contentReady()
                             onPartial(output().copy(text=text.substring(0,end)))
                             deliveredSceneChars=end
                         }
@@ -109,6 +136,8 @@ class FrameTurnTransport(private val networkManager: CellularNetworkManager) {
                 }
                 accumulator.finish()
                 check(finish=="STOP") { "Incomplete or rejected generation" }
+                contentReady()
+                FrameStages.record(trace,"fullModelResponse",checkNotNull(turn.submittedAtNanos))
                 DiagnosticHub.record("TURN_COMPLETE",turn.fields())
                 output()
             } finally {

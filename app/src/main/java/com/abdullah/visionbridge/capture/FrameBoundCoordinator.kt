@@ -111,7 +111,7 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
             if(accepted) DiagnosticHub.record("TURN_ACTIVATED",turn.fields())
             return accepted
         }
-        var bound:AnalysisTurn?=null;var readAccepted=false;var spokenScene=""
+        var bound:AnalysisTurn?=null;var acceptedReading="";var readingComplete=false;var spokenScene=""
         try {
             withContext(c.trace) {
                 val encodingStarted=SystemClock.elapsedRealtimeNanos()
@@ -141,15 +141,22 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                 suspend fun accept(o:FrameTurnTransport.Output) {
                     if(gate.rejection(o.turn)!=null) { DiagnosticHub.record("RESULT_DROPPED",o.turn.fields()+mapOf("reason" to gate.rejection(o.turn)));return }
                     if(textMode) {
-                        if(readAccepted) return
                         val evidence=evidenceTask.await()
-                        val d=TextGroundingGate.evaluate(o.text,o.confidence,o.legible,o.inferred,evidence)
+                        val currentText=o.text.trimEnd()
+                        if(readingComplete && currentText==acceptedReading)return
+                        if(!currentText.startsWith(acceptedReading)) {
+                            DiagnosticHub.record("RESULT_DROPPED",o.turn.fields()+mapOf("reason" to "reading_prefix_rewritten"));return
+                        }
+                        val d=TextGroundingGate.evaluate(currentText,o.confidence,o.legible,o.inferred,evidence)
                         DiagnosticHub.record("TEXT_GROUNDING_DECISION",o.turn.fields()+mapOf("accepted" to d.accepted,"retry" to d.retry,"reason" to d.reason))
                         if(!d.accepted) { gate.commit(o.turn) { policy.result(false);runtime.notice("النص غير واضح؛ وجّه الكاميرا بثبات") };return }
                         gate.commit(o.turn) {
-                            policy.result(true);readAccepted=true;acceptedOpticalText=TextGroundingGate.canonical(evidence.text)
-                            val r=AnalysisResult(o.text,if(settings.useLocalOcr)AnalysisSource.LOCAL_OCR else AnalysisSource.GEMINI,turn=o.turn)
-                            if(runtime.result(r)&&settings.speechEnabled)tts.speakTurn(r,settings.speechRate,"READ_TEXT")
+                            val delta=currentText.removePrefix(acceptedReading).trim()
+                            acceptedReading=currentText;readingComplete=o.readingComplete
+                            if(readingComplete) { policy.result(true);acceptedOpticalText=TextGroundingGate.canonical(evidence.text) }
+                            val r=AnalysisResult(currentText,if(settings.useLocalOcr)AnalysisSource.LOCAL_OCR else AnalysisSource.GEMINI,turn=o.turn)
+                            if(runtime.result(r)&&settings.speechEnabled&&delta.isNotEmpty())
+                                tts.speakTurn(r,settings.speechRate,"READ_TEXT",spokenText=delta)
                         }
                     } else {
                         gate.commit(o.turn) {
@@ -177,7 +184,7 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                         if(activateAndBind(it)) { bound=it;true } else false
                     },onPartial={accept(it)})
                     accept(output)
-                    if(textMode&&readAccepted&&output.tail.isNotBlank()&&output.tail.split(Regex("\\s+")).size<=28) {
+                    if(textMode&&readingComplete&&acceptedReading==output.text.trimEnd()&&output.tail.isNotBlank()&&output.tail.split(Regex("\\s+")).size<=28) {
                         gate.commit(output.turn) {
                             val r=AnalysisResult(output.text,AnalysisSource.GEMINI,sceneTail=output.tail,turn=output.turn)
                             runtime.result(r)

@@ -103,3 +103,7 @@ Restored accepted-result content hashes and speech deltas carrying the original 
 Still restoring streaming lines, transport timing, viewport memory, synthetic Android replay and
 private-ledger reconstruction. These restorations need their own Android validation.
 No private image, ZIP, ledger or transcript was placed in GitHub or CI.
+
+Restored complete-line optical streaming, separate network/base64/payload timing, late callback
+rejection, and confirmed external-layout viewport memory with two regression tests. These are
+restorations of the interrupted checkpoint, not new measured phone performance results.
