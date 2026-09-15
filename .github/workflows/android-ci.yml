@@ -10,7 +10,9 @@ permissions:
 
 concurrency:
   group: android-${{ github.ref }}
-  cancel-in-progress: true
+  # Frequent recovery checkpoints must not repeatedly abort the running device suite.
+  # GitHub keeps the running validation and schedules the latest pending checkpoint.
+  cancel-in-progress: false
 
 # Development validation never publishes APKs or creates signing material.
 # A release requires separate device, grounding, privacy and measured performance acceptance.

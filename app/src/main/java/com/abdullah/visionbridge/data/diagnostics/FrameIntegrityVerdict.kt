@@ -8,6 +8,11 @@ object FrameIntegrityVerdict {
     private val outputs=setOf("RUNTIME_RESULT","TEXT_DISPLAYED","TTS_UTTERANCE_STARTED")
     fun analyse(events:List<SessionVerdict.Event>):List<SessionVerdict.Finding> {
         val submitted=mutableMapOf<String,SessionVerdict.Event>()
+        // Streaming can accept several increasing prefixes for one image. A speech delta may
+        // belong to any accepted revision, but never to an invented or not-yet-accepted one.
+        val acceptedRevisions=mutableMapOf<String,MutableSet<String>>()
+        val digest=Regex("[0-9a-f]{64}")
+        var missingRevision=0;var unacceptedRevision=0
         var active:String?=null;var generation:Long?=null
         var missing=0;var stale=0;var mismatch=0;var queueLate=0;var engineLate=0
         for(e in events) {
@@ -25,6 +30,14 @@ object FrameIntegrityVerdict {
             if(owner==null)missing++
             else if(identity.any { owner.text(it)!=e.text(it) })mismatch++
             if((active!=null && active!=id) || (generation!=null && generation!=e.number("visualGeneration")?.toLong()))stale++
+            val revision=e.text("acceptedContentHash")
+            if(revision==null || !digest.matches(revision)) missingRevision++
+            else if(e.type=="RUNTIME_RESULT") {
+                if(owner!=null && identity.all { owner.text(it)==e.text(it) } &&
+                    (active==null || active==id) &&
+                    (generation==null || generation==e.number("visualGeneration")?.toLong()))
+                    acceptedRevisions.getOrPut(id) { mutableSetOf() }.add(revision)
+            } else if(revision !in acceptedRevisions[id].orEmpty()) unacceptedRevision++
             if(e.type=="TTS_UTTERANCE_STARTED") {
                 if((e.number("queueAgeMs") ?: e.number("queueWaitMs") ?: 0.0)>1000)queueLate++
                 if((e.number("engineQueueAgeMs") ?: 0.0)>=1000)engineLate++
@@ -50,6 +63,8 @@ object FrameIntegrityVerdict {
         if(stale>0)add("STALE_VISUAL_OUTPUT",SessionVerdict.Severity.FATAL,"وصلت نتيجة من دور أو جيل قديم إلى العرض أو النطق.","count=$stale",*outputs.toTypedArray())
         if(mismatch>0)add("FRAME_RESULT_IDENTITY_MISMATCH",SessionVerdict.Severity.FATAL,"هوية النتيجة لا تطابق الصورة المرسلة.","count=$mismatch",*outputs.toTypedArray())
         if(missing>0)add("UNPROVABLE_FRAME_RESULT_IDENTITY",SessionVerdict.Severity.MAJOR,"بعض النتائج لا تحمل هوية كاملة تثبت الصورة التي تخصها.","count=$missing",*outputs.toTypedArray())
+        if(missingRevision>0)add("UNPROVABLE_ACCEPTED_CONTENT",SessionVerdict.Severity.MAJOR,"بصمة النص المقبول مفقودة أو غير صالحة؛ لا يمكن إثبات تطابق العرض والنطق.","count=$missingRevision",*outputs.toTypedArray())
+        if(unacceptedRevision>0)add("UNACCEPTED_CONTENT_OUTPUT",SessionVerdict.Severity.FATAL,"عُرض أو نُطق نص لا يعود إلى نسخة مقبولة من نتيجة هذا الدور.","count=$unacceptedRevision",*outputs.toTypedArray())
         if(queueLate>0)add("EXCESSIVE_TTS_QUEUE_AGE",SessionVerdict.Severity.MAJOR,"بدأت مقاطع بعد انتظار طويل؛ يلزم فصل استكمال القراءة عن تأخر أول كلام.","over1000ms=$queueLate engineStartDeadlineViolations=$engineLate","TTS_UTTERANCE_STARTED")
         if(selected>=20 && (speechBlocks>0 || sent.toDouble()/(selected-justified).coerceAtLeast(1)<.25))
             add("EXCESSIVE_FRAME_SUPPRESSION",SessionVerdict.Severity.MAJOR,"عدد الإرسالات منخفض مقارنة بالإطارات المختارة؛ راجع أسباب المنع.","selected=$selected submitted=$sent explainedSkips=$justified speechBackpressure=$speechBlocks","FRAME_SELECTED_FOR_ANALYSIS","LIVE_LOCAL_SPEECH_BACKPRESSURE","FRAME_SKIPPED")

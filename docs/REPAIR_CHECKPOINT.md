@@ -129,3 +129,16 @@ Recovery files and subsequent fixes are now saved remotely, including the former
 synthetic replay. CI run 34951021443 got past the repaired SDK setup and entered the exact
 project gate. A review also made the replay test explicitly return Unit (its export barrier
 returns a File, which otherwise gives JUnit an invalid non-void test method).
+
+## Accepted content verification checkpoint
+
+Remote 6ce8cf427b843e120a11be9e9a47873de243d02e passed lint, unit tests and assemble
+in run 34951179380. Managed-device job 104323347084 is still running at this checkpoint;
+its result must be checked before claiming device validation.
+Diagnostics now check that displayed/spoken content hashes belong to a previously accepted
+revision of the same turn. Earlier accepted streaming prefixes remain legitimate; unknown,
+future or malformed revisions are reported. Four regression tests cover these distinctions.
+Frequent durable saves no longer cancel an already-running device suite; the latest pending
+checkpoint is validated afterwards. No acceptance gate or test was removed.
+The exact local project check still cannot download Gradle (services.gradle.org DNS failure).
+Current phone latency, private golden post-fix replay and actual cloud accuracy remain unverified.

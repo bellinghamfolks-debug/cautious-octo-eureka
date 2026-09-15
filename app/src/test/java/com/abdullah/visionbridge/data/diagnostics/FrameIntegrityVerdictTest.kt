@@ -7,7 +7,31 @@ class FrameIntegrityVerdictTest {
     private fun event(type:String,id:String="a",gen:Long=0,extra:Map<String,Any?> = emptyMap())=
         SessionVerdict.Event(type,mapOf("turnId" to id,"traceId" to id,"frameId" to id,
             "visualGeneration" to gen,"mode" to "TEXT_READING","model" to "test",
-            "transportSessionId" to "session-$id","imageHash" to "a".repeat(64),"promptVersion" to "test")+extra)
+            "transportSessionId" to "session-$id","imageHash" to "a".repeat(64),"promptVersion" to "test",
+            "acceptedContentHash" to "c".repeat(64))+extra)
+    @Test fun matchingFrameIdentityDoesNotPermitUnacceptedSpeechOrDisplay() {
+        val result=FrameIntegrityVerdict.analyse(listOf(event("TURN_ACTIVATED"),event("FRAME_REQUEST_SENT"),
+            event("RUNTIME_RESULT"),event("TEXT_DISPLAYED",extra=mapOf("acceptedContentHash" to "d".repeat(64))),
+            event("TTS_UTTERANCE_STARTED",extra=mapOf("acceptedContentHash" to "e".repeat(64)))))
+        assertEquals("count=2",result.single { it.code=="UNACCEPTED_CONTENT_OUTPUT" }.measurement)
+    }
+    @Test fun earlierAcceptedStreamingRevisionCanFinishWithinItsActiveTurn() {
+        assertTrue(FrameIntegrityVerdict.analyse(listOf(event("TURN_ACTIVATED"),event("FRAME_REQUEST_SENT"),
+            event("RUNTIME_RESULT"),event("RUNTIME_RESULT",extra=mapOf("acceptedContentHash" to "d".repeat(64))),
+            event("TTS_UTTERANCE_STARTED"),event("TEXT_DISPLAYED",extra=mapOf("acceptedContentHash" to "d".repeat(64))))).isEmpty())
+    }
+    @Test fun futureAcceptanceCannotRetroactivelyJustifyOutput() {
+        val result=FrameIntegrityVerdict.analyse(listOf(event("TURN_ACTIVATED"),event("FRAME_REQUEST_SENT"),
+            event("TEXT_DISPLAYED"),event("RUNTIME_RESULT")))
+        assertTrue(result.any { it.code=="UNACCEPTED_CONTENT_OUTPUT" })
+    }
+    @Test fun missingOrMalformedContentHashesAreExplicitlyUnprovable() {
+        for(hash in listOf(null,"", "z".repeat(64))) {
+            val result=FrameIntegrityVerdict.analyse(listOf(event("FRAME_REQUEST_SENT"),
+                event("RUNTIME_RESULT",extra=mapOf("acceptedContentHash" to hash))))
+            assertTrue(result.any { it.code=="UNPROVABLE_ACCEPTED_CONTENT" })
+        }
+    }
     @Test fun lateOldOutputAndWrongImageAreDistinctFailures() {
         val result=FrameIntegrityVerdict.analyse(listOf(event("TURN_ACTIVATED"),event("FRAME_REQUEST_SENT"),
             event("TURN_ACTIVATED","b",1),event("FRAME_REQUEST_SENT","b",1),event("TTS_UTTERANCE_STARTED"),
