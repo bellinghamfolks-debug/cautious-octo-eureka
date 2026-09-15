@@ -179,7 +179,11 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                     val evidence=evidenceTask.await()
                     val turn=capture.copy(submittedAtNanos=SystemClock.elapsedRealtimeNanos(),imageHash=encoded.imageHash)
                     if(!activateAndBind(turn))return@withContext
-                    bound=turn;DiagnosticHub.record("LOCAL_FRAME_BOUND",turn.fields())
+                    bound=turn;DiagnosticHub.record("LOCAL_FRAME_BOUND",turn.fields()+mapOf(
+                        "captureProfile" to settings.captureProfile.name,
+                        "sceneDescriptionStyle" to settings.sceneDescriptionStyle.name,
+                        "outputWidth" to encoded.width,"outputHeight" to encoded.height,
+                        "encodedBytes" to encoded.bytes.size,"quality" to encoded.quality))
                     accept(FrameTurnTransport.Output(turn,evidence.text,"",(evidence.confidence*100).toInt(),true,false))
                 } else {
                     val key=keys.get();check(!key.isNullOrBlank()) { "مفتاح Gemini غير موجود" }

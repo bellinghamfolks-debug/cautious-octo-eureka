@@ -52,7 +52,7 @@ A submitted turn additionally binds model, promptVersion and SHA-256 of transmit
 Identity must be immutable; a result without a matching submission fails validation.
 
 Stages (explicit start/end nanoseconds, not diagnostic-writer arrival time): capture,
-tracking, preprocessing, encoding, localGrounding, networkSetup, networkModel,
+tracking, preprocessing, encoding, requestEncoding, localGrounding, networkSetup, networkModel,
 runtimeAcceptance, uiRender, ttsQueue, ttsEngineStart. Also emit first network chunk,
 first validated text, first useful rendered text, first useful speech and turn completion.
 Report n, missing n, median, p90, p95 and max. Incomplete stages remain missing, never zero.
@@ -116,10 +116,28 @@ to supplied latency observations, **not** release approval, device execution pro
 verification that annotations are accurate. Match annotations to private evidence locally.
 Global stale-start testing, image quality, recall and paired-run comparability remain
 independent gates. Missed opportunities produce missing/infinite tail percentiles.
-# Complete stage accounting
+## Complete stage accounting
 
 `requestEncoding` records Base64 and request JSON serialization. It is included in the union
 of preprocessing + image encoding + request encoding for the p95 < 400 ms budget; it must
 not disappear into network time. `localGrounding` includes a cold model load when required.
 Reports include separate capture-to-UI and capture-to-speech percentiles, retaining missing
 opportunities in both denominators. A 64-character non-hex value is not an image hash.
+
+## Explicit event-to-annotation join
+
+`python3 scripts/build_frame_acceptance.py EVENTS_JSONL ANNOTATIONS_JSON --output REPLAY_JSON`
+builds evaluator input locally. All three paths must remain outside the repository.
+Annotations contain an `opportunities` array with recorder `sessionId`, `processId`, `turnId`,
+`acceptedContentHash`, `workload`, `speechEnabled`, `normalCondition`,
+`opportunityCapturedAtNanos`, `groundTruthMatch` and `useful`. Annotate every target opportunity,
+including silence. Ground truth and usefulness require independent inspection; model confidence
+cannot supply either. The selected hash identifies the first independently verified useful revision.
+
+The join requires exactly one submission and runtime acceptance for the annotated revision.
+It verifies exact image/turn identity and profile, isolates recorder sessions and processes,
+ignores SCENE_TAIL as first reading, and checks active generation at output time. Missing
+or ambiguous bindings remain failed rows. Original text and image paths are omitted from output.
+Early stages join by explicit capture IDs; output stages additionally require the accepted hash.
+Only structurally inapplicable phases get empty intervals (e.g. local grounding for a scene).
+Missing measured phases stay missing. This adapter cannot recover absent identities in the old ZIP.

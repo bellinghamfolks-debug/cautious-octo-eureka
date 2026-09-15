@@ -160,3 +160,11 @@ budget and reports UI and speech separately. Local grounding includes cold ONNX 
 All 15 Python measurement/private-replay tests pass, including three new budget/hash tests.
 Local Android validation was attempted and remains blocked at the Gradle download DNS step;
 remote CI is required for this batch. The runtime interval checkpoint is remote 471285b68ceac7985893b0f31fad13e40c1e6b9e.
+
+Added the local explicit event/annotation join (build_frame_acceptance.py). It isolates process
+and session, binds exact accepted revisions, rejects profile mismatch/old generations and preserves
+missing opportunities; no temporal guessing and no text/image contents in generated rows.
+All 21 Python tests pass. Local binding events now include profile and encoded dimensions/quality.
+The annotation schema and private-path requirements are documented. Real phone observations and
+independent usefulness annotations are still required; generated synthetic tests are not after-replay
+performance evidence. Latest prior durable measurement checkpoint: 7948b3510c958da99166f9c57c4fa2d29311d812.
