@@ -52,7 +52,10 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
         val prior=previous
         val difference=if(prior?.size==pixels.size) pixels.indices.sumOf { abs(pixels[it]-prior[it]).toDouble() }/pixels.size else 255.0
         val now=SystemClock.elapsedRealtime()
-        if(prior==null || difference>7) stableSince=now
+        val motionCompensatedStable=target!=null && !target.targetChanged &&
+            target.reason!="awaiting_target_consensus" && (target.dissimilarity ?: 1.0)<=.08 &&
+            (target.coverage ?: 0.0)>=.6
+        if(prior==null || (difference>7 && !motionCompensatedStable)) stableSince=now
         previous=pixels
         val mean=pixels.average();val contrast=sqrt(pixels.sumOf { (it-mean)*(it-mean) }/pixels.size)
         var lap=0.0;var edges=0;var boundaryEdges=0

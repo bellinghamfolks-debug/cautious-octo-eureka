@@ -27,6 +27,9 @@ jobs:
           java-version: "17"
           cache: gradle
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
       - name: Install Android SDK
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
       - name: Validate measurement harness
@@ -62,9 +65,12 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
 
       - name: Install Android 36 SDK
-        run: yes | sdkmanager "platforms;android-36" "build-tools;36.0.0"
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
       - name: Grant access to KVM
         run: |

@@ -112,3 +112,15 @@ Restored private replay reconstruction with its three safety/identity tests (12 
 and synthetic Android replay tests: twenty clear images in both diagnostic settings, blur/glare/
 rotation/black, transmitted JPEG hash and atomic request, and 100 runtime replacements.
 All current-session 207 analysis image references were recovered locally. New tests await CI.
+
+## CI infrastructure and continued repair
+
+Runs 34950388004, 34950580130 and 34950854818 stopped before source validation because
+setup-android v3 defaults to the retired SDK package `tools`. Its official action.yml confirms
+that default. CI now requests `platform-tools` explicitly; no gate has been removed or bypassed.
+The exact local project check was attempted again and failed downloading Gradle due DNS.
+
+Also fixed the PP-OCR deskew bitmap lifetime: a finally block now recycles it on no-box return,
+failure and cancellation. Stable candidate timing now respects Smart Target's motion-compensated
+stability, so camera shake alone need not perpetually restart the settling interval.
+The synthetic device replay and these changes still require successful full CI.

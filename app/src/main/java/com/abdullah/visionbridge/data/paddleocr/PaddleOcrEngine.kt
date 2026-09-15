@@ -244,6 +244,7 @@ class PaddleOcrEngine(
         withContext(Dispatchers.Default) {
             val started = SystemClock.elapsedRealtimeNanos()
             var page = bitmap
+            try {
             val scale = resolutionFor(bitmap, quality, subjectScale)
             var detection = detect(active, page, scale.detectionLongEdge)
             var boxes = detection.boxes
@@ -349,8 +350,12 @@ class PaddleOcrEngine(
                     "meanConfidence" to PageAssembler.meanConfidence(lines),
                 ),
             )
-            if (page !== bitmap) page.recycle()
             PaddleOcrResult(text, PageAssembler.meanConfidence(lines), lines.size, boxes.size)
+            } finally {
+                // Includes no-box returns, model failures and cancellation during recognition.
+                // The caller still owns the original bitmap.
+                if (page !== bitmap) page.recycle()
+            }
         }
     }
 
