@@ -168,3 +168,18 @@ All 21 Python tests pass. Local binding events now include profile and encoded d
 The annotation schema and private-path requirements are documented. Real phone observations and
 independent usefulness annotations are still required; generated synthetic tests are not after-replay
 performance evidence. Latest prior durable measurement checkpoint: 7948b3510c958da99166f9c57c4fa2d29311d812.
+
+## Offline optical investigation
+
+Run 34951835689 (9d136d2) passed full CI. Run 34952285952 (7948b35) also passed both
+build and managed-device jobs, covering the new runtime/display interval test.
+Added a generic offline host optical probe using checksum-verified production ONNX weights.
+Dependencies were installed outside git in private-tools/python (onnxruntime, OpenCV, numpy).
+The probe completed the locally defined 11-case subset. Its raw readings and case summaries
+remain outside git under private-replay-current. No model request or image upload occurred.
+It deliberately labels results exploratory: OpenCV resizing, unmerged regions and greedy CTC
+differ from Android's full pipeline, and evidence JPEGs are not proven transmitted JPEGs.
+It is not a phone benchmark, cloud replay, 95% recall measurement or release pass.
+Reproduce with scripts/probe_private_optical_evidence.py using private paths and the pinned
+models fetched by scripts/fetch_ocr_models.py. Output uses exclusive creation and flushes each
+completed frame so an interrupted investigation does not overwrite prior work.
