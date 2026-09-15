@@ -107,3 +107,8 @@ No private image, ZIP, ledger or transcript was placed in GitHub or CI.
 Restored complete-line optical streaming, separate network/base64/payload timing, late callback
 rejection, and confirmed external-layout viewport memory with two regression tests. These are
 restorations of the interrupted checkpoint, not new measured phone performance results.
+
+Restored private replay reconstruction with its three safety/identity tests (12 Python tests pass),
+and synthetic Android replay tests: twenty clear images in both diagnostic settings, blur/glare/
+rotation/black, transmitted JPEG hash and atomic request, and 100 runtime replacements.
+All current-session 207 analysis image references were recovered locally. New tests await CI.
