@@ -124,8 +124,8 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                 // New targets can upload while PP-OCR verifies the same transmitted JPEG. No
                 // text can pass accept() until that independent evidence has completed.
                 val evidenceTask=async(Dispatchers.Default) { if(textMode) {
-                    local.ensureLoaded().getOrThrow()
                     val groundingStarted=SystemClock.elapsedRealtimeNanos()
+                    local.ensureLoaded().getOrThrow()
                     val exact=checkNotNull(BitmapFactory.decodeByteArray(encoded.bytes,0,encoded.bytes.size))
                     val result=try { local.read(exact,LocalReadingQuality.MAXIMUM) } finally { exact.recycle() }
                     FrameStages.record(c.trace,"localGrounding",groundingStarted,extra=mapOf("imageHash" to encoded.imageHash))

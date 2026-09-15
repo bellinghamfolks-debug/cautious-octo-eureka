@@ -37,6 +37,36 @@ import evaluate_frame_acceptance as acceptance
 
 
 class AcceptanceTest(unittest.TestCase):
+    def valid_row(self):
+        identity={key: 'synthetic' for key in acceptance.IDENTITY}
+        identity.update(mode='TEXT_READING', imageHash='a'*64, visualGeneration=0)
+        return dict(workload='TEXT_READING/FAST', groundTruthMatch=True, submitted=identity,
+                    output=dict(identity, accepted=True, useful=True, obsolete=False),
+                    opportunityCapturedAtNanos=0,
+                    timesNanos=dict(capturedAt=0, runtimeAcceptedAt=1_000_000_000,
+                                    uiRenderedAt=1_100_000_000, ttsEligibleAt=1_000_000_000,
+                                    ttsStartedAt=1_200_000_000),
+                    stagesNanos={s: [[0, 1_000_000]] for s in acceptance.STAGES})
+
+    def test_reports_ui_and_speech_separately(self):
+        r=acceptance.evaluate({'opportunities':[self.valid_row()]*30})['workloads']['TEXT_READING/FAST']
+        self.assertEqual('PASS',r['status'])
+        self.assertEqual(1100,r['captureToUiMs']['median'])
+        self.assertEqual(1200,r['captureToSpeechMs']['median'])
+
+    def test_base64_and_payload_cost_cannot_hide_outside_encoding_budget(self):
+        row=self.valid_row()
+        row['stagesNanos']['requestEncoding']=[[1_000_000, 450_000_000]]
+        r=acceptance.evaluate({'opportunities':[row]*30})['workloads']['TEXT_READING/FAST']
+        self.assertIn('preprocessing_encoding_budget',r['failures'])
+        self.assertEqual(450,r['preprocessingEncodingMs']['p95'])
+
+    def test_64_characters_do_not_make_a_valid_image_digest(self):
+        row=self.valid_row()
+        row['submitted']['imageHash']=row['output']['imageHash']='z'*64
+        r=acceptance.evaluate({'opportunities':[row]*30})['workloads']['TEXT_READING/FAST']
+        self.assertEqual(30,r['missedOrInvalid'])
+
     def test_silence_remains_in_percentile_denominator(self):
         samples = [1000]*8 + [None]*2
         self.assertIsNone(acceptance.complete_percentiles(samples)['p90'])

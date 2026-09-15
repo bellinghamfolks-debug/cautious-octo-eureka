@@ -116,3 +116,10 @@ to supplied latency observations, **not** release approval, device execution pro
 verification that annotations are accurate. Match annotations to private evidence locally.
 Global stale-start testing, image quality, recall and paired-run comparability remain
 independent gates. Missed opportunities produce missing/infinite tail percentiles.
+# Complete stage accounting
+
+`requestEncoding` records Base64 and request JSON serialization. It is included in the union
+of preprocessing + image encoding + request encoding for the p95 < 400 ms budget; it must
+not disappear into network time. `localGrounding` includes a cold model load when required.
+Reports include separate capture-to-UI and capture-to-speech percentiles, retaining missing
+opportunities in both denominators. A 64-character non-hex value is not an image hash.

@@ -154,3 +154,9 @@ and each current revision is acknowledged at most once. A new Android regression
 exported events and monotonic intervals; it awaits validation on this subsequent checkpoint.
 Speech queue timing starts at eligibility, with original utterance queue age still reported
 separately. An earlier delivered clause does not silently erase original queue age.
+
+Performance acceptance now counts Base64/JSON request encoding in the preprocessing/encoding
+budget and reports UI and speech separately. Local grounding includes cold ONNX loading.
+All 15 Python measurement/private-replay tests pass, including three new budget/hash tests.
+Local Android validation was attempted and remains blocked at the Gradle download DNS step;
+remote CI is required for this batch. The runtime interval checkpoint is remote 471285b68ceac7985893b0f31fad13e40c1e6b9e.

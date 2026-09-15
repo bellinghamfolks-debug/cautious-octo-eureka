@@ -5,6 +5,7 @@ Schema is documented in docs/FRAME_PERFORMANCE_ACCEPTANCE.md. Outputs aggregates
 import argparse
 import json
 import math
+import re
 from pathlib import Path
 from measure_frame_pipeline import distribution
 
@@ -12,7 +13,7 @@ LIMITS = {'TEXT_READING/FAST': (2000, 3000), 'TEXT_READING/STABLE': (3000, 4500)
           'SCENE_DESCRIPTION/BRIEF': (2000, 3000), 'SCENE_DESCRIPTION/COMPREHENSIVE': (None, None)}
 IDENTITY = ('turnId', 'traceId', 'frameId', 'visualGeneration', 'mode', 'model',
             'promptVersion', 'transportSessionId', 'imageHash')
-STAGES = ('capture', 'tracking', 'preprocessing', 'encoding', 'localGrounding',
+STAGES = ('capture', 'tracking', 'preprocessing', 'encoding', 'requestEncoding', 'localGrounding',
           'networkSetup', 'networkModel', 'runtimeAcceptance', 'uiRender', 'ttsQueue', 'ttsEngineStart')
 
 
@@ -44,6 +45,7 @@ def evaluate(data):
     for mode, (median_limit, p90_limit) in LIMITS.items():
         rows = [o for o in all_opportunities if o.get('workload') == mode]
         latencies, queues, combined, invalid, missing_stages = [], [], [], 0, 0
+        ui_latencies, speech_latencies = [], []
         durations = {s: [] for s in STAGES}
         normal = []
         for row in rows:
@@ -57,7 +59,8 @@ def evaluate(data):
                       and output.get('useful') is True and output.get('obsolete') is False)
             bound = (all(identity.get(k) is not None and identity.get(k) == output.get(k) for k in IDENTITY)
                      and identity.get('mode') == mode.split('/')[0]
-                     and isinstance(identity.get('imageHash'), str) and len(identity['imageHash']) == 64)
+                     and isinstance(identity.get('imageHash'), str)
+                     and re.fullmatch(r'[0-9a-f]{64}', identity['imageHash']) is not None)
             times_valid = all(isinstance(endpoints.get(k), int) for k in required_endpoints)
             target_start = row.get('opportunityCapturedAtNanos')
             times_valid = times_valid and isinstance(target_start, int)
@@ -71,6 +74,9 @@ def evaluate(data):
             end = endpoints.get('ttsStartedAt' if speech else 'uiRenderedAt')
             latency = (end-target_start)/1e6 if valid else None
             latencies.append(latency)
+            ui_latencies.append((endpoints['uiRenderedAt']-target_start)/1e6 if valid else None)
+            if speech:
+                speech_latencies.append(latency)
             if row.get('normalCondition') is True:
                 normal.append(latency)
             if valid and speech:
@@ -82,8 +88,8 @@ def evaluate(data):
                     missing_stages += 1
                 else:
                     durations[stage].append(covered_ms(spans))
-            if 'preprocessing' in stages and 'encoding' in stages:
-                combined.append(covered_ms(stages['preprocessing']+stages['encoding']))
+            if all(s in stages for s in ('preprocessing', 'encoding', 'requestEncoding')):
+                combined.append(covered_ms(stages['preprocessing']+stages['encoding']+stages['requestEncoding']))
         percentiles = complete_percentiles(latencies)
         failures = []
         if len(rows) < 30: failures.append('insufficient_annotated_opportunities')
@@ -105,6 +111,8 @@ def evaluate(data):
         out[mode] = dict(status='FAIL' if failures else 'PASS', opportunities=len(rows),
                          usefulOutputs=len(rows)-invalid, missedOrInvalid=invalid,
                          captureToUsefulMs=percentiles, firstTtsQueueAgeMs=queue,
+                         captureToUiMs=complete_percentiles(ui_latencies),
+                         captureToSpeechMs=complete_percentiles(speech_latencies),
                          preprocessingEncodingMs=enc, stages={s:distribution(v) for s,v in durations.items()},
                          failures=failures)
     return {'scope':'annotated_replay_latency_only_not_release_approval', 'workloads':out}
