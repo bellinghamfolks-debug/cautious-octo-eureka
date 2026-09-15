@@ -183,3 +183,12 @@ It is not a phone benchmark, cloud replay, 95% recall measurement or release pas
 Reproduce with scripts/probe_private_optical_evidence.py using private paths and the pinned
 models fetched by scripts/fetch_ocr_models.py. Output uses exclusive creation and flushes each
 completed frame so an interrupted investigation does not overwrite prior work.
+
+Full CI on 7a67a11 succeeded (run 34952513124): lint/unit/assemble and 17 managed-device
+tests. The expanded private host optical probe is processing the complete selected sequence,
+with at least 195/207 rows already flushed locally at this checkpoint. This is optical evidence
+investigation only, not the requested production end-to-end replay.
+Moved the TTS submission clock read after the synchronized eligibility-window read, preventing
+a concurrent predecessor completion from producing a negative queue interval. This small timing
+change requires the following checkpoint's validation. Previous durable helper checkpoint is
+06bde7c3f29659dfa4e3dab186a25381a14644bf.

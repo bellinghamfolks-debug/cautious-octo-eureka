@@ -802,10 +802,12 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
 
             val utteranceId = "vision-${UUID.randomUUID()}"
             val completion = CompletableDeferred<SpeechOutcome>()
-            val submittedAt = SystemClock.elapsedRealtimeNanos()
             val window = request.trace?.turn?.let {
                 visualTimeline.window(it,request.trace.section,request.enqueuedAtElapsedNanos)
             }
+            // Sample after reading the predecessor's completion timestamp. A concurrent onDone
+            // must not make eligibility newer than the sampled submission and yield a negative span.
+            val submittedAt = SystemClock.elapsedRealtimeNanos()
             if(window?.expired(submittedAt)==true) {
                 DiagnosticHub.record("TTS_REQUEST_DROPPED",request.trace.fieldsOrEmpty(mapOf(
                     "reason" to "start_deadline_before_submit","queueAgeMs" to (submittedAt-request.enqueuedAtElapsedNanos)/1e6)))
