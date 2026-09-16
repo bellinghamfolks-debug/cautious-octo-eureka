@@ -59,6 +59,13 @@ android {
         debug {
             signingConfigs.findByName("visionbridgeStable")?.let { signingConfig = it }
         }
+        create("validation") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".validation"
+            versionNameSuffix = "-frame-repair-test1"
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("debug")
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true

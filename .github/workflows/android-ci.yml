@@ -14,7 +14,8 @@ concurrency:
   # GitHub keeps the running validation and schedules the latest pending checkpoint.
   cancel-in-progress: false
 
-# Development validation never publishes APKs or creates signing material.
+# Development validation never publishes release APKs or creates release signing material.
+# An explicitly marked candidate commit can package an isolated test app after both gates.
 # A release requires separate device, grounding, privacy and measured performance acceptance.
 jobs:
   build:
@@ -48,6 +49,56 @@ jobs:
             app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
           retention-days: 7
+  candidate:
+    name: Package isolated device-test candidate
+    needs: [build, device]
+    if: github.ref == 'refs/heads/codex/visionbridge-frame-integrity' && contains(github.event.head_commit.message, '[device-candidate]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - name: Install Android SDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Assemble isolated ARM64 test app
+        run: ./gradlew --no-daemon lintValidation assembleValidation
+      - name: Verify package identity and record provenance
+        run: |
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging app/build/outputs/apk/validation/app-validation.apk > candidate-badging.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, os, shutil
+          badging = Path('candidate-badging.txt').read_text()
+          assert "package: name='com.abdullah.visionbridge.validation'" in badging
+          assert 'frame-repair-test1' in badging
+          assert "native-code: 'arm64-v8a'" in badging
+          apk = Path('app/build/outputs/apk/validation/app-validation.apk')
+          name = 'VisionBridge-3.8.3-frame-repair-test1-arm64.apk'
+          shutil.copyfile(apk, name)
+          Path('candidate-info.txt').write_text(
+              'DEVICE TEST CANDIDATE — NOT AN APPROVED RELEASE\n'
+              'Installs separately as com.abdullah.visionbridge.validation.\n'
+              'Phone/network latency and new cloud-output acceptance remain unverified.\n'
+              'No private diagnostic evidence is included.\n'
+              'commit=' + os.environ['GITHUB_SHA'] + '\n'
+              'sha256=' + hashlib.sha256(apk.read_bytes()).hexdigest() + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: isolated-device-test-candidate
+          path: |
+            VisionBridge-3.8.3-frame-repair-test1-arm64.apk
+            candidate-info.txt
+          if-no-files-found: error
+          retention-days: 30
 
   device:
     name: On-device tests

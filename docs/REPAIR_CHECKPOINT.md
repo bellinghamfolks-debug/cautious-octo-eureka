@@ -223,3 +223,18 @@ shortcut. It verifies the production gate on those supplied observations, not eq
 host OCR probe to Android OCR, strict old wire-image association, new Gemini outputs or latency.
 Private input claims/readings and per-case results remain outside git. The helper emits decisions
 only. The complete 207-frame host optical investigation and 157-frame viewport probe are finished.
+
+## Device candidate requested 2026-09-16
+
+Remote 2bdea729d68faeb46d4cf41f93ef0714aeaf1180 passed full CI, run 34995058390.
+The user requested a downloadable app or preparation if not ready. Final release acceptance is
+still open, so an explicitly labelled side-by-side device-test candidate is being prepared.
+The validation build uses applicationId com.abdullah.visionbridge.validation and version
+3.8.3-frame-repair-test1, with its own preferences/Keystore and explicit Arabic test labels.
+It does not replace the installed production app or require its signing key. Main-screen title
+uses the app-name resource so the test identity is visible to TalkBack.
+A commit explicitly marked [device-candidate] can assemble lintValidation/assembleValidation
+only after lint/unit/assemble and managed-device tests succeed. Artifact upload is restricted
+to the ARM64 test APK and text provenance; no release is created and no private input is uploaded.
+Phone/network performance and new cloud-output accuracy remain unverified. This is a test
+candidate to collect those measurements, not a waived acceptance gate or an approved release.

@@ -84,7 +84,7 @@ fun MainScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Text(
-                    text = "VisionBridge",
+                    text = androidx.compose.ui.res.stringResource(com.abdullah.visionbridge.R.string.app_name),
                     style = MaterialTheme.typography.headlineMedium,
                     modifier = Modifier.semantics { heading() },
                 )
