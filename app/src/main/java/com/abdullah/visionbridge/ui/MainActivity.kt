@@ -103,7 +103,7 @@ class MainActivity : ComponentActivity() {
                         state = state,
                         onModeChange = viewModel::setMode,
                         onOpenSettings = { showSettings = true },
-                        onStartCapture = { this@MainActivity.requestCapture() },
+                        onStartCapture = { viewModel.prepareCapture { this@MainActivity.requestCapture() } },
                         onStopCapture = {
                             DiagnosticHub.record("USER_STOP_CAPTURE")
                             this@MainActivity.startService(

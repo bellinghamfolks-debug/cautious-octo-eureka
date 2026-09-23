@@ -39,6 +39,21 @@ class EvidenceStore(val directory: File) {
     private val skipped = AtomicInteger(0)
     private val bytes = AtomicLong(0L)
 
+    init {
+        // Persisted evidence survives process death; its privacy declaration must survive too.
+        directory.listFiles()?.filter { it.isFile }?.forEach { file ->
+            written.incrementAndGet()
+            bytes.addAndGet(file.length())
+            if (file.name.contains("analysis_input_")) {
+                analysisInputWritten.incrementAndGet()
+                analysisInputBytes.addAndGet(file.length())
+            } else if (!file.name.contains("timeline_1s")) {
+                supplementalWritten.incrementAndGet()
+                supplementalBytes.addAndGet(file.length())
+            }
+        }
+    }
+
     @Volatile
     var enabled: Boolean = false
 

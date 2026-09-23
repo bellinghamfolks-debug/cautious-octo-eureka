@@ -250,3 +250,24 @@ restart, cached exports, settings preservation, fresh export and repeated deleti
 Candidate 3.8.4-frame-repair-test2 (45) uses the isolated validation application ID.
 Local required check passed structure/secret scan but Gradle DNS resolution failed.
 Remote build/device validation required before distribution. No private evidence committed.
+
+
+## September 24 session and permanent signing
+
+Started at c979268a9526e41b767f12c7067af5bb88d56d69, 3.8.4 (45).
+Private test1 evidence shows 305 selected frames and 49 pre-submission IllegalStateException
+failures, no cloud requests and no grounded results. No exception message/code location was
+recorded, so avoid attributing every failure with certainty. The source admits missing cloud
+credentials after starting encoding and optical model loading, then erases the useful error.
+Added shared cloud-readiness validation before capture and before expensive frame work, audible
+configuration guidance, and safe stage/code-location diagnostics (no exception text or secrets).
+Local text stays available without a key; scenes require one even with the local-text switch.
+Restored persisted evidence counters on process restart to fix the false NO-IMAGES declaration.
+Tests cover all readiness combinations and persisted evidence counts/deletion.
+
+Previous CI debug private keys were not retained. A permanent new signing identity is privately
+backed up under VisionBridge-private-signing-recovery-v1.zip; see STABLE_SIGNING.md for public
+certificate pin and repeatable signing. Never regenerate or publish that private archive.
+New application ID com.abdullah.visionbridge.stable avoids deleting prior app data for migration.
+Version 3.8.5-stable-signing-test3 (46). Distribution must use the pinned private signer after CI.
+These are fixes to observed blockers, not proof of complete optical/cloud/performance acceptance.

@@ -43,6 +43,7 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
     private var opportunityCapturedAt:Long?=null
     private val availability=VisualAvailability()
     @Volatile private var acceptedOpticalText=""
+    private var configurationNoticeSpoken = false
     private val scenePolicy=SceneDescriptionPolicy()
 
     @Synchronized fun candidate(bitmap:Bitmap,trace:DiagnosticTrace,settings:AppSettings,
@@ -100,6 +101,18 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
         }
         availability.available()
         val textMode=settings.mode==AnalysisMode.TEXT_READING
+        // Configuration errors must not burn CPU encoding/OCR on every camera frame.
+        val apiKey = if (AnalysisReadiness.requiresCloud(settings)) keys.get() else null
+        if (AnalysisReadiness.error(settings, !apiKey.isNullOrBlank()) != null) {
+            runtime.error(AnalysisReadiness.MISSING_KEY)
+            DiagnosticHub.record("FRAME_CONFIGURATION_BLOCKED", capture.fields()+mapOf("reason" to "missing_api_key"))
+            if (!configurationNoticeSpoken) {
+                configurationNoticeSpoken = true
+                tts.speakFeedback(AnalysisReadiness.MISSING_KEY)
+            }
+            return@withLock
+        }
+        configurationNoticeSpoken = false
         val decision=if(textMode) policy.consider(c.quality,SystemClock.elapsedRealtime(),settings.captureProfile==CaptureProfile.STABLE)
             else scenePolicy.shouldProbe(capture.visualGeneration,settings.sceneDescriptionStyle,SystemClock.elapsedRealtime(),
                 c.compensatedDifference,c.chromaDifference).let { QualityRetryPolicy.Decision(it.accepted,it.reason) }
@@ -114,15 +127,19 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
             if(accepted) DiagnosticHub.record("TURN_ACTIVATED",turn.fields())
             return accepted
         }
+        var failureStage = "encoding"
+        var encodedHash: String? = null
         var bound:AnalysisTurn?=null;var acceptedReading="";var readingComplete=false;var spokenScene=""
         try {
             withContext(c.trace) {
                 val encodingStarted=SystemClock.elapsedRealtimeNanos()
                 val encoded=encoder.encode(bitmap,settings)
+                encodedHash = encoded.imageHash
                 FrameStages.record(c.trace,"encoding",encodingStarted,extra=mapOf("imageHash" to encoded.imageHash))
                 currentCoroutineContext().ensureActive()
                 // New targets can upload while PP-OCR verifies the same transmitted JPEG. No
                 // text can pass accept() until that independent evidence has completed.
+                failureStage = "local_grounding_or_submission"
                 val evidenceTask=async(Dispatchers.Default) { if(textMode) {
                     val groundingStarted=SystemClock.elapsedRealtimeNanos()
                     local.ensureLoaded().getOrThrow()
@@ -186,7 +203,7 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                         "encodedBytes" to encoded.bytes.size,"quality" to encoded.quality))
                     accept(FrameTurnTransport.Output(turn,evidence.text,"",(evidence.confidence*100).toInt(),true,false))
                 } else {
-                    val key=keys.get();check(!key.isNullOrBlank()) { "مفتاح Gemini غير موجود" }
+                    val key = requireNotNull(apiKey)
                     val output=transport.analyze(capture,encoded,settings,key,onSubmitted={
                         if(activateAndBind(it)) { bound=it;true } else false
                     },onPartial={accept(it)})
@@ -206,7 +223,9 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
             val turn=bound
             if(turn!=null)gate.commit(turn) { runtime.error("تعذر تحليل الصورة الحالية") }
             else gate.withinGeneration(capture.visualGeneration) { runtime.error("تعذر تجهيز الصورة للتحليل") }
-            DiagnosticHub.record("FRAME_ANALYSIS_FAILURE",(bound?:capture).fields()+mapOf("errorType" to e.javaClass.simpleName))
+            DiagnosticHub.record("FRAME_ANALYSIS_FAILURE",(bound?:capture).fields()+mapOf("errorType" to e.javaClass.simpleName,
+                "failureStage" to failureStage, "encodedImageHash" to encodedHash,
+                "codeLocation" to e.stackTrace.firstOrNull { it.className.startsWith("com.abdullah.visionbridge") }?.let { "${it.className}:${it.lineNumber}" }))
         } finally {
             gate.withinGeneration(capture.visualGeneration) { runtime.processing(false) }
             activeJob=null

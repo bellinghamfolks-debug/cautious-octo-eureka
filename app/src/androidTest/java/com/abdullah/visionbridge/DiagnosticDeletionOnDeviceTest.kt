@@ -31,7 +31,9 @@ class DiagnosticDeletionOnDeviceTest {
             recorder.evidenceStore.directory.mkdirs()
             File(recorder.evidenceStore.directory, "old.jpg").writeBytes(byteArrayOf(1, 2, 3))
             // Persisted files must be deleted even after the in-memory counters reset.
-            EvidenceStore(recorder.evidenceStore.directory).clear()
+            val restored = EvidenceStore(recorder.evidenceStore.directory)
+            assertEquals(1, restored.frameCount())
+            restored.clear()
             val oldExport = recorder.export()
             assertTrue(oldExport.exists())
             recorder.clearHistory()

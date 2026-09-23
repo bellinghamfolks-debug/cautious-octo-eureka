@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Locale
@@ -184,6 +185,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { DiagnosticHub.clearHistory() }
             .onSuccess { message.value = "تم حذف جميع سجلات التشخيص والصور وملفات المشاركة المحفوظة داخل التطبيق" }
             .onFailure { message.value = it.message ?: "تعذر حذف التشخيص بالكامل؛ يمكنك إعادة المحاولة" }
+    }
+
+    fun prepareCapture(onReady: () -> Unit) = viewModelScope.launch {
+        val settings = container.settingsRepository.settings.first()
+        val hasKey = container.apiKeyStore.hasKey()
+        keyState.value = hasKey
+        val problem = com.abdullah.visionbridge.domain.model.AnalysisReadiness.error(settings, hasKey)
+        if (problem != null) {
+            message.value = problem
+            container.runtime.error(problem)
+            DiagnosticHub.record("CAPTURE_BLOCKED", mapOf("reason" to "missing_api_key", "mode" to settings.mode.name))
+            container.tts.speakFeedback(problem)
+        } else onReady()
     }
 
     fun clearMessage() { message.value = null }

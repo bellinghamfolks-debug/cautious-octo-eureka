@@ -332,6 +332,7 @@ class DiagnosticRecorder(context: Context) {
                 put("schemaVersion", SCHEMA_VERSION)
                 put("sessionId", id)
                 put("processId", processId)
+                put("applicationId", BuildConfig.APPLICATION_ID)
                 put("appVersion", BuildConfig.VERSION_NAME)
                 put("versionCode", BuildConfig.VERSION_CODE)
                 put("manufacturer", Build.MANUFACTURER)
