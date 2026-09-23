@@ -238,3 +238,15 @@ only after lint/unit/assemble and managed-device tests succeed. Artifact upload 
 to the ARM64 test APK and text provenance; no release is created and no private input is uploaded.
 Phone/network performance and new cloud-output accuracy remain unverified. This is a test
 candidate to collect those measurements, not a waived acceptance gate or an approved release.
+
+## 2026-09-23: confirmed full diagnostic history deletion
+Starting remote HEAD 42b704d59602918df2761ac1bbbe5514dd4ee793, version 3.8.3 (44).
+Added a confirmed Arabic full-history deletion action to the active settings screen, available
+when capture is stopped. The diagnostic actor drains earlier evidence, invalidates pending writes,
+clears persisted images and counters, closes the writer and removes sessions and cached exports.
+New events may create a fresh session. Settings, API keys and externally shared copies are untouched.
+Filesystem failures are reported. Instrumentation covers old sessions, persisted images after
+restart, cached exports, settings preservation, fresh export and repeated deletion.
+Candidate 3.8.4-frame-repair-test2 (45) uses the isolated validation application ID.
+Local required check passed structure/secret scan but Gradle DNS resolution failed.
+Remote build/device validation required before distribution. No private evidence committed.

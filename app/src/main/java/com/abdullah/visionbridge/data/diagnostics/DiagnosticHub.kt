@@ -65,6 +65,7 @@ object DiagnosticHub {
             val nearestTrace: DiagnosticTrace?,
             val completion: CompletableDeferred<Unit>?,
         ) : Command
+        data class ClearHistory(val completion: CompletableDeferred<Unit>) : Command
         data class Export(val completion: CompletableDeferred<File>) : Command
         data class Status(val completion: CompletableDeferred<DiagnosticRecorder.StorageStatus>) : Command
         data class Flush(val completion: CompletableDeferred<Unit>) : Command
@@ -465,6 +466,15 @@ object DiagnosticHub {
         commands.trySend(Command.MarkProblem(note, latestTrace.get(), null))
     }
 
+    suspend fun clearHistory() {
+        val barrier = CompletableDeferred<Unit>()
+        evidenceTasks.send(EvidenceTask.Barrier(barrier))
+        barrier.await()
+        val completion = CompletableDeferred<Unit>()
+        commands.send(Command.ClearHistory(completion))
+        completion.await()
+    }
+
     suspend fun export(): File {
         val barrier=CompletableDeferred<Unit>()
         evidenceTasks.send(EvidenceTask.Barrier(barrier))
@@ -553,6 +563,19 @@ object DiagnosticHub {
                     else completion.completeExceptionally(failure)
                 }
             }
+            is Command.ClearHistory -> complete(command.completion) {
+                synchronized(evidenceWriteLock) {
+                    evidenceEpoch.incrementAndGet()
+                    target.evidenceStore.clear()
+                }
+                latestTrace.set(null)
+                VisualFingerprintAnalyzer.reset()
+                lastDenseEvidenceAtElapsedMs.set(0L)
+                timelineWindowStartedAtElapsedMs.set(0L)
+                lastTimelineEvidenceSecond.set(-1L)
+                timelineCompletionRecorded.set(0L)
+                target.clearHistory()
+            }
             is Command.Export -> complete(command.completion) { target.export() }
             is Command.Status -> complete(command.completion) { target.storageStatus() }
             is Command.Flush -> complete(command.completion) { target.flush() }
@@ -568,6 +591,7 @@ object DiagnosticHub {
         when (command) {
             is Command.StartSession -> command.completion.completeExceptionally(error)
             is Command.EndSession -> command.completion.completeExceptionally(error)
+            is Command.ClearHistory -> command.completion.completeExceptionally(error)
             is Command.Export -> command.completion.completeExceptionally(error)
             is Command.Status -> command.completion.completeExceptionally(error)
             is Command.Flush -> command.completion.complete(Unit)

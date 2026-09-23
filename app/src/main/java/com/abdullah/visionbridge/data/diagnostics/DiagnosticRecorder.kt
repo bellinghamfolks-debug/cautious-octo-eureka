@@ -162,6 +162,21 @@ class DiagnosticRecorder(context: Context) {
         }
     }
 
+    /** Called through the diagnostic actor after its evidence barrier. */
+    suspend fun clearHistory() = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            closeWriterLocked()
+            sessionId = null
+            sessionDir = null
+            eventSequence = 0L
+            findingBudget.reset()
+            check(sessions.deleteRecursively()) { "تعذر حذف بعض سجلات التشخيص" }
+            check(sessions.mkdirs() || sessions.isDirectory)
+            val exports = File(appContext.cacheDir, "diagnostic_exports")
+            check(!exports.exists() || exports.deleteRecursively()) { "تعذر حذف ملفات التشخيص المصدّرة" }
+        }
+    }
+
     suspend fun export(): File = withContext(Dispatchers.IO) {
         mutex.withLock {
             ensureSessionLocked()

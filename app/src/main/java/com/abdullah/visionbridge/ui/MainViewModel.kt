@@ -175,6 +175,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }.onFailure { message.value = it.message ?: "تعذر إنشاء ملف التشخيص" }
     }
 
+    fun clearDiagnosticHistory() = viewModelScope.launch {
+        if (uiState.value.capture.isRunning) {
+            message.value = "أوقف القراءة أولًا ثم احذف التشخيص السابق"
+            return@launch
+        }
+        message.value = "جارٍ حذف التشخيص السابق"
+        runCatching { DiagnosticHub.clearHistory() }
+            .onSuccess { message.value = "تم حذف جميع سجلات التشخيص والصور وملفات المشاركة المحفوظة داخل التطبيق" }
+            .onFailure { message.value = it.message ?: "تعذر حذف التشخيص بالكامل؛ يمكنك إعادة المحاولة" }
+    }
+
     fun clearMessage() { message.value = null }
 
     private fun refreshKeyState() = viewModelScope.launch {

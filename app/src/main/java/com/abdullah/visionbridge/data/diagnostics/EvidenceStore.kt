@@ -125,7 +125,7 @@ class EvidenceStore(val directory: File) {
     )
 
     fun clear() {
-        runCatching { directory.listFiles()?.forEach { it.delete() } }
+        check(directory.listFiles()?.all { it.deleteRecursively() } != false) { "تعذر حذف بعض صور التشخيص" }
         written.set(0)
         supplementalWritten.set(0)
         supplementalBytes.set(0L)

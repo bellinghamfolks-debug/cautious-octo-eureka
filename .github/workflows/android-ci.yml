@@ -78,10 +78,10 @@ jobs:
           import hashlib, os, shutil
           badging = Path('candidate-badging.txt').read_text()
           assert "package: name='com.abdullah.visionbridge.validation'" in badging
-          assert 'frame-repair-test1' in badging
+          assert 'frame-repair-test2' in badging
           assert "native-code: 'arm64-v8a'" in badging
           apk = Path('app/build/outputs/apk/validation/app-validation.apk')
-          name = 'VisionBridge-3.8.3-frame-repair-test1-arm64.apk'
+          name = 'VisionBridge-3.8.4-frame-repair-test2-arm64.apk'
           shutil.copyfile(apk, name)
           Path('candidate-info.txt').write_text(
               'DEVICE TEST CANDIDATE — NOT AN APPROVED RELEASE\n'
@@ -95,7 +95,7 @@ jobs:
         with:
           name: isolated-device-test-candidate
           path: |
-            VisionBridge-3.8.3-frame-repair-test1-arm64.apk
+            VisionBridge-3.8.4-frame-repair-test2-arm64.apk
             candidate-info.txt
           if-no-files-found: error
           retention-days: 30

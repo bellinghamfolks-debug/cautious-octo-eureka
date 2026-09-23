@@ -73,9 +73,11 @@ fun VerifiedSettingsScreen(
     onDiscardEvidenceFrames: () -> Unit,
     onOpenAccessibilityShortcutSettings: () -> Unit,
     onExportDiagnostics: () -> Unit,
+    onClearDiagnosticHistory: () -> Unit,
     onBack: () -> Unit,
     onMessageConsumed: () -> Unit,
 ) {
+    var confirmClearHistory by remember { mutableStateOf(false) }
     var apiKey by remember { mutableStateOf("") }
     var speechRateDraft by remember(state.settings.speechRate) {
         mutableFloatStateOf(state.settings.speechRate)
@@ -91,6 +93,21 @@ fun VerifiedSettingsScreen(
     }
 
     androidx.compose.runtime.CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+        if (confirmClearHistory) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { confirmClearHistory = false },
+                title = { Text("حذف التشخيص السابق بالكامل؟") },
+                text = { Text("سيُحذف كل سجل التشخيص والصور وملفات المشاركة المحفوظة داخل هذا التطبيق. لا تتأثر إعداداتك أو مفتاح Gemini. لا تُحذف النسخ التي شاركتها أو حفظتها خارج التطبيق. سيبدأ تسجيل جديد تلقائيًا، ولا يمكن التراجع عن الحذف.") },
+                confirmButton = {
+                    Button(onClick = { confirmClearHistory = false; onClearDiagnosticHistory() }) {
+                        Text("حذف التشخيص بالكامل")
+                    }
+                },
+                dismissButton = {
+                    OutlinedButton(onClick = { confirmClearHistory = false }) { Text("إلغاء") }
+                },
+            )
+        }
         Scaffold(snackbarHost = { SnackbarHost(snackbarHost) }) { padding ->
             Column(
                 modifier = Modifier
@@ -293,6 +310,12 @@ fun VerifiedSettingsScreen(
                 )
 
                 SectionTitle("التشخيص")
+                OutlinedButton(
+                    onClick = { confirmClearHistory = true },
+                    enabled = !state.capture.isRunning,
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
+                ) { Text("حذف التشخيص السابق بالكامل") }
+                if (state.capture.isRunning) Text("أوقف القراءة أولًا لحذف التشخيص السابق بأمان")
                 AccessibleSwitchRow(
                     title = "حفظ صورة الشاشة عند فشل القراءة",
                     description = if (state.settings.captureFailureEvidence) {

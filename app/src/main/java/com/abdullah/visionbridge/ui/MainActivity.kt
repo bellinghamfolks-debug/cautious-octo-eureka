@@ -89,6 +89,7 @@ class MainActivity : ComponentActivity() {
                         onOpenAccessibilityShortcutSettings = {
                             this@MainActivity.openAccessibilityShortcutSettings()
                         },
+                        onClearDiagnosticHistory = viewModel::clearDiagnosticHistory,
                         onExportDiagnostics = {
                             viewModel.exportDiagnostics { file ->
                                 this@MainActivity.shareDiagnosticFile(file)
