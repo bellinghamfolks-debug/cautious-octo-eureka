@@ -20,6 +20,24 @@ final snapshot delivery, late evidence after a generation change, cancellation o
 and transport failure while verification waits. `OUTPUT_VERIFICATION_READY` reports the wait
 separately; `TRANSPORT_RESPONSE_COMPLETED` marks request completion independently.
 
+The image-free measurement harness now flags a response followed by a request timeout with
+no completed optical evidence, responses without runtime/UI output, and incomplete/mismatched
+output identity. It joins only explicit turn IDs within the same session and process. These
+are observational findings, not automatic causal or correctness verdicts. The new detector
+flags the latest private replay; 24 synthetic Python harness tests pass.
+
+| Latest phone session measurement | Before this repair | After on same phone/network |
+| --- | ---: | --- |
+| Selected frames | 36 | Not measured |
+| Submitted turns | 1 | Not measured |
+| Runtime/UI results | 0 | Not measured |
+| Capture to first model chunk (not useful output) | 13.796 s, one sample | Not measured |
+| Useful end-to-end latency | No accepted output | Not measured |
+
+The deterministic regression test instead models a 100 ms request budget with a 1,000 ms
+verification wait: the request must finish while verification is blocked, and no output may
+publish before evidence is released. This proves timeout isolation only, not phone latency.
+
 Status: local repository/secret checks passed. The required `./scripts/codex-check.sh` was
 attempted but Gradle download failed with `UnknownHostException: services.gradle.org`.
 Remote CI is required. This checkpoint is NOT an APK delivery or performance acceptance.

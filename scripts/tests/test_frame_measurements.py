@@ -8,6 +8,33 @@ spec.loader.exec_module(module)
 
 
 class MeasurementsTest(unittest.TestCase):
+    def test_response_timeout_without_grounding_is_reported_not_called_success(self):
+        events = [dict(type=kind, turnId='synthetic', sessionId='s', processId='p',
+                       capturedAtElapsedNanos=0, receivedAtElapsedNanos=13_000_000_000)
+                  for kind in ('FRAME_REQUEST_SENT', 'FIRST_CHUNK', 'CLOUD_ANALYSIS_BUDGET_EXCEEDED')]
+        r = module.summarize(events)
+        self.assertEqual(1, r['responseHealth']['responseThenTimeoutWithoutCompletedGrounding'])
+        self.assertEqual(1, r['responseHealth']['responsesWithoutRuntimeOrUiOutput'])
+        self.assertEqual(13000, r['responseHealth']['captureToFirstChunkMs_notUsefulOutput']['median'])
+        self.assertEqual('NOT_MEASURED', r['usefulEndToEnd']['status'])
+
+    def test_health_does_not_join_turns_across_sessions(self):
+        events = [dict(type='FRAME_REQUEST_SENT', turnId='same', sessionId='old'),
+                  dict(type='FIRST_CHUNK', turnId='same', sessionId='new'),
+                  dict(type='CLOUD_ANALYSIS_BUDGET_EXCEEDED', turnId='same', sessionId='new')]
+        r = module.response_health(events)
+        self.assertEqual(0, r['responseThenTimeoutWithoutCompletedGrounding'])
+
+    def test_health_flags_mismatched_and_incomplete_output_identity(self):
+        identity = dict(turnId='t', traceId='trace', frameId='frame', visualGeneration=0,
+                        mode='TEXT_READING', model='synthetic', transportSessionId='transport', imageHash='a'*64)
+        events = [dict(identity, type='FRAME_REQUEST_SENT'),
+                  dict(identity, type='RUNTIME_RESULT', imageHash='b'*64),
+                  dict(type='TEXT_DISPLAYED', turnId='t')]
+        r = module.response_health(events)
+        self.assertEqual(1, r['outputsWithMismatchedIdentity'])
+        self.assertEqual(1, r['outputsWithIncompleteIdentity'])
+
     def test_missing_latency_is_not_zero_or_pass(self):
         report = module.summarize([{'type': 'LIVE_TURN_COMPLETE'}])
         self.assertIsNone(report['ttsQueueAgeMs']['p90'])

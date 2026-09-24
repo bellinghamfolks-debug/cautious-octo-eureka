@@ -26,6 +26,49 @@ def intervals(events, types):
                         for a, b in zip(sorted(times), sorted(times)[1:]))
 
 
+def response_health(events):
+    """Join explicit turn IDs only. Report symptoms, never infer OCR correctness or causes."""
+    turns = defaultdict(list)
+    for event in events:
+        if event.get('turnId'):
+            turns[(event.get('sessionId'), event.get('processId'), event['turnId'])].append(event)
+    totals = Counter()
+    first_chunks = []
+    for entries in turns.values():
+        sent = next((e for e in entries if e.get('type') == 'FRAME_REQUEST_SENT'), None)
+        if not sent:
+            continue
+        totals['explicitSubmittedTurns'] += 1
+        types = {e.get('type') for e in entries}
+        chunk = next((e for e in entries if e.get('type') == 'FIRST_CHUNK'), None)
+        outputs = [e for e in entries if e.get('type') in {'RUNTIME_RESULT', 'TEXT_DISPLAYED'}]
+        if chunk:
+            captured = sent.get('capturedAtElapsedNanos')
+            received = chunk.get('receivedAtElapsedNanos')
+            if isinstance(captured, (int, float)) and isinstance(received, (int, float)):
+                first_chunks.append((received-captured)/1e6)
+            if not outputs:
+                totals['responsesWithoutRuntimeOrUiOutput'] += 1
+            if ('CLOUD_ANALYSIS_BUDGET_EXCEEDED' in types and
+                    'LOCAL_GROUNDING_COMPLETED' not in types):
+                totals['responseThenTimeoutWithoutCompletedGrounding'] += 1
+        for output in outputs:
+            identity = ('traceId', 'frameId', 'visualGeneration', 'mode', 'model',
+                        'transportSessionId', 'imageHash')
+            if any(output.get(key) is None or sent.get(key) is None for key in identity):
+                totals['outputsWithIncompleteIdentity'] += 1
+            elif any(output[key] != sent[key] for key in identity):
+                totals['outputsWithMismatchedIdentity'] += 1
+    return {
+        **{key: totals[key] for key in (
+            'explicitSubmittedTurns', 'responsesWithoutRuntimeOrUiOutput',
+            'responseThenTimeoutWithoutCompletedGrounding', 'outputsWithIncompleteIdentity',
+            'outputsWithMismatchedIdentity')},
+        'captureToFirstChunkMs_notUsefulOutput': distribution(first_chunks),
+        'interpretation': 'Observed symptoms only. A chunk is not verified useful output; absent events do not establish the cause.',
+    }
+
+
 def summarize(events):
     counts = Counter(e.get('type') for e in events)
     field = lambda types, name: distribution(e.get(name) for e in events if e.get('type') in types)
@@ -48,6 +91,7 @@ def summarize(events):
             'displayedResults': counts['TEXT_DISPLAYED'],
         },
         'skipReasons': dict(skipped),
+        'responseHealth': response_health(events),
         'interSubmissionMs': intervals(events, {'LIVE_FRAME_SENT', 'FRAME_REQUEST_SENT'}),
         'interCompletionMs': intervals(events, {'LIVE_TURN_COMPLETE', 'TURN_COMPLETE'}),
         'legacyTtsQueueWaitMs': field({'TTS_UTTERANCE_STARTED'}, 'queueWaitMs'),
@@ -56,6 +100,8 @@ def summarize(events):
         'trackingMs': field({'SMART_TARGET_POLICY_DECISION'}, 'trackingMs'),
         'jpegCompressionMs': field({'LIVE_FRAME_SENT', 'FRAME_REQUEST_SENT'}, 'compressionMs'),
         'base64Ms': field({'LIVE_FRAME_SENT', 'FRAME_REQUEST_SENT'}, 'base64Ms'),
+        'opticalVerificationWaitMs': field({'OUTPUT_VERIFICATION_READY'}, 'verificationWaitMs'),
+        'localGroundingMs': field({'LOCAL_GROUNDING_COMPLETED'}, 'durationMs'),
         'reportedLegacyEncodeTotalMs_notPureEncoding': field({'LIVE_FRAME_SENT'}, 'encodeTotalMs'),
         'evidenceWriteMs': field({'EVIDENCE_FRAME_CAPTURED'}, 'evidenceWriteMs'),
         'usefulEndToEnd': {
