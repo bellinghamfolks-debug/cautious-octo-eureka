@@ -1,7 +1,7 @@
 # إصلاح VisionBridge 3.8.7 — build 48
 
 حالة التسليم: نسخة اختبار على الهاتف، وليست إصدارًا اجتاز معايير الأداء الميدانية.
-مصدر APK النهائي: يُثبت بعد نجاح التحقق من إصلاح المرشحات المكررة.
+مصدر APK النهائي: `cf01b08e443560c2f008efe4276c65601bd08263`.
 الفرع: `codex/visionbridge-frame-integrity`.
 
 ## السبب المؤكد في build 47
@@ -70,7 +70,14 @@ GeminiVisionRepository لم يكن إعداد الطلب الفعّال هنا. 
 
 ## التحقق
 
-التحقق النهائي للـcommit المستهدف: جارٍ، ويُحدّث هذا القسم بعد اكتماله.
+نجح التحقق للـcommit المستهدف: 408 اختبارات وحدة، و29 اختبارًا لأدوات القياس، و20 اختبارًا على محاكي Android Pixel 6 / API 30؛ دون إخفاق. نجح lint والبناء.
+
+سجل التحقق: https://github.com/bellinghamfolks-debug/cautious-octo-eureka/actions/runs/36062698261
+
+نجح تجهيز APK والتحقق من التوقيع الثابت. النسخة المثبتة تعرض `3.8.7-stable-signing-test5` ورقم البناء `48`، بمعمارية ARM64.
+
+اسم الملف: `VisionBridge-3.8.7-stable-signed-arm64.apk`.
+SHA-256: `a6cb103346ad06d1080195a2e3ea5c8fe88172572c04e57e33a5ae80be8ec897`.
 
 اختبارات الانحدار تشمل: تحقق اختياري يستغرق 30 ثانية مع جواب سحابي يتجاوز 751 حرفًا؛
 اكتمال مسار السحابة والنشر التجريبي قبل انتهاء التحقق؛ إلغاء التحقق دون التراجع عن النتيجة؛
@@ -87,7 +94,7 @@ GeminiVisionRepository لم يكن إعداد الطلب الفعّال هنا. 
 تغييرات المسار في GroundingPolicy وOptionalGroundingLane وFrameBoundCoordinator وAppContainer
 وPaddleOcrEngine. تغييرات النطق والاتصال في SpeakableTextProgress وFrameTurnTransport
 وGeminiHttpTimings وBilingualTtsEngine وCaptureRuntime. تغييرات اختيار الهدف في
-VisualTargetTracker وLucasKanade وPendingCandidatePolicy وMediaProjectionService. تغييرات
+VisualTargetTracker وLucasKanade وQualityRetryPolicy وPendingCandidatePolicy وMediaProjectionService. تغييرات
 الأدلة والتشخيص في EvidenceStore وDiagnosticHub وDiagnosticRecorder وEvidenceArchiveAudit
 وDiagnosticEventPolicy وFrameIntegrityVerdict. أُضيفت اختبارات مقابلة وأُصلحت أدوات القياس.
 

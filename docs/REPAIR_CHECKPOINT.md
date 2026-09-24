@@ -1,3 +1,8 @@
+Latest delivery checkpoint: 3.8.7 (48), source cf01b08e443560c2f008efe4276c65601bd08263.
+Read ADVISORY_GROUNDING_CHECKPOINT.md and DELIVERY_3_8_7.md before resuming.
+The disabled-Trust-Gate path is advisory/nonblocking; preserve the pinned stable signer.
+Automated gates passed. Same-phone cloud quality/latency acceptance remains outstanding.
+
 # Frame integrity repair — current recovery checkpoint
 
 Status: development in progress; no release or performance acceptance.

@@ -80,3 +80,16 @@ stop N's speech. Advisory mode now holds equal/worse candidates after completed 
 output; better-quality candidates and confirmed new generations remain eligible. Negative
 or incomplete readings do not latch. Strict/local periodic optical verification is unchanged.
 This policy never reads TTS state, so it is semantic/quality deduplication, not speech pressure.
+
+
+Delivery verification completed for cf01b08e443560c2f008efe4276c65601bd08263:
+CI run 36062698261 passed 408 JVM tests, 29 Python harness tests, lint, assembly,
+and 20 Android Pixel 6 API 30 instrumented tests, then packaged the ARM64 candidate.
+Artifact 10835177368 SHA256: 961fb5e784b66ce930d1874a22ac7791f50bd1c7fbdb34b16eaae9688f5a4358.
+Its candidate-info source and APK digest were verified before private signing.
+Final signed APK SHA256: a6cb103346ad06d1080195a2e3ea5c8fe88172572c04e57e33a5ae80be8ec897.
+Package com.abdullah.visionbridge.stable, versionCode 48, versionName 3.8.7-stable-signing-test5.
+Pinned signer SHA256 unchanged: 349726219c7a59aee813745ff6d00599cf396f03cf6e2b3f48dcd29f023df9bd.
+See DELIVERY_3_8_7.md for the Arabic receipt. No private media was uploaded to GitHub or CI.
+This remains a phone-test candidate: Gemini accuracy, actual first-output latency, the
+MEDIUM/HIGH comparison and a new private device replay are not proven by these tests.
