@@ -19,6 +19,7 @@ class LivePcmAudioPlayer {
     private data class Packet(val epoch: Long, val bytes: ByteArray, val sampleRateHz: Int)
 
     private val epoch = AtomicLong(0L)
+    private val firstPlayedEpoch = AtomicLong(Long.MIN_VALUE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // Do not DROP_OLDEST here. The previous queue silently threw away speech packets whenever
@@ -51,6 +52,18 @@ class LivePcmAudioPlayer {
                                 "LIVE_AUDIO_WRITE_FAILED",
                                 mapOf("code" to written, "bytes" to packet.bytes.size),
                             )
+                        } else if (
+                            written > 0 &&
+                            firstPlayedEpoch.getAndSet(packet.epoch) != packet.epoch
+                        ) {
+                            DiagnosticHub.record(
+                                "LIVE_AUDIO_PLAYBACK_STARTED",
+                                mapOf(
+                                    "epoch" to packet.epoch,
+                                    "bytesWritten" to written,
+                                    "sampleRateHz" to packet.sampleRateHz,
+                                ),
+                            )
                         }
                     }
                 }
@@ -60,6 +73,7 @@ class LivePcmAudioPlayer {
 
     fun beginTurn(reason: String = "new_live_turn"): Long {
         val next = epoch.incrementAndGet()
+        firstPlayedEpoch.set(Long.MIN_VALUE)
         flush(reason)
         return next
     }
@@ -72,6 +86,7 @@ class LivePcmAudioPlayer {
 
     fun interrupt(reason: String) {
         epoch.incrementAndGet()
+        firstPlayedEpoch.set(Long.MIN_VALUE)
         flush(reason)
     }
 
