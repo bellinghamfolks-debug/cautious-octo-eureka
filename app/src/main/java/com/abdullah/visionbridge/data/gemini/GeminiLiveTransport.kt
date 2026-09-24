@@ -135,7 +135,6 @@ class GeminiLiveTransport(
 
             if (!gate.activate(capture) {
                     runtime.clearVisualResult()
-                    audioPlayer.interrupt("live_turn_activated")
                 }
             ) {
                 DiagnosticHub.record(
@@ -321,7 +320,8 @@ class GeminiLiveTransport(
 
         val server = root.optJSONObject("serverContent") ?: return
 
-        if (server.optBoolean("interrupted", false)) {
+        val interruptedThisMessage = server.optBoolean("interrupted", false)
+        if (interruptedThisMessage) {
             synchronized(stateLock) {
                 staleBoundaryBlocked = false
                 firstAudioSeen = false
@@ -331,6 +331,10 @@ class GeminiLiveTransport(
                 "LIVE_TURN_INTERRUPTED",
                 activeTurn?.fields().orEmpty() + mapOf("epoch" to activeEpoch),
             )
+            // Audio/transcription carried in the same serverContent belongs to the interrupted
+            // generation. Never relabel those bytes as the new active frame. A following server
+            // message starts the new generation.
+            return
         }
 
         val parts = server.optJSONObject("modelTurn")?.optJSONArray("parts")
