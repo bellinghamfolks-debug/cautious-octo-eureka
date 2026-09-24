@@ -83,7 +83,27 @@ class GeminiLiveTransport(
         if (!supports(settings)) return false
         val now = SystemClock.elapsedRealtime()
         synchronized(stateLock) {
-            if (lastReservedAtElapsedMs > 0L && now - lastReservedAtElapsedMs < LIVE_VIDEO_INTERVAL_MS) {
+            val currentGeneration = gate.generation()
+            val sameGeneration = activeTurn?.visualGeneration == currentGeneration
+
+            // A page gets one Live turn until the visual tracker proves that the target changed.
+            // Re-sending the same page every second only interrupts its own native-audio reading.
+            if (settings.mode == AnalysisMode.TEXT_READING && sameGeneration) return false
+
+            // A scene may be sampled again after its short response completes, but never interrupt
+            // an in-flight response merely because the one-second sampling clock fired.
+            if (
+                settings.mode == AnalysisMode.SCENE_DESCRIPTION &&
+                responseInFlight &&
+                sameGeneration
+            ) {
+                return false
+            }
+
+            if (
+                lastReservedAtElapsedMs > 0L &&
+                now - lastReservedAtElapsedMs < LIVE_VIDEO_INTERVAL_MS
+            ) {
                 return false
             }
             lastReservedAtElapsedMs = now
