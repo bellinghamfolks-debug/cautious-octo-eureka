@@ -544,15 +544,16 @@ class MediaProjectionService : Service() {
                     val interruptNow = settings.interruptSpeechOnVisualChange &&
                         policy.action == SmartTargetInterruptionPolicy.Action.IMMEDIATE
                     container.coordinator.onVisualTargetChanged(interruptNow)
+                    container.liveTransport.onVisualTargetChanged(interruptNow)
                     DiagnosticHub.record(
                         "SMART_TARGET_TRANSITION_APPLIED",
                         trace.fields(
                             mapOf(
-                                "lane" to "FRAME_BOUND_GEMINI",
+                                "lane" to "GEMINI_LIVE",
                                 "action" to policy.action.name,
                                 "interruptSettingEnabled" to settings.interruptSpeechOnVisualChange,
-                                "speechInterruptedNow" to true,
-                                "obsoleteTurnCancellationRequested" to true,
+                                "speechInterruptedNow" to interruptNow,
+                                "liveGenerationInvalidated" to true,
                                 "latestFrameWillWin" to true,
                             ),
                         ),
@@ -563,10 +564,9 @@ class MediaProjectionService : Service() {
                 null
             }
 
-            val candidate=container.coordinator.candidate(view,trace,settings,smartDecision)
             DiagnosticHub.record(
                 "VISUAL_TARGET_DECISION",
-                candidate.trace.fields(
+                trace.fields(
                     mapOf(
                         "targetChanged" to (smartDecision?.targetChanged ?: false),
                         "decisionReason" to (smartDecision?.reason ?: "smart_target_observer_throttled"),
@@ -574,8 +574,9 @@ class MediaProjectionService : Service() {
                         "registrationMethod" to (smartDecision?.method ?: "SMART_OBSERVER_THROTTLED"),
                         "trackingMs" to 0.0,
                         "cloudLiveDirect" to true,
+                        "liveTransport" to "GEMINI_3_8_WEBSOCKET",
                         "smartTargetObserver" to true,
-                        "backpressure" to "ONE_ACTIVE_ONE_LATEST",
+                        "backpressure" to "LIVE_1FPS_WITH_SSE_FALLBACK",
                     ),
                 ),
             )
@@ -583,29 +584,63 @@ class MediaProjectionService : Service() {
                 bitmap = view,
                 frameId = frameId,
                 stage = "selected_input",
-                metadata = candidate.trace.fields(
+                metadata = trace.fields(
                     mapOf(
                         "mode" to settings.mode.name,
                         "captureProfile" to settings.captureProfile.name,
                         "targetChanged" to (smartDecision?.targetChanged ?: false),
                         "cloudLiveDirect" to true,
+                        "liveTransport" to "GEMINI_3_8_WEBSOCKET",
                         "smartTargetObserver" to true,
                         "frameMeanAbsoluteDifference" to changeDecision.meanAbsoluteDifference,
                         "frameChangedPixelRatio" to changeDecision.changedPixelRatio,
                     ),
                 ),
             )
+
+            if (!container.liveTransport.reserveFrame(settings)) {
+                DiagnosticHub.record(
+                    "FRAME_SKIPPED",
+                    trace.fields(
+                        mapOf(
+                            "reason" to "live_video_interval",
+                            "cloudLiveDirect" to true,
+                            "transport" to "GEMINI_3_8_WEBSOCKET",
+                        ),
+                    ),
+                )
+                view.recycle()
+                return
+            }
+
             DiagnosticHub.record(
                 "FRAME_SELECTED_FOR_ANALYSIS",
-                candidate.trace.fields(
+                trace.fields(
                     mapOf(
                         "cloudLiveDirect" to true,
-                        "smartTargetObserver" to true,
-                        "backpressure" to "ONE_ACTIVE_ONE_LATEST",
+                        "transport" to "GEMINI_3_8_WEBSOCKET",
+                        "nativeAudio" to settings.speechEnabled,
                     ),
                 ),
             )
-            submitLatestFrame(PendingFrame(view, candidate.trace, candidate))
+            serviceScope.launch {
+                val handledByLive = runCatching {
+                    container.liveTransport.submitFrame(view, trace, settings)
+                }.getOrElse { error ->
+                    DiagnosticHub.failure("LIVE_SUBMISSION", error, trace.fields())
+                    false
+                }
+                if (handledByLive) {
+                    view.recycle()
+                } else {
+                    DiagnosticHub.record(
+                        "LIVE_FALLBACK_TO_FRAME_SSE",
+                        trace.fields(mapOf("reason" to "live_transport_unavailable")),
+                    )
+                    val candidate = container.coordinator.candidate(view, trace, settings, smartDecision)
+                    submitLatestFrame(PendingFrame(view, candidate.trace, candidate))
+                }
+            }
             return
         }
 
@@ -978,6 +1013,7 @@ class MediaProjectionService : Service() {
         // foreground notification, so nothing may rebuild it after this point.
         foregroundStarted = false
         resetFrameState()
+        container.liveTransport.stop(reason)
         container.coordinator.stopSpeech()
 
         if (hadProjection) DiagnosticHub.record("PROJECTION_RELEASED", mapOf("reason" to reason))
