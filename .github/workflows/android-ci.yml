@@ -114,6 +114,7 @@ jobs:
             VisionBridge-*-arm64.apk
             candidate-info.txt
           if-no-files-found: error
+          retention-days: 30
       # Reaching a workflow artifact means signing in to GitHub, walking into a run page,
       # finding the artifacts section and unzipping what arrives. With a screen reader that
       # is a long walk for a file, and the whole point of this job is that someone can
@@ -155,7 +156,6 @@ jobs:
               --title "VisionBridge ${CANDIDATE_VERSION} (Build ${CANDIDATE_BUILD}) — device candidate" \
               --notes "$notes"
           fi
-          retention-days: 30
 
   device:
     name: On-device tests
