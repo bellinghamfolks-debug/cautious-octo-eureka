@@ -68,3 +68,7 @@ turn cancellation. The measurement harness reports speakable-to-runtime/UI/TTS
 delays using explicit same-frame identities and aggregates separate HTTP phases.
 The STABLE acceptance script enforces the latest requested 4000ms P90, with a
 regression proving that 4200ms fails. Missing measurements remain unknown, never zero.
+Pre-submission capture stages join by exact session/process/frame/trace, since a turn does
+not yet exist during capture. Optional grounding is explicitly inapplicable to publication
+latency rather than silently required as a missing stage. Its independent duration remains
+in the optional-verification event timeline.

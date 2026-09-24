@@ -71,8 +71,11 @@ def build(events, annotations):
         if speech:
             times['ttsEligibleAt'] = speech.get('ttsEligibleAtElapsedNanos')
             times['ttsStartedAt'] = speech.get('ttsStartedAtElapsedNanos')
-        for e in owned:
+        for e in session:
             if e.get('type') != 'FRAME_STAGE' or e.get('stage') not in STAGES:
+                continue
+            if e.get('turnId') != owner['turnId'] and not (
+                    e.get('turnId') is None and e.get('stage') in ('capture','tracking','preprocessing')):
                 continue
             # Before encoding, the capture trace has no wire hash yet. Require both exact
             # capture IDs; never borrow a stage from a nearby frame or a later accepted prefix.
@@ -91,6 +94,8 @@ def build(events, annotations):
         # Explicitly inapplicable phases, not fabricated zero-duration measurements.
         inapplicable = set()
         if owner.get('mode') == 'SCENE_DESCRIPTION':
+            inapplicable.add('localGrounding')
+        if owner.get('requiresLocalGrounding') is False:
             inapplicable.add('localGrounding')
         if owner.get('type') == 'LOCAL_FRAME_BOUND':
             inapplicable.update(('networkSetup', 'networkModel', 'requestEncoding'))

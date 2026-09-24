@@ -74,6 +74,7 @@ class FrameTurnTransport(private val networkManager: CellularNetworkManager) {
                 "base64Ms" to base64Ms,"payloadMs" to payloadMs,"captureProfile" to settings.captureProfile.name,
                 "sceneDescriptionStyle" to settings.sceneDescriptionStyle.name,"socketId" to "STATELESS_HTTP",
                 "thinkingLevel" to thinkingLevel(settings),"mediaResolution" to "MODEL_DEFAULT",
+                "requiresLocalGrounding" to com.abdullah.visionbridge.capture.GroundingPolicy.required(settings),
             ))
             val monitoredClient=activeClient.newBuilder().eventListener(httpTimings).build()
             val callFactory=Call.Factory { monitoredClient.newCall(it) }

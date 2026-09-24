@@ -7,6 +7,23 @@ from build_frame_acceptance import build
 
 
 class AcceptanceJoinTest(unittest.TestCase):
+    def test_pre_submission_stages_join_by_exact_capture_not_a_different_turn(self):
+        events, annotation=self.sample()
+        stage=dict(sessionId='synthetic-session',processId='1',traceId='trace',frameId='frame',
+            type='FRAME_STAGE',stage='tracking',stageStartedAtElapsedNanos=10,stageEndedAtElapsedNanos=12)
+        events.extend([stage,dict(stage,traceId='another'),dict(stage,turnId='other-turn'),
+                       dict(stage,stage='encoding')])
+        row=build(events,{'opportunities':[annotation]})['opportunities'][0]
+        self.assertEqual([[10,12]],row['stagesNanos']['tracking'])
+        self.assertNotIn('encoding',row['stagesNanos'])
+
+    def test_only_explicitly_optional_grounding_is_inapplicable_to_publication_latency(self):
+        for required in (None,True,False):
+            events, annotation=self.sample()
+            events[1]['requiresLocalGrounding']=required
+            row=build(events,{'opportunities':[annotation]})['opportunities'][0]
+            self.assertEqual(required is False,'localGrounding' in row['inapplicableStages'])
+
     def sample(self):
         identity = dict(sessionId='synthetic-session', processId='1', turnId='turn', traceId='trace',
                         frameId='frame', visualGeneration=0, mode='TEXT_READING', model='synthetic',
