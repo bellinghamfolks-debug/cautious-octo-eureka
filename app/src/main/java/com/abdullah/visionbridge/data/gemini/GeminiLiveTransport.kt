@@ -63,6 +63,7 @@ class GeminiLiveTransport(
     @Volatile private var setupSucceeded = false
     @Volatile private var keyFingerprint: String? = null
     @Volatile private var transportSessionId = UUID.randomUUID().toString()
+    @Volatile private var resumptionHandle: String? = null
 
     @Volatile private var activeTurn: AnalysisTurn? = null
     @Volatile private var activeEpoch = 0L
@@ -235,6 +236,7 @@ class GeminiLiveTransport(
         }
         audioPlayer.interrupt(reason)
         invalidateSocket(reason)
+        resumptionHandle = null
     }
 
     private suspend fun ensureConnected(apiKey: String): Boolean {
@@ -316,6 +318,30 @@ class GeminiLiveTransport(
             DiagnosticHub.record(
                 "LIVE_API_ERROR",
                 mapOf("error" to root.optJSONObject("error")?.optString("message")),
+            )
+        }
+
+        root.optJSONObject("sessionResumptionUpdate")?.let { update ->
+            val resumable = update.optBoolean("resumable", false)
+            val handle = update.optString("newHandle").takeIf { it.isNotBlank() }
+            if (resumable && handle != null) resumptionHandle = handle
+            DiagnosticHub.record(
+                "LIVE_SESSION_RESUMPTION_UPDATE",
+                mapOf(
+                    "resumable" to resumable,
+                    "hasHandle" to (handle != null),
+                    "transportSessionId" to transportSessionId,
+                ),
+            )
+        }
+
+        root.optJSONObject("goAway")?.let { goAway ->
+            DiagnosticHub.record(
+                "LIVE_GO_AWAY",
+                mapOf(
+                    "timeLeft" to goAway.optString("timeLeft"),
+                    "hasResumptionHandle" to !resumptionHandle.isNullOrBlank(),
+                ),
             )
         }
 
@@ -433,8 +459,10 @@ class GeminiLiveTransport(
         }
     }
 
-    private fun setupMessage(): String =
-        JSONObject()
+    private fun setupMessage(): String {
+        val resumption = JSONObject()
+        resumptionHandle?.takeIf { it.isNotBlank() }?.let { resumption.put("handle", it) }
+        return JSONObject()
             .put(
                 "setup",
                 JSONObject()
@@ -450,9 +478,15 @@ class GeminiLiveTransport(
                             JSONArray().put(JSONObject().put("text", SYSTEM_INSTRUCTION)),
                         ),
                     )
-                    .put("outputAudioTranscription", JSONObject()),
+                    .put("outputAudioTranscription", JSONObject())
+                    .put(
+                        "contextWindowCompression",
+                        JSONObject().put("slidingWindow", JSONObject()),
+                    )
+                    .put("sessionResumption", resumption),
             )
             .toString()
+    }
 
     private fun videoMessage(base64: String): String =
         JSONObject()
