@@ -342,7 +342,7 @@ class PaddleOcrEngine(
             if (capped) {
                 DiagnosticHub.record(
                     "PPOCR_FRAME_CROP_LIMIT_REACHED",
-                    mapOf("limit" to MAX_CROPS_PER_FRAME, "cropsOffered" to grouped.sumOf { it.size }),
+                    mapOf("limit" to if(advisoryProfile) 2 else MAX_CROPS_PER_FRAME, "cropsOffered" to grouped.sumOf { it.size }),
                 )
             }
             val text = PageAssembler.assemble(lines)

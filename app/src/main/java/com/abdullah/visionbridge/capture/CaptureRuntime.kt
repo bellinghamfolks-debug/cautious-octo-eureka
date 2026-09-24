@@ -51,6 +51,7 @@ class CaptureRuntime {
             val acceptedAt = SystemClock.elapsedRealtimeNanos()
             awaitingDisplay.set(DisplayRevision(value, acceptedAt))
             com.abdullah.visionbridge.data.diagnostics.DiagnosticHub.record("RUNTIME_RESULT",turn.fields()+mapOf("acceptedAtElapsedNanos" to acceptedAt,"acceptedContentHash" to value.contentHash,"readText" to value.text,"sceneTail" to value.sceneTail))
+            com.abdullah.visionbridge.data.diagnostics.DiagnosticHub.record("OUTPUT_COMMITTED",turn.fields()+mapOf("acceptedAtElapsedNanos" to acceptedAt,"acceptedContentHash" to value.contentHash))
             FrameStages.record(value.trace(), "runtimeAcceptance", runtimeStartedAt, acceptedAt)
         }
         if (!accepted) com.abdullah.visionbridge.data.diagnostics.DiagnosticHub.record(

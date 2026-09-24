@@ -139,8 +139,8 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                 encodedHash = encoded.imageHash
                 FrameStages.record(c.trace,"encoding",encodingStarted,extra=mapOf("imageHash" to encoded.imageHash))
                 currentCoroutineContext().ensureActive()
-                // New targets can upload while PP-OCR verifies the same transmitted JPEG. No
-                // text can pass accept() until that independent evidence has completed.
+                // Only explicit strict trust / local reading owns mandatory optical evidence.
+                // Advisory verification has a separate lifetime and cannot hold this scope open.
                 failureStage = "local_grounding_or_submission"
                 val evidenceTask=if(requiredGrounding) async(Dispatchers.Default) {
                     val groundingStarted=SystemClock.elapsedRealtimeNanos()
@@ -246,7 +246,10 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                 }
             }
         } catch(e:CancellationException) {
-            DiagnosticHub.record("TURN_CANCELLED_OBSOLETE",(bound?:capture).fields());throw e
+            val expected=capture.visualGeneration!=gate.generation() || !runtime.analysing.value
+            DiagnosticHub.record(if(expected) "TURN_CANCELLED_OBSOLETE" else "TURN_CANCELLED_UNEXPECTED",
+                (bound?:capture).fields()+mapOf("expected" to expected))
+            throw e
         } catch(e:Exception) {
             val turn=bound
             if(turn!=null)gate.commit(turn) { runtime.error("تعذر تحليل الصورة الحالية") }
@@ -257,6 +260,7 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
         } finally {
             gate.withinGeneration(capture.visualGeneration) { runtime.processing(false) }
             activeJob=null
+            DiagnosticHub.record("ANALYSIS_LANE_RELEASED",(bound?:capture).fields()+mapOf("optionalGroundingBlocksLane" to false))
         }
     }
 

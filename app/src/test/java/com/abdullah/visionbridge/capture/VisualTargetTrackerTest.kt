@@ -14,6 +14,27 @@ import org.junit.Test
  * bottle for 467 seconds, and 439 declarations that the subject had changed.
  */
 class VisualTargetTrackerTest {
+    @Test fun `expired cloud budget uses structural consensus and still finds a real change`() {
+        var clock=0L
+        val tracker=VisualTargetTracker(.26,26.0,computationBudgetNanos=1,clockNanos={ clock++ })
+        val start=tracker.evaluate(VisionScenes.frame(VisionScenes.bottle()))
+        val first=tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
+        assertFalse(first.targetChanged)
+        assertEquals("budget_structural",first.method)
+        val next=tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
+        assertTrue(next.targetChanged)
+        assertTrue(next.trackId>start.trackId)
+        assertFalse(tracker.evaluate(VisionScenes.frame(VisionScenes.page())).targetChanged)
+    }
+
+    @Test fun `cloud affine path preserves a steady moving target without feature recovery`() {
+        val tracker=VisualTargetTracker(.26,26.0,computationBudgetNanos=50_000_000,clockNanos={0L})
+        tracker.evaluate(VisionScenes.frame(VisionScenes.page()))
+        repeat(12) { i ->
+            val moved=page(Warp.similarity(centre,centre,((i%5)-2)*1.2,1.0+((i%3)-1)*.015,(i%5-2).toDouble(),(i%3-1).toDouble()))
+            assertFalse("frame $i",tracker.evaluate(moved).targetChanged)
+        }
+    }
 
     private fun tracker() = VisualTargetTracker(
         maximumDissimilarity = 0.26,

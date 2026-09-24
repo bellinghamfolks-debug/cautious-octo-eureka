@@ -84,6 +84,7 @@ class EvidenceStore(val directory: File) {
             skipped.incrementAndGet()
             return null
         }
+        var incomplete: File? = null
         return runCatching {
             directory.mkdirs()
             // The reason is part of the name so the file answers "why is this here" on its own.
@@ -94,6 +95,7 @@ class EvidenceStore(val directory: File) {
             val file = File(directory, name)
             file.parentFile?.mkdirs()
             check(file.createNewFile()) { "Evidence filename collision" }
+            incomplete=file
             FileOutputStream(file).use { output ->
                 val scaled = scaleForEvidence(bitmap)
                 try {
@@ -110,8 +112,10 @@ class EvidenceStore(val directory: File) {
                 supplementalFrame -> { supplementalWritten.incrementAndGet(); supplementalBytes.addAndGet(file.length()) }
             }
             bytes.addAndGet(file.length())
+            incomplete=null
             name
         }.getOrElse {
+            incomplete?.delete()
             skipped.incrementAndGet()
             null
         }

@@ -4,6 +4,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PendingCandidatePolicyTest {
+    @Test fun promotionUsesTheCurrentGenerationAndRetainsTheFreshReplacement() {
+        val old=candidate(generation=7,ms=10)
+        val fresh=candidate(generation=8,ms=20,sharpness=20.0)
+        assertFalse(PendingCandidatePolicy.promotable(old.generation,8))
+        val selected=if(PendingCandidatePolicy.choose(old,fresh).replace) fresh else old
+        assertTrue(PendingCandidatePolicy.promotable(selected.generation,8))
+        assertFalse(PendingCandidatePolicy.promotable(selected.generation,9))
+    }
     private fun candidate(generation:Long=0,ms:Long=0,sharpness:Double=400.0)=PendingCandidatePolicy.Candidate(
         generation,ms*1_000_000,QualityRetryPolicy.Quality(sharpness,50.0,.2,1.0,300))
     @Test fun keepsTheSharperStableImageWithinTheBoundedWindow() {

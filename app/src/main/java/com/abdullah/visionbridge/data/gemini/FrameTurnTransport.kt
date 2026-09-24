@@ -14,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withContext
 import okhttp3.Dns
+import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -61,6 +62,7 @@ class FrameTurnTransport(private val networkManager: CellularNetworkManager) {
             check(onSubmitted(turn)) { "Obsolete image before submission" }
             val events = Channel<String>(64)
             val closed = AtomicBoolean(false)
+            val httpTimings = GeminiHttpTimings()
             val request = Request.Builder()
                 .url("https://generativelanguage.googleapis.com/v1beta/models/${turn.model}:streamGenerateContent?alt=sse")
                 .header("x-goog-api-key",apiKey)
@@ -71,8 +73,11 @@ class FrameTurnTransport(private val networkManager: CellularNetworkManager) {
                 "copyMs" to image.copyMs,"hashMs" to image.hashMs,"encodeTotalMs" to image.totalMs,
                 "base64Ms" to base64Ms,"payloadMs" to payloadMs,"captureProfile" to settings.captureProfile.name,
                 "sceneDescriptionStyle" to settings.sceneDescriptionStyle.name,"socketId" to "STATELESS_HTTP",
+                "thinkingLevel" to thinkingLevel(settings),"mediaResolution" to "MODEL_DEFAULT",
             ))
-            val source = EventSources.createFactory(activeClient).newEventSource(request,object:EventSourceListener() {
+            val monitoredClient=activeClient.newBuilder().eventListener(httpTimings).build()
+            val callFactory=Call.Factory { monitoredClient.newCall(it) }
+            val source = EventSources.createFactory(callFactory).newEventSource(request,object:EventSourceListener() {
                 override fun onEvent(eventSource:EventSource,id:String?,type:String?,data:String) {
                     if (closed.get()) return
                     if (!events.trySend(data).isSuccess) {
@@ -95,7 +100,12 @@ class FrameTurnTransport(private val networkManager: CellularNetworkManager) {
             val speakable=SpeakableTextProgress()
             var firstContent=true
             fun contentReady() {
-                if(firstContent) { firstContent=false;FrameStages.record(trace,"networkModel",checkNotNull(turn.submittedAtNanos)); DiagnosticHub.record("FIRST_SPEAKABLE_TEXT_READY",turn.fields()) }
+                if(firstContent && accumulator.fullText.isNotBlank() && accumulator.fullText !in setOf("NO_TEXT","NO_CHANGE") && accumulator.ocrAccepted) {
+                    firstContent=false
+                    FrameStages.record(trace,"networkModel",checkNotNull(turn.submittedAtNanos))
+                    DiagnosticHub.record("FIRST_SPEAKABLE_TEXT_READY",turn.fields()+mapOf(
+                        "readyAtElapsedNanos" to SystemClock.elapsedRealtimeNanos()))
+                }
             }
             fun output()=Output(turn,accumulator.fullText,accumulator.sceneTail,accumulator.confidence,accumulator.legible,accumulator.inferred,
                 accumulator.readingComplete || finish=="STOP")
@@ -108,7 +118,9 @@ class FrameTurnTransport(private val networkManager: CellularNetworkManager) {
                     if(parts!=null) for(i in 0 until parts.length()) {
                         val part=parts.getJSONObject(i)
                         if(part.optBoolean("thought",false)) continue
-                        accumulator.append(part.optString("text",""))
+                        val modelText=part.optString("text","")
+                        if(modelText.isNotEmpty()) httpTimings.firstModelText()
+                        accumulator.append(modelText)
                     }
                     val terminal=candidate.optString("finishReason","")
                     if(terminal.isNotEmpty()) finish=terminal
@@ -138,11 +150,13 @@ class FrameTurnTransport(private val networkManager: CellularNetworkManager) {
                 accumulator.finish()
                 check(finish=="STOP") { "Incomplete or rejected generation" }
                 contentReady()
+                httpTimings.responseCompleted()
                 FrameStages.record(trace,"fullModelResponse",checkNotNull(turn.submittedAtNanos))
                 DiagnosticHub.record("TURN_COMPLETE",turn.fields())
                 output()
             } finally {
                 closed.set(true);source.cancel();events.cancel()
+                DiagnosticHub.record("HTTP_NETWORK_TIMINGS",turn.fields()+httpTimings.fields())
                 DiagnosticHub.record("FRAME_REQUEST_CLOSED",turn.fields())
             }
         }
@@ -151,6 +165,7 @@ class FrameTurnTransport(private val networkManager: CellularNetworkManager) {
     companion object {
         const val MODEL="gemini-3.6-flash"
         const val PROMPT_VERSION="frame-bound-v1"
+        fun thinkingLevel(settings:AppSettings)=if(settings.mode==AnalysisMode.TEXT_READING) "minimal" else "low"
         fun instruction(settings: AppSettings): String {
             val task=if(settings.mode==AnalysisMode.TEXT_READING) {
                 "Read only literal text actually legible in this image, preserving Arabic/English/numbers and order. " +
@@ -171,6 +186,7 @@ class FrameTurnTransport(private val networkManager: CellularNetworkManager) {
                 .put(JSONObject().put("text",instruction(settings)))
             val content = JSONObject().put("role","user").put("parts",parts)
             val config = JSONObject().put("temperature",0).put("candidateCount",1)
+                .put("thinkingConfig",JSONObject().put("thinkingLevel",thinkingLevel(settings)))
                 .put("maxOutputTokens",if(settings.mode==AnalysisMode.TEXT_READING)8192 else 2048)
             return JSONObject().put("contents",JSONArray().put(content)).put("generationConfig",config)
         }

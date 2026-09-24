@@ -78,10 +78,10 @@ jobs:
           import hashlib, os, shutil
           badging = Path('candidate-badging.txt').read_text()
           assert "package: name='com.abdullah.visionbridge.stable'" in badging
-          assert 'stable-signing-test4' in badging
+          assert 'stable-signing-test5' in badging
           assert "native-code: 'arm64-v8a'" in badging
           apk = Path('app/build/outputs/apk/validation/app-validation.apk')
-          name = 'VisionBridge-3.8.6-stable-signing-test4-arm64.apk'
+          name = 'VisionBridge-3.8.7-stable-signing-test5-arm64.apk'
           shutil.copyfile(apk, name)
           Path('candidate-info.txt').write_text(
               'DEVICE TEST CANDIDATE — NOT AN APPROVED RELEASE\n'
@@ -95,7 +95,7 @@ jobs:
         with:
           name: isolated-device-test-candidate
           path: |
-            VisionBridge-3.8.6-stable-signing-test4-arm64.apk
+            VisionBridge-3.8.7-stable-signing-test5-arm64.apk
             candidate-info.txt
           if-no-files-found: error
           retention-days: 30

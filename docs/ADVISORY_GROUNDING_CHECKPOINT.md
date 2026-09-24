@@ -32,3 +32,33 @@ export regression tests. Required local codex-check attempted; project/secret sc
 Gradle download blocked by services.gradle.org DNS. CI required. No private diagnostic media
 is committed. Application ID and signer must remain unchanged. Phone latency acceptance,
 network phase investigation and a same-phone replay remain outstanding.
+
+
+Second checkpoint: version 3.8.7 (48), same application ID and pinned signer.
+The first repair commit 9cbccb6e100f4c5c3abe8bd758e555d29029031d passed
+lint, unit tests, assemble and instrumented Android tests in run 35994754766.
+The second checkpoint must pass its own gates before packaging.
+
+Added per-request DNS, connect (including TLS), TLS, upload, response-header wait,
+first model text and streaming duration measurements. Connection reuse is explicit;
+missing phases are not invented as zero. Server processing cannot be separated from
+network transit without server timestamps. A synthetic local SSE test checks that the
+actual SSE factory retains the HTTP listener. No credentials, request bodies, addresses
+or URLs enter this timing report. First speakable text excludes NO_TEXT/NO_CHANGE.
+
+The active frame-bound transport previously omitted thinkingConfig and mediaResolution.
+The old GeminiVisionRepository HIGH setting is not used by this transport. Keep image
+resolution, JPEG quality, model and default model image resolution unchanged. Set explicit
+minimal thinking for literal OCR and low for scene descriptions. These are supported by
+Gemini 3.6 Flash per Google's current Generate Content thinking documentation, checked
+2026-09-24: https://ai.google.dev/gemini-api/docs/generate-content/thinking
+This is a candidate setting, not a measured accuracy or speed claim. MEDIUM/HIGH quality
+and latency comparison remains unmeasured; private evidence is never uploaded for it.
+Media documentation: https://ai.google.dev/gemini-api/docs/generate-content/media-resolution
+
+Phone release gates remain FAST median <=2s/P90 <=3s; STABLE median <=3s/P90 <=4s;
+BRIEF median <=2s/P90 <=3s; comprehensive first useful speech <=3s in normal conditions;
+preprocessing+encoding p95 <400ms without reducing text quality. Separately measure
+first-speakable to display / TTS submit / TTS start. Optional grounding must add no await.
+A real before/after phone replay and private golden accuracy comparison are outstanding,
+so the package is a test update, not a performance-approved release.
