@@ -40,8 +40,8 @@ android {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 46
-        versionName = "3.8.5"
+        versionCode = 47
+        versionName = "3.8.6"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -62,7 +62,7 @@ android {
         create("validation") {
             initWith(getByName("debug"))
             applicationIdSuffix = ".stable"
-            versionNameSuffix = "-stable-signing-test3"
+            versionNameSuffix = "-stable-signing-test4"
             signingConfig = signingConfigs.getByName("debug")
             matchingFallbacks += listOf("debug")
         }
