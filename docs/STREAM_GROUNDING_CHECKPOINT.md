@@ -41,14 +41,37 @@ publish before evidence is released. This proves timeout isolation only, not pho
 Status: local repository/secret checks passed. The required `./scripts/codex-check.sh` was
 attempted but Gradle download failed with `UnknownHostException: services.gradle.org`.
 Remote run `35956991860` passed lint, unit tests and assemble for the timeout-isolation
-commit `562920c76f5f974b1d57cd99e80e10e55a2c0a94`; its managed-device tests are still running.
+commit `562920c76f5f974b1d57cd99e80e10e55a2c0a94`; all 18 managed-device tests also passed.
 The same missing-output symptom is now included in the app's `FrameIntegrityVerdict`,
 with four synthetic regression tests. It excludes scene mode and unrelated turns/sessions
 and does not let a later verification event hide the earlier timeout. This additional
-diagnostic change still requires CI. This checkpoint is NOT an APK delivery or performance acceptance.
+diagnostic change is being validated by run `35957433844` on
+`68fc1e2861db910d1704cb23af537b78e1a0b7e3`. This checkpoint is NOT an APK delivery or performance acceptance.
 
 Remaining: full-page local OCR is still slow on the reporting phone; this change does not
 prove FAST/STABLE latency, OCR accuracy, scene quality or real-device performance. Measure
 network phases and progressive optical verification separately. Private diagnostic inputs
 remain outside git; no captured content or images belong in CI. Keep application ID
 `com.abdullah.visionbridge.stable` and the existing pinned private signer for the next APK.
+
+## Protocol / performance review, 2026-09-24
+
+- [Google Live reference](https://ai.google.dev/api/live): realtime audio, video and text are
+  concurrent streams with no guaranteed cross-stream order. Client content supports a turn
+  boundary, but remains part of conversation history. Retain the existing stateless request
+  carrying one image and its instruction together; this repair does not return OCR to Live.
+- [Google thinking controls](https://ai.google.dev/gemini-api/docs/generate-content/thinking):
+  Gemini 3.6 Flash supports explicit thinking levels. A lower level is a possible latency
+  experiment, not proof of unchanged reading/scene quality. The current diagnostic lacks a
+  network phase breakdown and thought-token counts, so do not assign its initial 13.8-second
+  delay specifically to model reasoning or change the model on that assumption.
+- [ONNX XNNPACK configuration](https://onnxruntime.ai/docs/execution-providers/Xnnpack-ExecutionProvider.html)
+  describes separate provider/runtime pools and recommends model-specific benchmarking.
+  Current code uses default XNNPACK provider options with an explicitly sized ORT pool.
+  Investigate this on the phone without lowering image resolution. Do not call thread
+  contention a confirmed cause from the present event logs.
+
+Next reproducible steps: inspect final CI for the latest source commit, then implement/measure
+progressive optical verification and network phase timing. A same-phone replay is still
+required for all latency acceptance targets. No private key or diagnostic media is in this
+checkpoint. The signed 3.8.5 remains the last delivered binary, not a build of these changes.
