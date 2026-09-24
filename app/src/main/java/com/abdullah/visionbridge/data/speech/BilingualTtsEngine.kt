@@ -59,9 +59,16 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
     private fun stale(trace: DiagnosticTrace?): Boolean =
         trace?.turn?.let { turnGate?.rejection(it) != null } ?: false
 
-    private fun SpeechRequest.expired(): Boolean = trace?.turn?.let {
-        visualTimeline.window(it,trace.section,enqueuedAtElapsedNanos).expired(SystemClock.elapsedRealtimeNanos())
-    } ?: false
+    private fun SpeechRequest.expired(): Boolean {
+        // OCR text is durable while its owning visual turn is still current. Expiring it merely
+        // because voice selection or the Android TTS engine needed ~1 s made valid cloud output
+        // self-destruct before onStart(). Visual invalidation is already enforced by TurnGate.
+        if (trace?.section == "READ_TEXT") return false
+        return trace?.turn?.let {
+            visualTimeline.window(it, trace.section, enqueuedAtElapsedNanos)
+                .expired(SystemClock.elapsedRealtimeNanos())
+        } ?: false
+    }
 
     private data class SpeechRequest(
         val text: String,
@@ -96,6 +103,7 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val utterances = ConcurrentHashMap<String, UtteranceState>()
+    private val preferredVoices = ConcurrentHashMap<String, Voice>()
     private val generation = AtomicLong(0L)
     private val engineEpoch = AtomicLong(0L)
     private val readingSequence = AtomicLong(0L)
@@ -434,6 +442,7 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
                 runCatching { previous.shutdown() }
             }
             tts = null
+            preferredVoices.clear()
 
             DiagnosticHub.record(
                 "TTS_INITIALIZATION_STARTED",
@@ -490,10 +499,18 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
                 val started = {
                     if (state.requestGeneration != generation.get() || utterances[id] !== state) {
                         completeUtterance(id,"TTS_STALE_START_DROPPED",SpeechOutcome.INTERRUPTED)
-                    } else if (state.window?.expired(now) == true) {
+                    } else if (now - state.submittedAtElapsedNanos >= ENGINE_START_BUDGET_NANOS) {
                         tts?.stop()
-                        completeUtterance(id,"TTS_START_DEADLINE_EXCEEDED",SpeechOutcome.SUPERSEDED_BEFORE_START,
-                            mapOf("reason" to "engine_start_expired","queueAgeMs" to (now-state.enqueuedAtElapsedNanos)/1e6))
+                        completeUtterance(
+                            id,
+                            "TTS_START_DEADLINE_EXCEEDED",
+                            SpeechOutcome.SUPERSEDED_BEFORE_START,
+                            mapOf(
+                                "reason" to "engine_start_timeout",
+                                "submitAgeMs" to (now - state.submittedAtElapsedNanos) / 1e6,
+                                "queueAgeMs" to (now - state.enqueuedAtElapsedNanos) / 1e6,
+                            ),
+                        )
                     } else {
                 state.startedAtElapsedNanos = now
                 state.trace?.turn?.let { turn ->
@@ -787,14 +804,18 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
             }
 
             val availability = engine.isLanguageAvailable(segment.language.locale)
-            if (availability >= TextToSpeech.LANG_AVAILABLE) {
+            // Prefer a cached concrete voice first. Calling engine.language on every streamed block
+            // is synchronous on some Android engines and cost ~0.9-1.3 s in the build-48 trace.
+            // Setting the chosen Voice is sufficient; use language only when no preferred voice
+            // exists for this locale.
+            val selectedVoice = selectPreferredFemaleVoice(engine, segment.language.locale)
+            if (
+                selectedVoice == null &&
+                availability >= TextToSpeech.LANG_AVAILABLE &&
+                engine.voice?.locale?.language != segment.language.locale.language
+            ) {
                 engine.language = segment.language.locale
             }
-            // FEMALE_FIRST_VOICE_V36: prefer a female Google/engine voice for every spoken segment.
-            // Android does not expose a universal gender field, so explicit female voice names and
-            // known Google Speech Services female variants are preferred; if this engine exposes no
-            // such metadata we keep its locale default instead of selecting a random voice.
-            val selectedVoice = selectPreferredFemaleVoice(engine, segment.language.locale)
             engine.setSpeechRate(request.rate)
             DiagnosticHub.record(
                 "TTS_VOICE_ACTIVE",
@@ -816,11 +837,8 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
             // Sample after reading the predecessor's completion timestamp. A concurrent onDone
             // must not make eligibility newer than the sampled submission and yield a negative span.
             val submittedAt = SystemClock.elapsedRealtimeNanos()
-            if(window?.expired(submittedAt)==true) {
-                DiagnosticHub.record("TTS_REQUEST_DROPPED",request.trace.fieldsOrEmpty(mapOf(
-                    "reason" to "start_deadline_before_submit","queueAgeMs" to (submittedAt-request.enqueuedAtElapsedNanos)/1e6)))
-                return SpeechOutcome.SUPERSEDED_BEFORE_START
-            }
+            // Do not reject valid OCR before engine submission. Freshness is owned by TurnGate;
+            // the engine-start watchdog begins only after TextToSpeech.speak() has been submitted.
             utterances[utteranceId] = UtteranceState(
                 completion = completion,
                 trace = request.trace,
@@ -885,19 +903,30 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
                 return SpeechOutcome.FAILED
             }
 
-            val startWatchdog = window?.let { deadline -> scope.launch {
-                delay(((deadline.deadlineNanos-SystemClock.elapsedRealtimeNanos()).coerceAtLeast(0)+999_999)/1_000_000)
-                val expire = {
-                    val state=utterances[utteranceId]
-                    if(state!=null && state.startedAtElapsedNanos==0L) {
-                        engine.stop()
-                        completeUtterance(utteranceId,"TTS_START_DEADLINE_EXCEEDED",SpeechOutcome.SUPERSEDED_BEFORE_START,
-                            mapOf("reason" to "engine_did_not_start","queueAgeMs" to
-                                (SystemClock.elapsedRealtimeNanos()-request.enqueuedAtElapsedNanos)/1e6))
+            val startWatchdog = window?.let {
+                scope.launch {
+                    delay(ENGINE_START_BUDGET_MS)
+                    val expire = {
+                        val state = utterances[utteranceId]
+                        if (state != null && state.startedAtElapsedNanos == 0L) {
+                            engine.stop()
+                            completeUtterance(
+                                utteranceId,
+                                "TTS_START_DEADLINE_EXCEEDED",
+                                SpeechOutcome.SUPERSEDED_BEFORE_START,
+                                mapOf(
+                                    "reason" to "engine_did_not_start_after_submit",
+                                    "submitAgeMs" to
+                                        (SystemClock.elapsedRealtimeNanos() - submittedAt) / 1e6,
+                                    "queueAgeMs" to
+                                        (SystemClock.elapsedRealtimeNanos() - request.enqueuedAtElapsedNanos) / 1e6,
+                                ),
+                            )
+                        }
                     }
+                    if (owner != null && turnGate != null) turnGate.commit(owner, expire) else expire()
                 }
-                if(owner!=null && turnGate!=null) turnGate.commit(owner,expire) else expire()
-            } }
+            }
 
             val timeoutMs = utteranceTimeoutMs(segment.text)
             val outcome = withTimeoutOrNull(timeoutMs) { completion.await() }
@@ -932,6 +961,11 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
     }
 
     private fun selectPreferredFemaleVoice(engine: TextToSpeech, locale: Locale): Voice? {
+        val cacheKey = locale.language.lowercase(Locale.ROOT)
+        preferredVoices[cacheKey]?.let { cached ->
+            if (engine.voice?.name != cached.name) engine.voice = cached
+            return cached
+        }
         val candidates = engine.voices.orEmpty()
             .filter { it.locale.language.equals(locale.language, ignoreCase = true) }
         val chosen = candidates
@@ -944,6 +978,7 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
             )
             .firstOrNull { femaleVoiceScore(it) > 0 }
         if (chosen != null) {
+            preferredVoices[cacheKey] = chosen
             if (engine.voice?.name != chosen.name) {
                 engine.voice = chosen
                 DiagnosticHub.record(
@@ -1091,6 +1126,8 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
         /** The one interrupt reason that is the user's own decision rather than a new target. */
         const val EXPLICIT_STOP_REASON = "explicit_stop"
         const val ENGINE_READY_TIMEOUT_MS = 8_000L
+        const val ENGINE_START_BUDGET_MS = 2_000L
+        const val ENGINE_START_BUDGET_NANOS = ENGINE_START_BUDGET_MS * 1_000_000L
         const val TIMEOUTS_BEFORE_ENGINE_RESTART = 2
         const val BASE_UTTERANCE_TIMEOUT_MS = 8_000L
         const val TIMEOUT_PER_CHARACTER_MS = 170L
