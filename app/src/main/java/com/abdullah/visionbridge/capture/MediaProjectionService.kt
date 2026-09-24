@@ -598,12 +598,22 @@ class MediaProjectionService : Service() {
                 ),
             )
 
+            if (!container.liveTransport.supports(settings)) {
+                DiagnosticHub.record(
+                    "LIVE_FALLBACK_TO_FRAME_SSE",
+                    trace.fields(mapOf("reason" to "configuration_requires_sse")),
+                )
+                val candidate = container.coordinator.candidate(view, trace, settings, smartDecision)
+                submitLatestFrame(PendingFrame(view, candidate.trace, candidate))
+                return
+            }
+
             if (!container.liveTransport.reserveFrame(settings)) {
                 DiagnosticHub.record(
                     "FRAME_SKIPPED",
                     trace.fields(
                         mapOf(
-                            "reason" to "live_video_interval",
+                            "reason" to "live_turn_or_video_interval",
                             "cloudLiveDirect" to true,
                             "transport" to "GEMINI_3_8_WEBSOCKET",
                         ),
