@@ -27,6 +27,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.ByteString
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
@@ -61,6 +62,9 @@ class GeminiLiveTransport(
     @Volatile private var socket: WebSocket? = null
     @Volatile private var setupReady: CompletableDeferred<Boolean>? = null
     @Volatile private var setupSucceeded = false
+
+    /** When the last handshake gave up, so a retry costs one attempt per interval, not per frame. */
+    @Volatile private var lastSetupFailureAtElapsedMs = 0L
     @Volatile private var keyFingerprint: String? = null
     @Volatile private var transportSessionId = UUID.randomUUID().toString()
     @Volatile private var resumptionHandle: String? = null
@@ -283,8 +287,22 @@ class GeminiLiveTransport(
             if (socket != null && setupSucceeded && keyFingerprint == fingerprint && existing != null) {
                 return true
             }
-            if (socket != null && keyFingerprint == fingerprint && existing != null) {
-                ready = existing
+            // A handshake that has already finished and failed must not be awaited again. Holding
+            // on to it made one bad setup permanent: the same settled deferred answered false for
+            // every frame of the session, so eleven frames over forty-five seconds each paid the
+            // full timeout and went to SSE without a single retry. A failed attempt is discarded
+            // here so the next frame opens a fresh socket, at most once per backoff.
+            if (existing != null && existing.isCompleted && existing.getCompleted() != true) {
+                val since = SystemClock.elapsedRealtime() - lastSetupFailureAtElapsedMs
+                if (since < LIVE_SETUP_RETRY_INTERVAL_MS) return false
+                socket?.close(NORMAL_CLOSE_CODE, "retry_live_setup")
+                socket = null
+                setupReady = null
+                setupSucceeded = false
+            }
+            val current = setupReady
+            if (socket != null && keyFingerprint == fingerprint && current != null) {
+                ready = current
             } else {
                 socket?.close(NORMAL_CLOSE_CODE, "replace_live_session")
                 val deferred = CompletableDeferred<Boolean>()
@@ -301,7 +319,23 @@ class GeminiLiveTransport(
                 )
             }
         }
-        return withTimeoutOrNull(LIVE_SETUP_TIMEOUT_MS) { ready.await() } == true
+        val connected = withTimeoutOrNull(LIVE_SETUP_TIMEOUT_MS) { ready.await() } == true
+        if (!connected) {
+            // Settle the deferred so the branch above can see this attempt finished and failed,
+            // rather than every later frame awaiting a handshake nobody is still running.
+            if (!ready.isCompleted) ready.complete(false)
+            synchronized(socketLock) { lastSetupFailureAtElapsedMs = SystemClock.elapsedRealtime() }
+            DiagnosticHub.record(
+                "LIVE_SETUP_FAILED",
+                mapOf(
+                    "model" to MODEL,
+                    "timeoutMs" to LIVE_SETUP_TIMEOUT_MS,
+                    "retryInMs" to LIVE_SETUP_RETRY_INTERVAL_MS,
+                    "transportSessionId" to transportSessionId,
+                ),
+            )
+        }
+        return connected
     }
 
     private fun listener(
@@ -318,6 +352,23 @@ class GeminiLiveTransport(
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             if (keyFingerprint == expectedFingerprint) handleServerMessage(text, ready)
+        }
+
+        /**
+         * Gemini Live answers in binary frames, not text ones.
+         *
+         * Without this override OkHttp hands every server message to the no-op default and the
+         * session is deaf while looking perfectly healthy: the handshake returns 101, the setup
+         * payload is sent, and `setupComplete` arrives and is discarded. A field session on
+         * 2026-09-25 shows exactly that shape — socket open at 0.7 s, preconnect giving up at
+         * 4.0 s with connected=false, then eleven frames over forty-five seconds every one of
+         * them falling back to SSE with `setup_not_ready`, and not one parse failure logged,
+         * because the text handler was never reached at all.
+         */
+        override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+            if (keyFingerprint == expectedFingerprint) {
+                handleServerMessage(bytes.string(Charsets.UTF_8), ready)
+            }
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
@@ -630,6 +681,9 @@ class GeminiLiveTransport(
         private const val LIVE_ENDPOINT =
             "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
         private const val LIVE_SETUP_TIMEOUT_MS = 4_000L
+
+        /** Long enough that a dead endpoint is not hammered, short enough to recover in a session. */
+        private const val LIVE_SETUP_RETRY_INTERVAL_MS = 15_000L
         private const val LIVE_VIDEO_INTERVAL_MS = 1_000L
         private const val NORMAL_CLOSE_CODE = 1000
         private val SAMPLE_RATE_REGEX = Regex("rate=(\\d+)", RegexOption.IGNORE_CASE)

@@ -16,3 +16,6 @@ private-investigation/
 replay-private/
 
 .kotlin/
+
+# Candidate signing material. Never committed; see scripts/setup-signing-key.sh
+signing/

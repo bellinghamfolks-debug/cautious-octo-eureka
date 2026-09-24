@@ -63,7 +63,13 @@ android {
             initWith(getByName("debug"))
             applicationIdSuffix = ".stable"
             versionNameSuffix = "-stable-signing-test7"
-            signingConfig = signingConfigs.getByName("debug")
+            // Prefer the stable key. The debug keystore is generated per machine, and on a CI
+            // runner that means a new key for every build: Android then refuses to install one
+            // candidate over the previous one, and the only way forward is to uninstall and lose
+            // the settings and the API key with it. The debug key stays as the fallback so a
+            // clone with no signing material can still build.
+            signingConfig = signingConfigs.findByName("visionbridgeStable")
+                ?: signingConfigs.getByName("debug")
             matchingFallbacks += listOf("debug")
         }
         release {

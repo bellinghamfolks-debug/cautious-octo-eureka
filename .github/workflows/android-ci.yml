@@ -71,11 +71,34 @@ jobs:
           log-accepted-android-sdk-licenses: false
       - name: Install Android SDK
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      # Without this the runner signs with its own freshly generated debug keystore, so every
+      # candidate carries a different certificate and Android refuses to install one over the
+      # last. The secret is optional so a fork still builds; when it is missing the build says
+      # so loudly rather than quietly shipping an APK that cannot be upgraded.
+      - name: Restore the stable candidate signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.VISIONBRIDGE_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_BASE64:-}" ]; then
+            echo "::warning::No VISIONBRIDGE_KEYSTORE_BASE64 secret. This candidate is signed with a throwaway debug key and will NOT install over the previous build. Run scripts/setup-signing-key.sh once to fix this permanently."
+            echo "STABLE_SIGNING=no" >> "$GITHUB_ENV"
+          else
+            mkdir -p signing
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > signing/visionbridge-signing-v1.jks
+            echo "STABLE_SIGNING=yes" >> "$GITHUB_ENV"
+          fi
       - name: Assemble isolated ARM64 test app
+        env:
+          VISIONBRIDGE_KEYSTORE_PASSWORD: ${{ secrets.VISIONBRIDGE_KEYSTORE_PASSWORD }}
         run: ./gradlew --no-daemon lintValidation assembleValidation
       - name: Verify package identity and record provenance
         run: |
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging app/build/outputs/apk/validation/app-validation.apk > candidate-badging.txt
+          # The certificate decides whether this build installs over the last one. Recording it
+          # every time turns "app not installed" from a mystery into a line anyone can compare.
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs \
+            app/build/outputs/apk/validation/app-validation.apk > candidate-certs.txt
           python3 - <<'PY'
           from pathlib import Path
           import hashlib, os, re, shutil
@@ -87,6 +110,9 @@ jobs:
           # failed this assert, the upload was skipped, and the newest installable APK stayed at
           # build 48 for every field report that followed. What has to hold is that this is an
           # isolated test package and not a release — the number is whatever was just built.
+          certs = Path('candidate-certs.txt').read_text()
+          cert = re.search(r'SHA-256 digest:\s*([0-9a-fA-F]+)', certs)
+          cert = cert.group(1).lower() if cert else 'unknown'
           version = re.search(r"versionName='([^']*)'", badging).group(1)
           code = re.search(r"versionCode='([^']*)'", badging).group(1)
           assert re.search(r'-stable-signing-test\d+$', version), (
@@ -99,13 +125,16 @@ jobs:
               env.write(f'CANDIDATE_APK={name}\n')
               env.write(f'CANDIDATE_VERSION={version}\n')
               env.write(f'CANDIDATE_BUILD={code}\n')
+              env.write(f'CANDIDATE_CERT={cert}\n')
           Path('candidate-info.txt').write_text(
               'DEVICE TEST CANDIDATE — NOT AN APPROVED RELEASE\n'
               'Candidate package: com.abdullah.visionbridge.stable; final APK must use the pinned private signer.\n'
               'Phone/network latency and new cloud-output acceptance remain unverified.\n'
               'No private diagnostic evidence is included.\n'
               'commit=' + os.environ['GITHUB_SHA'] + '\n'
-              'sha256=' + hashlib.sha256(apk.read_bytes()).hexdigest() + '\n')
+              'sha256=' + hashlib.sha256(apk.read_bytes()).hexdigest() + '\n'
+              'signingCertificateSha256=' + cert + '\n'
+              'stableSigningKey=' + os.environ.get('STABLE_SIGNING', 'unknown') + '\n')
           PY
       - uses: actions/upload-artifact@v4
         with:
@@ -142,6 +171,9 @@ jobs:
             "" \
             "الحزمة com.abdullah.visionbridge.stable وتُثبَّت بجانب التطبيق الأساسي دون استبداله." \
             "موقَّعة بمفتاح الاختبار، لا بمفتاح الإصدار." \
+            "" \
+            "بصمة شهادة التوقيع: ${CANDIDATE_CERT}" \
+            "$([ "${STABLE_SIGNING:-no}" = yes ] && echo 'مفتاح ثابت — يُثبَّت هذا التحديث فوق السابق مباشرة.' || echo 'تنبيه: مفتاح مؤقت. هذا البناء لن يُثبَّت فوق السابق. شغّل scripts/setup-signing-key.sh مرة واحدة لإصلاحها نهائياً.')" \
             "" \
             "commit: ${GITHUB_SHA}")
           if gh release view device-candidate --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
