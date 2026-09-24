@@ -79,6 +79,22 @@ class GeminiLiveTransport(
         !settings.forceCellular &&
             (settings.mode == AnalysisMode.SCENE_DESCRIPTION || !settings.useLocalOcr)
 
+    suspend fun preconnect(settings: AppSettings) {
+        if (!supports(settings)) return
+        val apiKey = keys.get()?.takeIf { it.isNotBlank() } ?: return
+        val started = SystemClock.elapsedRealtimeNanos()
+        val connected = ensureConnected(apiKey)
+        DiagnosticHub.record(
+            "LIVE_PRECONNECT_COMPLETED",
+            mapOf(
+                "connected" to connected,
+                "durationMs" to
+                    (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0,
+                "model" to MODEL,
+            ),
+        )
+    }
+
     fun reserveFrame(settings: AppSettings): Boolean {
         if (!supports(settings)) return false
         val now = SystemClock.elapsedRealtime()
