@@ -162,6 +162,9 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                     if(gate.rejection(o.turn)!=null) { DiagnosticHub.record("RESULT_DROPPED",o.turn.fields()+mapOf("reason" to gate.rejection(o.turn)));return }
                     if(textMode) {
                         val verificationWaitStarted=SystemClock.elapsedRealtimeNanos()
+                        DiagnosticHub.record("OUTPUT_VERIFICATION_WAIT_STARTED",o.turn.fields()+mapOf(
+                            "evidenceAlreadyComplete" to evidenceTask.isCompleted,
+                            "readingComplete" to o.readingComplete))
                         val evidence=evidenceTask.await()
                         DiagnosticHub.record("OUTPUT_VERIFICATION_READY",o.turn.fields()+mapOf(
                             "verificationWaitMs" to (SystemClock.elapsedRealtimeNanos()-verificationWaitStarted)/1e6))

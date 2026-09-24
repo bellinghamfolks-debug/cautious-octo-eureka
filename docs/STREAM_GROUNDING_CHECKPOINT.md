@@ -19,6 +19,10 @@ Regression tests cover a verifier slower than the request budget, bounded snapsh
 final snapshot delivery, late evidence after a generation change, cancellation of both jobs,
 and transport failure while verification waits. `OUTPUT_VERIFICATION_READY` reports the wait
 separately; `TRANSPORT_RESPONSE_COMPLETED` marks request completion independently.
+`OUTPUT_VERIFICATION_WAIT_STARTED` marks entry even if the wait is later cancelled. The old
+bundle did not record callback entry: its timeline is consistent with the confirmed code
+defect but cannot by itself exclude an additional network stall. Do not present the timeline
+as proof that this is the sole cause of the phone's failed turn.
 
 The image-free measurement harness now flags a response followed by a request timeout with
 no completed optical evidence, responses without runtime/UI output, and incomplete/mismatched
