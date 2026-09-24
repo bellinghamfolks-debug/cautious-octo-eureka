@@ -49,7 +49,7 @@ commit `562920c76f5f974b1d57cd99e80e10e55a2c0a94`; all 18 managed-device tests a
 The same missing-output symptom is now included in the app's `FrameIntegrityVerdict`,
 with four synthetic regression tests. It excludes scene mode and unrelated turns/sessions
 and does not let a later verification event hide the earlier timeout. This additional
-diagnostic change is being validated by run `35957433844` on
+diagnostic change passed all CI gates in run `35957433844` on
 `68fc1e2861db910d1704cb23af537b78e1a0b7e3`. This checkpoint is NOT an APK delivery or performance acceptance.
 
 Remaining: full-page local OCR is still slow on the reporting phone; this change does not
@@ -78,4 +78,5 @@ remain outside git; no captured content or images belong in CI. Keep application
 Next reproducible steps: inspect final CI for the latest source commit, then implement/measure
 progressive optical verification and network phase timing. A same-phone replay is still
 required for all latency acceptance targets. No private key or diagnostic media is in this
-checkpoint. The signed 3.8.5 remains the last delivered binary, not a build of these changes.
+checkpoint. The 3.8.6 validation candidate includes these changes; see DELIVERY_3_8_6.md for exact
+source, CI and signing evidence. Phone performance acceptance remains open.
