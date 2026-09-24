@@ -55,6 +55,9 @@ jobs:
     if: github.ref == 'refs/heads/codex/visionbridge-frame-integrity' && contains(github.event.head_commit.message, '[device-candidate]')
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # Needed only by the release step below; every other step reads.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -92,6 +95,10 @@ jobs:
           name = f'VisionBridge-{version}-arm64.apk'
           shutil.copyfile(apk, name)
           print(f'::notice::packaged {name} (versionCode {code})')
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f'CANDIDATE_APK={name}\n')
+              env.write(f'CANDIDATE_VERSION={version}\n')
+              env.write(f'CANDIDATE_BUILD={code}\n')
           Path('candidate-info.txt').write_text(
               'DEVICE TEST CANDIDATE — NOT AN APPROVED RELEASE\n'
               'Candidate package: com.abdullah.visionbridge.stable; final APK must use the pinned private signer.\n'
@@ -107,6 +114,47 @@ jobs:
             VisionBridge-*-arm64.apk
             candidate-info.txt
           if-no-files-found: error
+      # Reaching a workflow artifact means signing in to GitHub, walking into a run page,
+      # finding the artifacts section and unzipping what arrives. With a screen reader that
+      # is a long walk for a file, and the whole point of this job is that someone can
+      # install the build. A release asset is one address that downloads the APK directly
+      # and never changes:
+      #
+      #   https://github.com/<owner>/<repo>/releases/download/device-candidate/VisionBridge.apk
+      #
+      # The tag is fixed rather than versioned so that address keeps working, and the
+      # release stays a prerelease and is never marked latest, so a test candidate signed
+      # with the debug key cannot be mistaken for an approved release.
+      - name: Publish the candidate to a fixed download address
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$CANDIDATE_APK" VisionBridge.apk
+          notes=$(printf '%s\n' \
+            "مرشّح اختبار على الجهاز — ليس إصداراً معتمداً." \
+            "" \
+            "الإصدار ${CANDIDATE_VERSION}، Build ${CANDIDATE_BUILD}" \
+            "" \
+            "التنزيل المباشر: VisionBridge.apk" \
+            "" \
+            "الحزمة com.abdullah.visionbridge.stable وتُثبَّت بجانب التطبيق الأساسي دون استبداله." \
+            "موقَّعة بمفتاح الاختبار، لا بمفتاح الإصدار." \
+            "" \
+            "commit: ${GITHUB_SHA}")
+          if gh release view device-candidate --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload device-candidate VisionBridge.apk "$CANDIDATE_APK" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit device-candidate --repo "$GITHUB_REPOSITORY" \
+              --title "VisionBridge ${CANDIDATE_VERSION} (Build ${CANDIDATE_BUILD}) — device candidate" \
+              --notes "$notes" --prerelease
+          else
+            gh release create device-candidate VisionBridge.apk "$CANDIDATE_APK" \
+              --repo "$GITHUB_REPOSITORY" --prerelease \
+              --title "VisionBridge ${CANDIDATE_VERSION} (Build ${CANDIDATE_BUILD}) — device candidate" \
+              --notes "$notes"
+          fi
           retention-days: 30
 
   device:
