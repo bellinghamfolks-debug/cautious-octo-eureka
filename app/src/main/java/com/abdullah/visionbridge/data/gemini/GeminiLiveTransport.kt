@@ -214,7 +214,8 @@ class GeminiLiveTransport(
 
     fun onVisualTargetChanged(interruptSpeech: Boolean) {
         synchronized(stateLock) {
-            lastReservedAtElapsedMs = 0L
+            // Keep the global one-frame-per-second Live video budget across target changes.
+            // A target replacement may preempt audio, but it must not violate the transport limit.
             if (interruptSpeech) audioPlayer.interrupt("visual_target_changed")
         }
         DiagnosticHub.record(
