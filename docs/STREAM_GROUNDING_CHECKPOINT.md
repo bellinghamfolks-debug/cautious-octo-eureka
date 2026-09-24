@@ -40,7 +40,12 @@ publish before evidence is released. This proves timeout isolation only, not pho
 
 Status: local repository/secret checks passed. The required `./scripts/codex-check.sh` was
 attempted but Gradle download failed with `UnknownHostException: services.gradle.org`.
-Remote CI is required. This checkpoint is NOT an APK delivery or performance acceptance.
+Remote run `35956991860` passed lint, unit tests and assemble for the timeout-isolation
+commit `562920c76f5f974b1d57cd99e80e10e55a2c0a94`; its managed-device tests are still running.
+The same missing-output symptom is now included in the app's `FrameIntegrityVerdict`,
+with four synthetic regression tests. It excludes scene mode and unrelated turns/sessions
+and does not let a later verification event hide the earlier timeout. This additional
+diagnostic change still requires CI. This checkpoint is NOT an APK delivery or performance acceptance.
 
 Remaining: full-page local OCR is still slow on the reporting phone; this change does not
 prove FAST/STABLE latency, OCR accuracy, scene quality or real-device performance. Measure

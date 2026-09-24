@@ -9,7 +9,7 @@ spec.loader.exec_module(module)
 
 class MeasurementsTest(unittest.TestCase):
     def test_response_timeout_without_grounding_is_reported_not_called_success(self):
-        events = [dict(type=kind, turnId='synthetic', sessionId='s', processId='p',
+        events = [dict(type=kind, turnId='synthetic', sessionId='s', processId='p', mode='TEXT_READING',
                        capturedAtElapsedNanos=0, receivedAtElapsedNanos=13_000_000_000)
                   for kind in ('FRAME_REQUEST_SENT', 'FIRST_CHUNK', 'CLOUD_ANALYSIS_BUDGET_EXCEEDED')]
         r = module.summarize(events)

@@ -49,7 +49,7 @@ def response_health(events):
                 first_chunks.append((received-captured)/1e6)
             if not outputs:
                 totals['responsesWithoutRuntimeOrUiOutput'] += 1
-            if ('CLOUD_ANALYSIS_BUDGET_EXCEEDED' in types and
+            if (sent.get('mode') == 'TEXT_READING' and 'CLOUD_ANALYSIS_BUDGET_EXCEEDED' in types and
                     'LOCAL_GROUNDING_COMPLETED' not in types):
                 totals['responseThenTimeoutWithoutCompletedGrounding'] += 1
         for output in outputs:

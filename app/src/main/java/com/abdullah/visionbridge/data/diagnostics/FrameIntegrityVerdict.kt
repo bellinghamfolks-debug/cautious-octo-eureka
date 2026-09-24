@@ -60,6 +60,19 @@ object FrameIntegrityVerdict {
         fun add(code:String,severity:SessionVerdict.Severity,headline:String,measurement:String,vararg evidence:String) {
             result+=SessionVerdict.Finding(code,severity,headline,measurement,evidence.toList())
         }
+        val timedOutWhileUnverified=events.filter { it.text("turnId")!=null }
+            .groupBy { Triple(it.text("sessionId"),it.text("processId"),it.text("turnId")) }
+            .values.count { turnEvents ->
+                val sentIndex=turnEvents.indexOfFirst { it.type=="FRAME_REQUEST_SENT" && it.text("mode")=="TEXT_READING" }
+                val chunkIndex=turnEvents.indexOfFirst { it.type=="FIRST_CHUNK" }
+                val timeoutIndex=turnEvents.indexOfFirst { it.type=="CLOUD_ANALYSIS_BUDGET_EXCEEDED" }
+                sentIndex>=0 && chunkIndex>sentIndex && timeoutIndex>chunkIndex &&
+                    turnEvents.take(timeoutIndex).none { it.type=="LOCAL_GROUNDING_COMPLETED" || it.type=="RUNTIME_RESULT" }
+            }
+        if(timedOutWhileUnverified>0)add("RESPONSE_TIMED_OUT_BEFORE_VERIFICATION",SessionVerdict.Severity.MAJOR,
+            "وصل رد Gemini ثم انتهت مهلة الطلب قبل تسجيل اكتمال التحقق البصري أو نتيجة للمستخدم.",
+            "count=$timedOutWhileUnverified؛ راجع انتظار OCR داخل مسار الاستقبال؛ الأحداث وحدها لا تثبت السبب.",
+            "FRAME_REQUEST_SENT","FIRST_CHUNK","CLOUD_ANALYSIS_BUDGET_EXCEEDED","LOCAL_GROUNDING_COMPLETED","RUNTIME_RESULT")
         if(stale>0)add("STALE_VISUAL_OUTPUT",SessionVerdict.Severity.FATAL,"وصلت نتيجة من دور أو جيل قديم إلى العرض أو النطق.","count=$stale",*outputs.toTypedArray())
         if(mismatch>0)add("FRAME_RESULT_IDENTITY_MISMATCH",SessionVerdict.Severity.FATAL,"هوية النتيجة لا تطابق الصورة المرسلة.","count=$mismatch",*outputs.toTypedArray())
         if(missing>0)add("UNPROVABLE_FRAME_RESULT_IDENTITY",SessionVerdict.Severity.MAJOR,"بعض النتائج لا تحمل هوية كاملة تثبت الصورة التي تخصها.","count=$missing",*outputs.toTypedArray())

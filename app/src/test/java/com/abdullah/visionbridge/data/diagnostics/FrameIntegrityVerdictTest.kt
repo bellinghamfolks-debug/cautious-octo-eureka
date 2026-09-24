@@ -4,6 +4,30 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class FrameIntegrityVerdictTest {
+    @Test fun responseLostBeforeOpticalVerificationIsNotAnAllClear() {
+        val result=FrameIntegrityVerdict.analyse(listOf(event("FRAME_REQUEST_SENT"),event("FIRST_CHUNK"),
+            event("CLOUD_ANALYSIS_BUDGET_EXCEEDED")))
+        assertEquals("RESPONSE_TIMED_OUT_BEFORE_VERIFICATION",result.single().code)
+    }
+    @Test fun lateGroundingCompletionDoesNotHideAlreadyTimedOutResponse() {
+        val result=FrameIntegrityVerdict.analyse(listOf(event("FRAME_REQUEST_SENT"),event("FIRST_CHUNK"),
+            event("CLOUD_ANALYSIS_BUDGET_EXCEEDED"),event("LOCAL_GROUNDING_COMPLETED")))
+        assertEquals("RESPONSE_TIMED_OUT_BEFORE_VERIFICATION",result.single().code)
+    }
+    @Test fun sceneResponseAndCompletedGroundingAreNotClassifiedAsWaitingForOcr() {
+        val scene=listOf("FRAME_REQUEST_SENT","FIRST_CHUNK","CLOUD_ANALYSIS_BUDGET_EXCEEDED")
+            .map { event(it,extra=mapOf("mode" to "SCENE_DESCRIPTION")) }
+        assertTrue(FrameIntegrityVerdict.analyse(scene).isEmpty())
+        val verified=listOf(event("FRAME_REQUEST_SENT"),event("FIRST_CHUNK"),
+            event("LOCAL_GROUNDING_COMPLETED"),event("CLOUD_ANALYSIS_BUDGET_EXCEEDED"))
+        assertTrue(FrameIntegrityVerdict.analyse(verified).isEmpty())
+    }
+    @Test fun unrelatedSessionOrTurnCannotSupplyAResponseToTimeoutFinding() {
+        val events=listOf(event("FRAME_REQUEST_SENT"),event("FIRST_CHUNK","other"),
+            event("FIRST_CHUNK",extra=mapOf("sessionId" to "other-session")),
+            event("CLOUD_ANALYSIS_BUDGET_EXCEEDED"))
+        assertTrue(FrameIntegrityVerdict.analyse(events).isEmpty())
+    }
     private fun event(type:String,id:String="a",gen:Long=0,extra:Map<String,Any?> = emptyMap())=
         SessionVerdict.Event(type,mapOf("turnId" to id,"traceId" to id,"frameId" to id,
             "visualGeneration" to gen,"mode" to "TEXT_READING","model" to "test",
