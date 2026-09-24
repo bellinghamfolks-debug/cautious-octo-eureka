@@ -634,9 +634,12 @@ class MediaProjectionService : Service() {
                 ),
             )
             serviceScope.launch {
-                val handledByLive = runCatching {
+                val handledByLive = try {
                     container.liveTransport.submitFrame(view, trace, settings)
-                }.getOrElse { error ->
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    view.recycle()
+                    throw cancelled
+                } catch (error: Throwable) {
                     DiagnosticHub.failure("LIVE_SUBMISSION", error, trace.fields())
                     false
                 }
