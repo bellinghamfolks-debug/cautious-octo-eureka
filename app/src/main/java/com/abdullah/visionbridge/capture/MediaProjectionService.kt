@@ -749,6 +749,7 @@ class MediaProjectionService : Service() {
         }
 
         container.coordinator.imageUnavailable()
+        container.liveTransport.onVisualTargetChanged(true)
         if (unavailableFeedSince == 0L) unavailableFeedSince = now
         val unavailableForMs = now - unavailableFeedSince
         if (
