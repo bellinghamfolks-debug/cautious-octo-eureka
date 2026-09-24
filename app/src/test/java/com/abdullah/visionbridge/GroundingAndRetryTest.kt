@@ -6,6 +6,20 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class GroundingAndRetryTest {
+    @Test fun advisorySuccessDoesNotOpenDuplicateTurnsThatCutOffTheReading() {
+        val policy=QualityRetryPolicy()
+        val q=QualityRetryPolicy.Quality(40.0,30.0,.2,.9,300)
+        policy.submitted(q,0)
+        // First incomplete / failed reading must never latch the target.
+        policy.result(false)
+        assertTrue(policy.consider(q,10_000,true,periodicOpticalProbe=false).submit)
+        policy.result(true)
+        for(time in listOf(11_000L,30_000L,120_000L))
+            assertFalse(policy.consider(q,time,true,periodicOpticalProbe=false).submit)
+        assertTrue(policy.consider(q.copy(sharpness=400.0),30_000,true,periodicOpticalProbe=false).submit)
+        policy.reset()
+        assertTrue(policy.consider(q,30_001,true,periodicOpticalProbe=false).submit)
+    }
     private val optical = TextGroundingGate.Evidence("كتاب TEST ١٢٣", .95f, 3)
     @Test fun opticalEvidenceRequiredEvenForCertainModel() {
         assertFalse(TextGroundingGate.evaluate("UNRELATED PRODUCT",100,true,false,optical).accepted)

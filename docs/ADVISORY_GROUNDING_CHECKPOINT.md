@@ -72,3 +72,11 @@ Pre-submission capture stages join by exact session/process/frame/trace, since a
 not yet exist during capture. Optional grounding is explicitly inapplicable to publication
 latency rather than silently required as a missing stage. Its independent duration remains
 in the optional-verification event timeline.
+
+Final review found a downstream duplicate-turn hazard: the old 1.8-second periodic probe
+relied on mandatory optical preflight to suppress a duplicate before turn activation.
+Without mandatory grounding, it could open N+1 on the unchanged successful target and
+stop N's speech. Advisory mode now holds equal/worse candidates after completed reliable
+output; better-quality candidates and confirmed new generations remain eligible. Negative
+or incomplete readings do not latch. Strict/local periodic optical verification is unchanged.
+This policy never reads TTS state, so it is semantic/quality deduplication, not speech pressure.

@@ -115,7 +115,8 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
             return@withLock
         }
         configurationNoticeSpoken = false
-        val decision=if(textMode) policy.consider(c.quality,SystemClock.elapsedRealtime(),settings.captureProfile==CaptureProfile.STABLE)
+        val decision=if(textMode) policy.consider(c.quality,SystemClock.elapsedRealtime(),settings.captureProfile==CaptureProfile.STABLE,
+            periodicOpticalProbe=requiredGrounding)
             else scenePolicy.shouldProbe(capture.visualGeneration,settings.sceneDescriptionStyle,SystemClock.elapsedRealtime(),
                 c.compensatedDifference,c.chromaDifference).let { QualityRetryPolicy.Decision(it.accepted,it.reason) }
         if(!decision.submit) { skip(c,decision.reason);return@withLock }

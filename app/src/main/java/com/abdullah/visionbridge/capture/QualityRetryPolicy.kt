@@ -13,12 +13,16 @@ class QualityRetryPolicy {
     private var lastScore = Double.NEGATIVE_INFINITY
     private var reliableScore: Double? = null
 
-    fun consider(q: Quality, nowMs: Long, stable: Boolean): Decision {
+    fun consider(q: Quality, nowMs: Long, stable: Boolean, periodicOpticalProbe: Boolean = true): Decision {
         if (q.sharpness < 12 || q.contrast < 10 || q.cropCompleteness < .5)
             return Decision(false, "insufficient_quality")
         if (stable && q.stableForMs < 180) return Decision(false, "awaiting_stability")
         val elapsed = lastSubmittedAt?.let { nowMs - it }
-        if (reliableScore?.let { q.score < it + .3 } == true && elapsed != null && elapsed < 1800)
+        // Strict/local probes can identify an optical duplicate before opening a cloud turn.
+        // Advisory mode cannot: reopening the same successful image would cancel its speech.
+        // Hold only after a completed reliable result; sharper frames and new targets still run.
+        if (reliableScore?.let { q.score < it + .3 } == true && elapsed != null &&
+            (!periodicOpticalProbe || elapsed < 1800))
             return Decision(false, "reliable_target_duplicate")
         if (elapsed != null && elapsed < if (q.score >= lastScore + .25) 250 else 1000)
             return Decision(false, "retry_cooldown")
