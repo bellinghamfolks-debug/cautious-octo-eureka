@@ -4,6 +4,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class FrameIntegrityVerdictTest {
+    @Test fun build47CompletedResponseHeldUntilObsoleteCancellationCannotBeAllClear() {
+        val result=FrameIntegrityVerdict.analyse(listOf(event("FRAME_REQUEST_SENT"),event("FIRST_CHUNK"),
+            event("OUTPUT_VERIFICATION_WAIT_STARTED"),event("TURN_COMPLETE"),event("TURN_CANCELLED_OBSOLETE")))
+        assertEquals("COMPLETED_RESPONSE_HELD_IN_VERIFICATION",result.single().code)
+    }
+    @Test fun slowOptionalGuardDoesNotMakePublishedCloudResultAFailure() {
+        val result=FrameIntegrityVerdict.analyse(listOf(event("FRAME_REQUEST_SENT"),event("OPTIONAL_GROUNDING_STARTED"),
+            event("RUNTIME_RESULT"),event("TURN_COMPLETE"),event("ANALYSIS_LANE_RELEASED"),event("OPTIONAL_GROUNDING_TIMEOUT")))
+        assertTrue(result.isEmpty())
+    }
     @Test fun responseLostBeforeOpticalVerificationIsNotAnAllClear() {
         val result=FrameIntegrityVerdict.analyse(listOf(event("FRAME_REQUEST_SENT"),event("FIRST_CHUNK"),
             event("CLOUD_ANALYSIS_BUDGET_EXCEEDED")))

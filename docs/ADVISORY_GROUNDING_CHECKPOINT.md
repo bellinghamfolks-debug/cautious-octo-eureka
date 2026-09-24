@@ -62,3 +62,9 @@ preprocessing+encoding p95 <400ms without reducing text quality. Separately meas
 first-speakable to display / TTS submit / TTS start. Optional grounding must add no await.
 A real before/after phone replay and private golden accuracy comparison are outstanding,
 so the package is a test update, not a performance-approved release.
+
+The in-app verdict now identifies a completed response held in verification until
+turn cancellation. The measurement harness reports speakable-to-runtime/UI/TTS
+delays using explicit same-frame identities and aggregates separate HTTP phases.
+The STABLE acceptance script enforces the latest requested 4000ms P90, with a
+regression proving that 4200ms fails. Missing measurements remain unknown, never zero.

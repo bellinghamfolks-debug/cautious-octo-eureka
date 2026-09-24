@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 from measure_frame_pipeline import distribution
 
-LIMITS = {'TEXT_READING/FAST': (2000, 3000), 'TEXT_READING/STABLE': (3000, 4500),
+LIMITS = {'TEXT_READING/FAST': (2000, 3000), 'TEXT_READING/STABLE': (3000, 4000),
           'SCENE_DESCRIPTION/BRIEF': (2000, 3000), 'SCENE_DESCRIPTION/COMPREHENSIVE': (None, None)}
 IDENTITY = ('turnId', 'traceId', 'frameId', 'visualGeneration', 'mode', 'model',
             'promptVersion', 'transportSessionId', 'imageHash')

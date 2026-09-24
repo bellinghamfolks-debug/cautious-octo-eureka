@@ -8,6 +8,23 @@ spec.loader.exec_module(module)
 
 
 class MeasurementsTest(unittest.TestCase):
+    def test_publication_delay_joins_exact_frame_and_never_counts_unbound_tts(self):
+        identity=dict(turnId='t',traceId='tr',frameId='f',visualGeneration=1,imageHash='a'*64)
+        events=[dict(identity,type=k,elapsedRealtimeNanos=t) for k,t in (
+            ('FRAME_REQUEST_SENT',0),('FIRST_SPEAKABLE_TEXT_READY',1_000_000_000),
+            ('RUNTIME_RESULT',1_020_000_000),('FIRST_CONTENT_TTS_SUBMITTED',1_030_000_000))]
+        events.append(dict(identity,type='FIRST_CONTENT_TTS_STARTED',imageHash='b'*64,elapsedRealtimeNanos=1_100_000_000))
+        r=module.response_health(events)['publicationDelay']
+        self.assertEqual(20,r['speakableToRuntimeMs']['median'])
+        self.assertEqual(30,r['speakableToTtsSubmittedMs']['median'])
+        self.assertIsNone(r['speakableToTtsStartedMs']['median'])
+
+    def test_completed_cloud_held_in_verification_is_visible_in_report(self):
+        events=[dict(type=k,turnId='t') for k in ('FRAME_REQUEST_SENT',
+            'OUTPUT_VERIFICATION_WAIT_STARTED','TURN_COMPLETE','TURN_CANCELLED_OBSOLETE')]
+        r=module.response_health(events)
+        self.assertEqual(1,r['completedResponsesWithoutPublicationWhileVerificationPending'])
+
     def test_response_timeout_without_grounding_is_reported_not_called_success(self):
         events = [dict(type=kind, turnId='synthetic', sessionId='s', processId='p', mode='TEXT_READING',
                        capturedAtElapsedNanos=0, receivedAtElapsedNanos=13_000_000_000)
@@ -64,6 +81,17 @@ import evaluate_frame_acceptance as acceptance
 
 
 class AcceptanceTest(unittest.TestCase):
+    def test_stable_four_second_p90_gate_cannot_pass_at_four_point_two(self):
+        rows=[self.valid_row() for _ in range(30)]
+        for index,row in enumerate(rows):
+            row['workload']='TEXT_READING/STABLE'
+            if index>=25:
+                row['timesNanos'].update(runtimeAcceptedAt=4_000_000_000,
+                    uiRenderedAt=4_100_000_000,ttsEligibleAt=4_000_000_000,ttsStartedAt=4_200_000_000)
+        r=acceptance.evaluate({'opportunities':rows})['workloads']['TEXT_READING/STABLE']
+        self.assertIn('p90_useful_deadline',r['failures'])
+        self.assertEqual(4200,r['captureToUsefulMs']['p90'])
+
     def valid_row(self):
         identity={key: 'synthetic' for key in acceptance.IDENTITY}
         identity.update(mode='TEXT_READING', imageHash='a'*64, visualGeneration=0)

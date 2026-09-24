@@ -69,6 +69,19 @@ object FrameIntegrityVerdict {
                 sentIndex>=0 && chunkIndex>sentIndex && timeoutIndex>chunkIndex &&
                     turnEvents.take(timeoutIndex).none { it.type=="LOCAL_GROUNDING_COMPLETED" || it.type=="RUNTIME_RESULT" }
             }
+        val completedButUnpublished=events.filter { it.text("turnId")!=null }
+            .groupBy { Triple(it.text("sessionId"),it.text("processId"),it.text("turnId")) }
+            .values.count { turnEvents ->
+                val complete=turnEvents.indexOfFirst { it.type=="TURN_COMPLETE" }
+                val ended=turnEvents.indexOfFirst { it.type in setOf("TURN_CANCELLED_OBSOLETE","ANALYSIS_LANE_RELEASED","FRAME_ANALYSIS_FAILURE") }
+                complete>=0 && ended>complete &&
+                    turnEvents.any { it.type=="OUTPUT_VERIFICATION_WAIT_STARTED" } &&
+                    turnEvents.take(ended+1).none { it.type=="RUNTIME_RESULT" || it.type=="LOCAL_GROUNDING_COMPLETED" }
+            }
+        if(completedButUnpublished>0)add("COMPLETED_RESPONSE_HELD_IN_VERIFICATION",SessionVerdict.Severity.MAJOR,
+            "اكتمل رد Gemini وانتهى الدور دون نشر نتيجة أو اكتمال التحقق البصري المنتظر.",
+            "count=$completedButUnpublished؛ افحص تبعية النشر للتحقق المحلي؛ اكتمال الشبكة وحده ليس نجاحًا.",
+            "TURN_COMPLETE","OUTPUT_VERIFICATION_WAIT_STARTED","LOCAL_GROUNDING_COMPLETED","RUNTIME_RESULT","TURN_CANCELLED_OBSOLETE")
         if(timedOutWhileUnverified>0)add("RESPONSE_TIMED_OUT_BEFORE_VERIFICATION",SessionVerdict.Severity.MAJOR,
             "وصل رد Gemini ثم انتهت مهلة الطلب قبل تسجيل اكتمال التحقق البصري أو نتيجة للمستخدم.",
             "count=$timedOutWhileUnverified؛ راجع انتظار OCR داخل مسار الاستقبال؛ الأحداث وحدها لا تثبت السبب.",

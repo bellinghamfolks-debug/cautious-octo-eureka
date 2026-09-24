@@ -1101,6 +1101,7 @@ class MediaProjectionService : Service() {
         "sceneDescriptionStyle" to settings.sceneDescriptionStyle.name,
         "viewportMode" to settings.viewportMode.name,
         "liveAccuracyGuard" to true,
+        "localGroundingPolicy" to if(GroundingPolicy.required(settings)) "REQUIRED" else if(GroundingPolicy.advisory(settings)) "ADVISORY_NONBLOCKING" else "NONE",
         "legacyCloudFallbackAllowed" to false,
         "captureFailureEvidence" to settings.captureFailureEvidence,
         "speechRate" to settings.speechRate,

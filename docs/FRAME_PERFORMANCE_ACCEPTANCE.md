@@ -24,7 +24,7 @@ not runtime StateFlow assignment. Keep missed opportunities in the denominator.
 | Workload | Median capture-to-useful | P90 capture-to-useful |
 | --- | ---: | ---: |
 | TEXT_READING FAST | <= 2000 ms | <= 3000 ms |
-| TEXT_READING STABLE | <= 3000 ms | <= 4500 ms |
+| TEXT_READING STABLE | <= 3000 ms | <= 4000 ms |
 | SCENE_DESCRIPTION BRIEF, meaningful change | <= 2000 ms | <= 3000 ms |
 | SCENE_DESCRIPTION COMPREHENSIVE | Important first spoken clause <= 3000 ms for each predefined normal-condition case | Report distribution and misses; never wait for the whole description |
 

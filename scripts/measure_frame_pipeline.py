@@ -34,6 +34,7 @@ def response_health(events):
             turns[(event.get('sessionId'), event.get('processId'), event['turnId'])].append(event)
     totals = Counter()
     first_chunks = []
+    publication = defaultdict(list)
     for entries in turns.values():
         sent = next((e for e in entries if e.get('type') == 'FRAME_REQUEST_SENT'), None)
         if not sent:
@@ -42,6 +43,21 @@ def response_health(events):
         types = {e.get('type') for e in entries}
         chunk = next((e for e in entries if e.get('type') == 'FIRST_CHUNK'), None)
         outputs = [e for e in entries if e.get('type') in {'RUNTIME_RESULT', 'TEXT_DISPLAYED'}]
+        ready = next((e for e in entries if e.get('type') == 'FIRST_SPEAKABLE_TEXT_READY'), None)
+        if ready:
+            for event_type, metric in [('RUNTIME_RESULT', 'speakableToRuntimeMs'),
+                                       ('TEXT_DISPLAYED', 'speakableToUiMs'),
+                                       ('FIRST_CONTENT_TTS_SUBMITTED', 'speakableToTtsSubmittedMs'),
+                                       ('FIRST_CONTENT_TTS_STARTED', 'speakableToTtsStartedMs')]:
+                endpoint = next((e for e in entries if e.get('type') == event_type), None)
+                if endpoint:
+                    identity = ('frameId', 'traceId', 'visualGeneration', 'imageHash')
+                    if all(ready.get(k) is not None and ready[k] == endpoint.get(k) for k in identity):
+                        start, end = ready.get('elapsedRealtimeNanos'), endpoint.get('elapsedRealtimeNanos')
+                        if isinstance(start, (int,float)) and isinstance(end, (int,float)) and end >= start:
+                            publication[metric].append((end-start)/1e6)
+        if 'TURN_COMPLETE' in types and not outputs and 'OUTPUT_VERIFICATION_WAIT_STARTED' in types:
+            totals['completedResponsesWithoutPublicationWhileVerificationPending'] += 1
         if chunk:
             captured = sent.get('capturedAtElapsedNanos')
             received = chunk.get('receivedAtElapsedNanos')
@@ -63,7 +79,9 @@ def response_health(events):
         **{key: totals[key] for key in (
             'explicitSubmittedTurns', 'responsesWithoutRuntimeOrUiOutput',
             'responseThenTimeoutWithoutCompletedGrounding', 'outputsWithIncompleteIdentity',
-            'outputsWithMismatchedIdentity')},
+            'outputsWithMismatchedIdentity', 'completedResponsesWithoutPublicationWhileVerificationPending')},
+        'publicationDelay': {k:distribution(publication[k]) for k in ('speakableToRuntimeMs',
+            'speakableToUiMs', 'speakableToTtsSubmittedMs', 'speakableToTtsStartedMs')},
         'captureToFirstChunkMs_notUsefulOutput': distribution(first_chunks),
         'interpretation': 'Observed symptoms only. A chunk is not verified useful output; absent events do not establish the cause.',
     }
@@ -92,6 +110,11 @@ def summarize(events):
         },
         'skipReasons': dict(skipped),
         'responseHealth': response_health(events),
+        'optionalGrounding': {k:counts['OPTIONAL_GROUNDING_'+k.upper()] for k in
+            ('started','completed','timeout','cancelled','busy','circuit_open','unavailable')},
+        'httpPhasesMs': {k:field({'HTTP_NETWORK_TIMINGS'}, k) for k in ('dnsMs',
+            'connectIncludingTlsMs','tlsMs','uploadMs','uploadToHeadersMs',
+            'headersToFirstModelTextMs','requestToFirstModelTextMs','modelStreamMs')},
         'interSubmissionMs': intervals(events, {'LIVE_FRAME_SENT', 'FRAME_REQUEST_SENT'}),
         'interCompletionMs': intervals(events, {'LIVE_TURN_COMPLETE', 'TURN_COMPLETE'}),
         'legacyTtsQueueWaitMs': field({'TTS_UTTERANCE_STARTED'}, 'queueWaitMs'),
