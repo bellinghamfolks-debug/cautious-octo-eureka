@@ -308,6 +308,9 @@ class MediaProjectionService : Service() {
             resetFrameState()
             container.coordinator.reset()
             container.runtime.started()
+            serviceScope.launch {
+                container.liveTransport.preconnect(activeSettings)
+            }
             DiagnosticHub.record(
                 "PROJECTION_STARTED",
                 settingsMap(activeSettings) + mapOf(
