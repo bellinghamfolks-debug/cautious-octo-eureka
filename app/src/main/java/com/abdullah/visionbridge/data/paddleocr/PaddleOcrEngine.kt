@@ -31,6 +31,7 @@ import java.nio.FloatBuffer
  */
 class PaddleOcrEngine(
     private val context: Context,
+    private val advisoryProfile: Boolean = false,
 ) {
     class NotPackagedException : IllegalStateException(
         "هذه النسخة لا تتضمن ملفات PP-OCRv5. ثبّت APK الكامل الصادر من البناء الرسمي."
@@ -101,14 +102,16 @@ class PaddleOcrEngine(
                 val options = OrtSession.SessionOptions().apply {
                     // Leave a core for capture, speech and the UI, exactly as the previous engine
                     // did: starving them is what makes an assistive app feel broken.
-                    setIntraOpNumThreads(inferenceThreadCount())
+                    setIntraOpNumThreads(if(advisoryProfile) 1 else inferenceThreadCount())
+                    if(advisoryProfile) addConfigEntry("session.intra_op.allow_spinning", "0")
                     setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
                     // XNNPACK ships inside the onnxruntime-android AAR but is not used unless it is
                     // registered. It is ARM-optimised for exactly these convolutions, and the time
                     // it saves is what pays for letting the user raise the detector's resolution.
                     // Registration is best-effort: a device where it will not initialise must fall
                     // back to the default CPU path rather than lose on-device reading entirely.
-                    xnnpackEnabled = runCatching { addXnnpack(emptyMap()) }.isSuccess
+                    xnnpackEnabled = runCatching { addXnnpack(if(advisoryProfile)
+                        mapOf("intra_op_num_threads" to "2") else emptyMap()) }.isSuccess
                 }
 
                 // Sessions are tracked as they open so that a failure part-way through — a
@@ -163,7 +166,8 @@ class PaddleOcrEngine(
                         "latinDictionarySize" to loaded.latinDictionary.size,
                         "arabicHeadIsMultilingual" to loaded.arabicHeadIsMultilingual,
                         "latinHeadCarriesArabic" to containsArabicLetters(loaded.latinDictionary),
-                        "threads" to inferenceThreadCount(),
+                    "threads" to if(advisoryProfile) 2 else inferenceThreadCount(),
+                    "advisoryProfile" to advisoryProfile,
                         "xnnpack" to xnnpackEnabled,
                     ),
                 )
@@ -245,7 +249,8 @@ class PaddleOcrEngine(
             val started = SystemClock.elapsedRealtimeNanos()
             var page = bitmap
             try {
-            val scale = resolutionFor(bitmap, quality, subjectScale)
+            val scale = if(advisoryProfile) AdaptiveReadingScale.Decision(640,640,"advisory_bounded",null,null)
+                else resolutionFor(bitmap, quality, subjectScale)
             var detection = detect(active, page, scale.detectionLongEdge)
             var boxes = detection.boxes
 
@@ -255,7 +260,7 @@ class PaddleOcrEngine(
             // while deskewing the page and re-detecting read every line exactly.
             val skew = LineSkew.estimate(TextLineOrdering.groupIntoLines(boxes).map(::bounds))
             val deskew = skew.degrees
-            if (deskew != 0f) {
+            if (deskew != 0f && !advisoryProfile) {
                 val straight = OcrImagePreprocessor.rotate(page, deskew)
                 if (straight !== page) {
                     page = straight
@@ -326,12 +331,13 @@ class PaddleOcrEngine(
                 // capture, a changed setting or the lane's timeout could not interrupt a page part
                 // way through — the exact "refuses to be cancelled" behaviour this engine replaced.
                 currentCoroutineContext().ensureActive()
-                if (cropsRead >= MAX_CROPS_PER_FRAME) {
+                if (cropsRead >= if(advisoryProfile) 2 else MAX_CROPS_PER_FRAME) {
                     capped = true
                     return@mapNotNull null
                 }
-                cropsRead += line.size
-                readLine(active, page, line, scale.recognitionMaxWidth)
+                val selected = if(advisoryProfile) line.take((2-cropsRead).coerceAtLeast(0)) else line
+                cropsRead += selected.size
+                readLine(active, page, selected, scale.recognitionMaxWidth)
             }
             if (capped) {
                 DiagnosticHub.record(

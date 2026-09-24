@@ -30,6 +30,8 @@ import java.util.concurrent.atomic.AtomicLong
 // EVERY_ANALYSIS_INPUT_EVIDENCE_V383
 class EvidenceStore(val directory: File) {
 
+    @Volatile var currentSessionId: String = "unassigned_${java.util.UUID.randomUUID()}"
+    fun files(): List<File> = directory.walkTopDown().filter { it.isFile && it.extension.equals("jpg",true) }.toList()
     private val written = AtomicInteger(0)
     private val supplementalWritten = AtomicInteger(0)
     private val supplementalBytes = AtomicLong(0L)
@@ -41,7 +43,7 @@ class EvidenceStore(val directory: File) {
 
     init {
         // Persisted evidence survives process death; its privacy declaration must survive too.
-        directory.listFiles()?.filter { it.isFile }?.forEach { file ->
+        files().forEach { file ->
             written.incrementAndGet()
             bytes.addAndGet(file.length())
             if (file.name.contains("analysis_input_")) {
@@ -63,7 +65,7 @@ class EvidenceStore(val directory: File) {
      * Returns the file name recorded, or null when nothing was written — which is the normal case
      * and never an error.
      */
-    fun capture(bitmap: Bitmap, frameId: String, reason: String, capturedWhileEnabled: Boolean = false): String? {
+    fun capture(bitmap: Bitmap, frameId: String, reason: String, capturedWhileEnabled: Boolean = false, sessionId: String = currentSessionId): String? {
         if (!enabled && !capturedWhileEnabled) return null
         val timelineFrame = reason == "timeline_1s"
         val analysisInputFrame = reason.startsWith("analysis_input_")
@@ -86,8 +88,12 @@ class EvidenceStore(val directory: File) {
             directory.mkdirs()
             // The reason is part of the name so the file answers "why is this here" on its own.
             val safeReason = reason.replace(REASON_UNSAFE, "_").take(40)
-            val name = "$frameId-$safeReason.jpg"
+            val safeSession=sessionId.replace(REASON_UNSAFE,"_")
+            val safeFrame=frameId.replace(REASON_UNSAFE,"_")
+            val name = "$safeSession/$safeFrame-$safeReason-${java.util.UUID.randomUUID()}.jpg"
             val file = File(directory, name)
+            file.parentFile?.mkdirs()
+            check(file.createNewFile()) { "Evidence filename collision" }
             FileOutputStream(file).use { output ->
                 val scaled = scaleForEvidence(bitmap)
                 try {

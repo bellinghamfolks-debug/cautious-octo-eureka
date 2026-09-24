@@ -87,11 +87,13 @@ class MediaProjectionService : Service() {
         maximumDissimilarity = LIVE_TEXT_TARGET_DISSIMILARITY,
         maximumChromaDifference = LIVE_TEXT_TARGET_CHROMA,
         framesToConfirm = SMART_TARGET_CONFIRM_FRAMES,
+        computationBudgetNanos = 50_000_000,
     )
     private val liveSceneTargetTracker = VisualTargetTracker(
         maximumDissimilarity = LIVE_SCENE_TARGET_DISSIMILARITY,
         maximumChromaDifference = LIVE_SCENE_TARGET_CHROMA,
         framesToConfirm = SMART_TARGET_CONFIRM_FRAMES,
+        computationBudgetNanos = 50_000_000,
     )
     private var lastSmartTargetTrackAtElapsedMs = 0L
     private val frameQueueLock = Any()
@@ -533,7 +535,8 @@ class MediaProjectionService : Service() {
                             "motionRotationDegrees" to decision.rotationDegrees,
                             "consecutiveCandidateFrames" to decision.consecutiveCandidateFrames,
                             "trackingMs" to smartTrackingMs,
-                            "observerOnly" to true,
+                            "observerOnly" to false,
+                            "computationBudgetMs" to 50,
                         ),
                     ),
                 )
@@ -832,16 +835,28 @@ class MediaProjectionService : Service() {
                         ),
                     ),
                 )
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                val expected = frame.candidate.turn.visualGeneration != container.runtime.turnGate.generation() ||
+                    !container.runtime.analysing.value
+                DiagnosticHub.record("ANALYSIS_DISPATCH_CANCELLED",frame.trace.fields(mapOf(
+                    "reason" to if(expected) "obsolete_or_stopped" else "unknown_owner", "expected" to expected)))
+                if(!expected) DiagnosticHub.failure("ANALYSIS_DISPATCH_UNEXPECTED_CANCELLATION",error,frame.trace.fields())
+                throw error
             } catch (error: Throwable) {
                 DiagnosticHub.failure("ANALYSIS_DISPATCH", error, frame.trace.fields())
                 throw error
             } finally {
                 frame.bitmap.recycle()
                 val next = synchronized(frameQueueLock) {
-                    pendingFrame.also {
-                        pendingFrame = null
-                        if (it == null) processing.set(false)
+                    val offered=pendingFrame
+                    pendingFrame=null
+                    val fresh=offered?.takeIf { PendingCandidatePolicy.promotable(it.candidate.turn.visualGeneration,container.runtime.turnGate.generation()) }
+                    if(offered!=null && fresh==null) {
+                        DiagnosticHub.record("FRAME_SKIPPED",offered.trace.fields(mapOf("reason" to "obsolete_at_promotion")))
+                        offered.bitmap.recycle()
                     }
+                    if(fresh==null) processing.set(false)
+                    fresh
                 }
                 if (next != null) launchFrame(next)
             }

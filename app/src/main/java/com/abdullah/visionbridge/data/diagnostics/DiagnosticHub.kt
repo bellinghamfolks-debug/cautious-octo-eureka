@@ -92,7 +92,7 @@ object DiagnosticHub {
                     synchronized(evidenceWriteLock) {
                         if(task.epoch==evidenceEpoch.get()) {
                             val start=SystemClock.elapsedRealtimeNanos()
-                            val name=evidence?.capture(task.bitmap,task.frameId,task.reason,capturedWhileEnabled=true)
+                            val name=evidence?.capture(task.bitmap,task.frameId,task.reason,capturedWhileEnabled=true,sessionId=task.fields["evidenceSessionId"].toString())
                             record(if(name==null) "EVIDENCE_FRAME_SKIPPED" else "EVIDENCE_FRAME_CAPTURED",
                                 task.fields+mapOf("frameId" to task.frameId,"reason" to task.reason,
                                     "file" to name,"evidenceQueueMs" to (start-task.queuedAt)/1e6,
@@ -239,7 +239,7 @@ object DiagnosticHub {
         val started=SystemClock.elapsedRealtimeNanos()
         val snapshot=try { bitmap.copy(Bitmap.Config.ARGB_8888,false) } catch(error:Exception) { null }
         if(snapshot==null) { evidenceSlots.release();record("EVIDENCE_FRAME_SKIPPED",fields+mapOf("reason" to "snapshot_failed"));return }
-        val task=EvidenceTask.Capture(snapshot,frameId,reason,fields+mapOf(
+        val task=EvidenceTask.Capture(snapshot,frameId,reason,fields+mapOf("evidenceSessionId" to store.currentSessionId,
             "evidenceSnapshotCopyMs" to (SystemClock.elapsedRealtimeNanos()-started)/1e6),epoch,started)
         if(!evidenceTasks.trySend(task).isSuccess) {
             snapshot.recycle();evidenceSlots.release()
@@ -267,7 +267,7 @@ object DiagnosticHub {
                 record(
                     "EVIDENCE_TIMELINE_STARTED",
                     mapOf(
-                        "durationMs" to TIMELINE_EVIDENCE_WINDOW_MS,
+                        "configuredWindowMs" to TIMELINE_EVIDENCE_WINDOW_MS,
                         "intervalMs" to TIMELINE_EVIDENCE_INTERVAL_MS,
                         "targetFrames" to 600,
                     ),

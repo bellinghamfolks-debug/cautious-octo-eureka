@@ -8,6 +8,13 @@ object TextGroundingGate {
     data class Evidence(val text: String, val confidence: Float, val detectedBoxes: Int)
     data class Decision(val accepted: Boolean, val retry: Boolean, val reason: String)
 
+    fun modelOnly(text: String, confidence: Int, legible: Boolean, inferred: Boolean): Decision {
+        if(text.trim().matches(Regex("(?is)^(NO_TEXT|NO_CHANGE)(\\b.*)?$")) || tokens(text).isEmpty())
+            return Decision(false,true,"no_reliable_text")
+        if(!legible || inferred || confidence<90) return Decision(false,true,"model_quality_rejected")
+        return Decision(true,false,"strict_trust_disabled_model_quality_only")
+    }
+
     fun evaluate(text: String, confidence: Int, legible: Boolean, inferred: Boolean,
                  optical: Evidence): Decision {
         val words = tokens(text)

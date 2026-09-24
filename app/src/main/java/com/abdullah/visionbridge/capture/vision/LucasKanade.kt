@@ -49,6 +49,7 @@ object LucasKanade {
         initial: Warp = Warp.identity(),
         maxIterationsPerLevel: Int = DEFAULT_ITERATIONS,
         finestLevel: Int = 0,
+        continueWork: () -> Boolean = { true },
     ): Alignment? {
         val depth = minOf(reference.depth, current.depth)
         if (depth == 0) return null
@@ -62,9 +63,10 @@ object LucasKanade {
         var converged = false
 
         for (level in depth - 1 downTo finestLevel) {
+            if(!continueWork()) return null
             val template = reference[level]
             val image = current[level]
-            val plain = alignLevel(template, image, warp, maxIterationsPerLevel)
+            val plain = alignLevel(template, image, warp, maxIterationsPerLevel, continueWork)
             val result = if (level == depth - 1 && needsSeeding(plain)) {
                 // Multi-start, at the coarsest level and only when the plain descent struggled. The
                 // objective is not convex: on a page of text a 1.25x zoom has a local minimum at
@@ -73,7 +75,7 @@ object LucasKanade {
                 // costs half a millisecond at 32x32 and removes the failure — but it is not run
                 // when the plain descent already succeeded, so a seed can never hijack a case that
                 // was being handled correctly.
-                bestOfSeeds(template, image, warp, maxIterationsPerLevel, plain)
+                bestOfSeeds(template, image, warp, maxIterationsPerLevel, plain, continueWork)
             } else {
                 plain
             } ?: return null
@@ -107,6 +109,7 @@ object LucasKanade {
         start: Warp,
         maxIterations: Int,
         plain: Alignment?,
+        continueWork: () -> Boolean,
     ): Alignment? {
         val centreX = template.width / 2.0
         val centreY = template.height / 2.0
@@ -121,7 +124,8 @@ object LucasKanade {
 
         var best: Alignment? = plain?.takeIf { it.warp.isPlausible() }
         for (seed in seeds) {
-            val candidate = alignLevel(template, image, seed, maxIterations) ?: continue
+            if(!continueWork()) return best
+            val candidate = alignLevel(template, image, seed, maxIterations, continueWork) ?: continue
             if (!candidate.warp.isPlausible()) continue
             // Coverage is part of the comparison: a fit that explains a little of the frame very
             // well is not better than one that explains most of it slightly less well.
@@ -149,6 +153,7 @@ object LucasKanade {
         image: ImagePlane,
         start: Warp,
         maxIterations: Int,
+        continueWork: () -> Boolean,
     ): Alignment? {
         val stride = if (template.width > STRIDE_ABOVE) 2 else 1
 
@@ -163,6 +168,7 @@ object LucasKanade {
 
         var y = BORDER
         while (y < template.height - BORDER) {
+            if(!continueWork()) return null
             var x = BORDER
             while (x < template.width - BORDER) {
                 val tx = template.gradientX(x, y).toDouble()
@@ -203,6 +209,7 @@ object LucasKanade {
         var bestResidual = Double.MAX_VALUE
 
         for (pass in 0 until maxIterations) {
+            if(!continueWork()) return null
             iterations++
             gradient.fill(0.0)
             var errorSum = 0.0

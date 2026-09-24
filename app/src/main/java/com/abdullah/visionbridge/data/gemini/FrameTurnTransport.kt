@@ -92,9 +92,10 @@ class FrameTurnTransport(private val networkManager: CellularNetworkManager) {
             })
             val accumulator=GeminiStreamAccumulator(requireQualityHeader=true,acceptSceneTail=settings.describeAlongsideText)
             var first=true;var finish="";var deliveredReading=false;var deliveredReadingChars=0;var deliveredSceneChars=0
+            val speakable=SpeakableTextProgress()
             var firstContent=true
             fun contentReady() {
-                if(firstContent) { firstContent=false;FrameStages.record(trace,"networkModel",checkNotNull(turn.submittedAtNanos)) }
+                if(firstContent) { firstContent=false;FrameStages.record(trace,"networkModel",checkNotNull(turn.submittedAtNanos)); DiagnosticHub.record("FIRST_SPEAKABLE_TEXT_READY",turn.fields()) }
             }
             fun output()=Output(turn,accumulator.fullText,accumulator.sceneTail,accumulator.confidence,accumulator.legible,accumulator.inferred,
                 accumulator.readingComplete || finish=="STOP")
@@ -117,7 +118,7 @@ class FrameTurnTransport(private val networkManager: CellularNetworkManager) {
                             deliveredReading=true;contentReady();onPartial(output())
                         } else {
                             val text=accumulator.fullText
-                            val end=text.lastIndexOf('\n')+1
+                            val end=speakable.update(text,false)
                             if(end>deliveredReadingChars) {
                                 contentReady();onPartial(output().copy(text=text.substring(0,end),readingComplete=false))
                                 deliveredReadingChars=end

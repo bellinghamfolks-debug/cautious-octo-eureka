@@ -23,5 +23,5 @@ class AppContainer(context: Context) {
     val localOcrEngine = PaddleOcrEngine(appContext)
     val tts = BilingualTtsEngine(appContext,runtime.turnGate)
     val coordinator = FrameBoundCoordinator(FrameTurnTransport(CellularNetworkManager(appContext)),
-        localOcrEngine,apiKeyStore,tts,runtime)
+        localOcrEngine,apiKeyStore,tts,runtime,PaddleOcrEngine(appContext,advisoryProfile=true))
 }

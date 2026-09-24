@@ -29,7 +29,7 @@ import kotlin.math.sqrt
 /** A single analysis lane; speech never owns its capacity. The service owns one pending candidate. */
 class FrameBoundCoordinator(private val transport: FrameTurnTransport, private val local: PaddleOcrEngine,
                             private val keys: ApiKeyStore, private val tts: BilingualTtsEngine,
-                            private val runtime: CaptureRuntime) {
+                            private val runtime: CaptureRuntime, private val advisoryLocal: PaddleOcrEngine) {
     data class Candidate(val turn: AnalysisTurn,val trace: DiagnosticTrace,val settings: AppSettings,
                          val quality: QualityRetryPolicy.Quality,val blackRatio: Double,val change: Double,
                          val compensatedDifference:Double?,val chromaDifference:Double?)
@@ -45,6 +45,7 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
     @Volatile private var acceptedOpticalText=""
     private var configurationNoticeSpoken = false
     private val scenePolicy=SceneDescriptionPolicy()
+    private val advisoryLane=OptionalGroundingLane()
 
     @Synchronized fun candidate(bitmap:Bitmap,trace:DiagnosticTrace,settings:AppSettings,
                                 target:VisualTargetTracker.Decision?=null):Candidate {
@@ -101,6 +102,7 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
         }
         availability.available()
         val textMode=settings.mode==AnalysisMode.TEXT_READING
+        val requiredGrounding=GroundingPolicy.required(settings)
         // Configuration errors must not burn CPU encoding/OCR on every camera frame.
         val apiKey = if (AnalysisReadiness.requiresCloud(settings)) keys.get() else null
         if (AnalysisReadiness.error(settings, !apiKey.isNullOrBlank()) != null) {
@@ -140,7 +142,7 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                 // New targets can upload while PP-OCR verifies the same transmitted JPEG. No
                 // text can pass accept() until that independent evidence has completed.
                 failureStage = "local_grounding_or_submission"
-                val evidenceTask=async(Dispatchers.Default) { if(textMode) {
+                val evidenceTask=if(requiredGrounding) async(Dispatchers.Default) {
                     val groundingStarted=SystemClock.elapsedRealtimeNanos()
                     local.ensureLoaded().getOrThrow()
                     val exact=checkNotNull(BitmapFactory.decodeByteArray(encoded.bytes,0,encoded.bytes.size))
@@ -151,8 +153,8 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                         "detectedBoxes" to result.detectedBoxCount,"localConfidence" to result.confidence,
                         "imageHash" to encoded.imageHash))
                     TextGroundingGate.Evidence(result.text,result.confidence,result.detectedBoxCount)
-                } else TextGroundingGate.Evidence("",0f,0) }
-                val preflight=if(settings.useLocalOcr || acceptedOpticalText.isNotEmpty())evidenceTask.await() else null
+                } else null
+                val preflight=if(requiredGrounding && (settings.useLocalOcr || acceptedOpticalText.isNotEmpty())) evidenceTask?.await() else null
                 if(textMode && preflight!=null && preflight.confidence>=.80f && preflight.text.isNotBlank() &&
                     TextGroundingGate.canonical(preflight.text)==acceptedOpticalText) {
                     skip(c,"optically_verified_duplicate")
@@ -162,11 +164,11 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                     if(gate.rejection(o.turn)!=null) { DiagnosticHub.record("RESULT_DROPPED",o.turn.fields()+mapOf("reason" to gate.rejection(o.turn)));return }
                     if(textMode) {
                         val verificationWaitStarted=SystemClock.elapsedRealtimeNanos()
-                        DiagnosticHub.record("OUTPUT_VERIFICATION_WAIT_STARTED",o.turn.fields()+mapOf(
-                            "evidenceAlreadyComplete" to evidenceTask.isCompleted,
+                        if(requiredGrounding) DiagnosticHub.record("OUTPUT_VERIFICATION_WAIT_STARTED",o.turn.fields()+mapOf(
+                            "evidenceAlreadyComplete" to evidenceTask?.isCompleted,
                             "readingComplete" to o.readingComplete))
-                        val evidence=evidenceTask.await()
-                        DiagnosticHub.record("OUTPUT_VERIFICATION_READY",o.turn.fields()+mapOf(
+                        val evidence=evidenceTask?.await()
+                        if(requiredGrounding) DiagnosticHub.record("OUTPUT_VERIFICATION_READY",o.turn.fields()+mapOf(
                             "verificationWaitMs" to (SystemClock.elapsedRealtimeNanos()-verificationWaitStarted)/1e6))
                         // The target may have changed while optical evidence was being computed.
                         val rejection=gate.rejection(o.turn)
@@ -179,13 +181,14 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                         if(!currentText.startsWith(acceptedReading)) {
                             DiagnosticHub.record("RESULT_DROPPED",o.turn.fields()+mapOf("reason" to "reading_prefix_rewritten"));return
                         }
-                        val d=TextGroundingGate.evaluate(currentText,o.confidence,o.legible,o.inferred,evidence)
+                        val d=if(requiredGrounding) TextGroundingGate.evaluate(currentText,o.confidence,o.legible,o.inferred,checkNotNull(evidence))
+                            else TextGroundingGate.modelOnly(currentText,o.confidence,o.legible,o.inferred)
                         DiagnosticHub.record("TEXT_GROUNDING_DECISION",o.turn.fields()+mapOf("accepted" to d.accepted,"retry" to d.retry,"reason" to d.reason))
                         if(!d.accepted) { gate.commit(o.turn) { policy.result(false);runtime.notice("النص غير واضح؛ وجّه الكاميرا بثبات") };return }
                         gate.commit(o.turn) {
                             val delta=currentText.removePrefix(acceptedReading).trim()
                             acceptedReading=currentText;readingComplete=o.readingComplete
-                            if(readingComplete) { policy.result(true);acceptedOpticalText=TextGroundingGate.canonical(evidence.text) }
+                            if(readingComplete) { policy.result(true);acceptedOpticalText=evidence?.let { TextGroundingGate.canonical(it.text) }.orEmpty() }
                             val r=AnalysisResult(currentText,if(settings.useLocalOcr)AnalysisSource.LOCAL_OCR else AnalysisSource.GEMINI,turn=o.turn)
                             if(runtime.result(r)&&settings.speechEnabled&&delta.isNotEmpty())
                                 tts.speakTurn(r,settings.speechRate,"READ_TEXT",spokenText=delta)
@@ -205,7 +208,7 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                     }
                 }
                 if(settings.useLocalOcr&&textMode) {
-                    val evidence=evidenceTask.await()
+                    val evidence=checkNotNull(evidenceTask).await()
                     val turn=capture.copy(submittedAtNanos=SystemClock.elapsedRealtimeNanos(),imageHash=encoded.imageHash)
                     if(!activateAndBind(turn))return@withContext
                     bound=turn;DiagnosticHub.record("LOCAL_FRAME_BOUND",turn.fields()+mapOf(
@@ -222,7 +225,11 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                             // emit cannot suspend. Waiting for PP-OCR must never stop SSE draining
                             // or spend the network timeout on local inference.
                             transport.analyze(capture,encoded,settings,key,onSubmitted={
-                                if(activateAndBind(it)) { bound=it;true } else false
+                                if(activateAndBind(it)) {
+                                    bound=it
+                                    if(GroundingPolicy.advisory(settings)) startAdvisory(it,encoded,c.trace)
+                                    true
+                                } else false
                             },onPartial=emit).also {
                                 DiagnosticHub.record("TRANSPORT_RESPONSE_COMPLETED",it.turn.fields())
                             }
@@ -253,7 +260,31 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
         }
     }
 
+    private fun startAdvisory(turn:AnalysisTurn, image:LiveFrameEncoder.EncodedFrame, trace:DiagnosticTrace) {
+        advisoryLane.submit(onEvent={ status ->
+            DiagnosticHub.record("OPTIONAL_GROUNDING_${status.uppercase()}",turn.fields()+mapOf(
+                "deadlineMs" to 1200,"blockingOutput" to false,"detectorLongEdge" to 640,"cropLimit" to 2))
+        }) {
+            withContext(trace.copy(turn=turn)) {
+                advisoryLocal.ensureLoaded().getOrThrow()
+                currentCoroutineContext().ensureActive()
+                val decoded=checkNotNull(BitmapFactory.decodeByteArray(image.bytes,0,image.bytes.size))
+                val scale=(640.0/maxOf(decoded.width,decoded.height)).coerceAtMost(1.0)
+                val small=if(scale<1) Bitmap.createScaledBitmap(decoded,(decoded.width*scale).toInt().coerceAtLeast(1),
+                    (decoded.height*scale).toInt().coerceAtLeast(1),true) else decoded
+                try {
+                    val evidence=advisoryLocal.read(small,LocalReadingQuality.FAST)
+                    currentCoroutineContext().ensureActive()
+                    DiagnosticHub.record("OPTIONAL_GROUNDING_EVIDENCE",turn.fields()+mapOf(
+                        "detectedBoxes" to evidence.detectedBoxCount,"localConfidence" to evidence.confidence,
+                        "currentTurn" to (gate.rejection(turn)==null),"blockingOutput" to false))
+                } finally { if(small!==decoded)small.recycle();decoded.recycle() }
+            }
+        }
+    }
+
     fun onVisualTargetChanged(interruptSpeech:Boolean) {
+        advisoryLane.cancel()
         gate.invalidate { runtime.clearVisualResult();tts.invalidateVisualContent();policy.reset();scenePolicy.reset();acceptedOpticalText="" }
         activeJob?.cancel()
         synchronized(this) { previous=null;stableSince=0;opportunityCapturedAt=null }
@@ -267,7 +298,7 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
         DiagnosticHub.record("IMAGE_UNAVAILABLE_ANNOUNCED",mapOf("visualGeneration" to gate.generation()))
     }
     fun stopSpeech()=onVisualTargetChanged(true)
-    fun reset()=onVisualTargetChanged(true)
+    fun reset() { advisoryLane.resetSession();onVisualTargetChanged(true) }
     private fun skip(c:Candidate,reason:String) {
         DiagnosticHub.record("FRAME_SKIPPED",c.turn.fields()+mapOf("reason" to reason))
         if(reason.contains("quality")||reason=="awaiting_stability")DiagnosticHub.record("FRAME_SUPPRESSED_QUALITY",c.turn.fields())

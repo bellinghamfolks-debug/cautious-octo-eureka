@@ -2,6 +2,7 @@ package com.abdullah.visionbridge.capture
 
 /** Only one pending bitmap. Retain a better stable image briefly, never across target changes. */
 object PendingCandidatePolicy {
+    fun promotable(candidateGeneration:Long,activeGeneration:Long)=candidateGeneration==activeGeneration
     data class Candidate(val generation:Long,val capturedAtNanos:Long,val quality:QualityRetryPolicy.Quality)
     data class Decision(val replace:Boolean,val reason:String)
     fun choose(held:Candidate,new:Candidate):Decision {

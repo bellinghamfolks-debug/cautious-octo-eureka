@@ -39,6 +39,8 @@ import java.util.concurrent.atomic.AtomicLong
  * longer have most of its blocks silenced individually.
  */
 class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.visionbridge.capture.TurnGate? = null) {
+    private val firstSubmittedTurn=java.util.concurrent.atomic.AtomicReference<String?>(null)
+    private val firstStartedTurn=java.util.concurrent.atomic.AtomicReference<String?>(null)
     private val visualTimeline = VisualSpeechTimeline()
     fun invalidateVisualContent() { visualTimeline.invalidate();interruptInternal("visual_turn_invalidated") }
 
@@ -48,6 +50,8 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
         val trace = DiagnosticTrace(turn.traceId,turn.frameId,turn.capturedAt,turn.capturedAtNanos,turn,section,result.contentHash)
         scope.launch(trace) {
             if (turnGate?.rejection(turn) != null) return@launch
+            if(spokenText.any(Char::isLetterOrDigit) && firstSubmittedTurn.getAndSet(turn.turnId)!=turn.turnId)
+                DiagnosticHub.record("FIRST_CONTENT_TTS_SUBMITTED",trace.fields(mapOf("queuedAtElapsedNanos" to queuedAt)))
             enqueue(spokenText,rate,false,NO_READING,trace=trace,originalEnqueuedAt=queuedAt)
         }
     }
@@ -492,6 +496,10 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
                             mapOf("reason" to "engine_start_expired","queueAgeMs" to (now-state.enqueuedAtElapsedNanos)/1e6))
                     } else {
                 state.startedAtElapsedNanos = now
+                state.trace?.turn?.let { turn ->
+                    if(firstStartedTurn.getAndSet(turn.turnId)!=turn.turnId)
+                        DiagnosticHub.record("FIRST_CONTENT_TTS_STARTED",state.trace.fields(mapOf("ttsStartedAtElapsedNanos" to now)))
+                }
                 state.trace?.let { trace ->
                     val details = mapOf("utteranceId" to id)
                     com.abdullah.visionbridge.data.diagnostics.FrameStages.record(trace,

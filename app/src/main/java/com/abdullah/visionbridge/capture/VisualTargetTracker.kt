@@ -44,6 +44,8 @@ class VisualTargetTracker(
     private val maximumDissimilarity: Double,
     private val maximumChromaDifference: Double,
     private val framesToConfirm: Int = DEFAULT_FRAMES_TO_CONFIRM,
+    private val computationBudgetNanos: Long? = null,
+    private val clockNanos: () -> Long = System::nanoTime,
 ) {
     data class Decision(
         val targetChanged: Boolean,
@@ -66,6 +68,8 @@ class VisualTargetTracker(
         val consecutiveCandidateFrames: Int,
     )
 
+    private var deadline = Long.MAX_VALUE
+    private fun withinBudget() = clockNanos() < deadline
     private var reference: TrackedFrame? = null
     private var candidate: TrackedFrame? = null
     private var candidateStreak = 0
@@ -76,6 +80,7 @@ class VisualTargetTracker(
 
     @Synchronized
     fun evaluate(frame: TrackedFrame): Decision {
+        deadline = computationBudgetNanos?.let { clockNanos()+it } ?: Long.MAX_VALUE
         val previous = reference
         if (previous == null) {
             adopt(frame, advance = true)
@@ -168,9 +173,10 @@ class VisualTargetTracker(
         val identity = Registration(Warp.identity(),
             StructuralResidual.measure(from.plane,to.plane,Warp.identity()),"identity_structural",null)
         if (!isDifferentSubject(identity)) return identity
+        if(!withinBudget()) return Registration(Warp.identity(),identity.residual,"budget_structural",null)
         val level = from.analysisLevel
-        val direct = LucasKanade.align(from.pyramid, to.pyramid, motionPrior, finestLevel = level)
-            ?: LucasKanade.align(from.pyramid, to.pyramid, finestLevel = level)
+        val direct = LucasKanade.align(from.pyramid, to.pyramid, motionPrior, finestLevel = level, continueWork = ::withinBudget)
+            ?: LucasKanade.align(from.pyramid, to.pyramid, finestLevel = level, continueWork = ::withinBudget)
         val directResidual = direct
             ?.takeIf { it.warp.isPlausible() }
             ?.let { Registration(it.warp, StructuralResidual.measure(from.plane, to.plane, it.warp), "lucas_kanade", null) }
@@ -178,6 +184,9 @@ class VisualTargetTracker(
         // Good enough: do not pay for feature detection.
         if (directResidual != null && !isDifferentSubject(directResidual)) return directResidual
 
+        // The cloud observer has a bounded affine pass; feature/RANSAC recovery is reserved
+        // for the unbounded local tracker, where it can improve optical reading.
+        if(computationBudgetNanos!=null) return directResidual ?: Registration(Warp.identity(),identity.residual,"budget_structural",null)
         val fromFeatures = from.features
         val toFeatures = to.features
         if (fromFeatures.size < Homography.MINIMUM_MATCHES || toFeatures.size < Homography.MINIMUM_MATCHES) {

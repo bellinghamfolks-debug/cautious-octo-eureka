@@ -86,6 +86,7 @@ class DiagnosticRecorder(context: Context) {
             val id = "${timestamp()}_${UUID.randomUUID()}"
             val dir = File(sessions, id).apply { mkdirs() }
             sessionId = id
+            evidenceStore.currentSessionId = id
             sessionDir = dir
             eventSequence = 0L
             findingBudget.reset()
@@ -203,6 +204,13 @@ class DiagnosticRecorder(context: Context) {
                     "VisionBridge-automatic-diagnostics-${timestamp()}-NO-IMAGES.zip"
                 },
             )
+            val evidenceFiles=evidenceStore.files()
+            val evidencePaths=evidenceFiles.map { it.relativeTo(evidenceStore.directory).invariantSeparatorsPath }
+            val evidenceReferences=mutableListOf<String>()
+            sessionFiles().forEach { session -> forEachEvent(session) { e ->
+                if(e.optString("type")=="EVIDENCE_FRAME_CAPTURED") evidenceReferences+=e.optString("file")
+            } }
+            val evidenceAudit=EvidenceArchiveAudit.check(evidencePaths,evidenceReferences)
             val summary = buildSummaryLocked()
             val findings = buildAutomaticFindingsLocked()
             val traceAnalysis = buildTraceAnalysisLocked()
@@ -223,12 +231,17 @@ class DiagnosticRecorder(context: Context) {
                 // First in the archive and first by name, because it is what should be read first.
                 // Evidence frames, when the user switched capture on. Named after the failure that
                 // kept them, so each file answers "why is this here" on its own.
-                evidenceStore.directory.listFiles()?.filter { it.isFile }?.forEach { file ->
-                    zip.putNextEntry(ZipEntry("evidence/${file.name}"))
+                evidenceFiles.forEach { file ->
+                    zip.putNextEntry(ZipEntry("evidence/${file.relativeTo(evidenceStore.directory).invariantSeparatorsPath}"))
                     file.inputStream().use { it.copyTo(zip) }
                     zip.closeEntry()
                 }
-                writeZipText(zip, "00_VERDICT_AR.txt", renderVerdictText(verdict))
+                writeZipText(zip, "00_VERDICT_AR.txt", (if(!evidenceAudit.valid)
+                    "فشل التحقق من اكتمال الصور: راجع EVIDENCE_INTEGRITY.json؛ لا تعتمد على اكتمال هذه الحزمة.\n" else "")+renderVerdictText(verdict))
+                writeZipText(zip,"EVIDENCE_INTEGRITY.json",JSONObject(mapOf(
+                    "valid" to evidenceAudit.valid,"exportedFiles" to evidencePaths.size,
+                    "referencedFiles" to evidenceReferences.size,"missingReferences" to evidenceAudit.missing,
+                    "collidingReferences" to evidenceAudit.colliding)).toString(2))
                 writeZipText(zip, "00_session_verdict.json", verdict.toString(2))
                 writeZipText(zip, "diagnostic_summary.json", summary.toString(2))
                 writeZipText(zip, "automatic_findings.json", findings.toString(2))
@@ -258,6 +271,9 @@ class DiagnosticRecorder(context: Context) {
                         // The truth about images, whichever way it falls. A bundle that carries
                         // screen frames must never look like one that does not.
                         evidenceStore.manifest().forEach { (key, value) -> put(key, value) }
+                        put("evidenceFrameCount",evidencePaths.size)
+                        put("evidenceBytes",evidenceFiles.sumOf { it.length() })
+                        put("evidenceIntegrityValid",evidenceAudit.valid)
                         put("sessionCount", sessionFiles().size)
                         put("retentionDays", RETENTION_DAYS)
                         put("maximumRawBytes", MAX_TOTAL_BYTES)
@@ -311,6 +327,7 @@ class DiagnosticRecorder(context: Context) {
         val id = "automatic_${timestamp()}_${UUID.randomUUID()}"
         val dir = File(sessions, id).apply { mkdirs() }
         sessionId = id
+            evidenceStore.currentSessionId = id
         sessionDir = dir
         eventSequence = 0L
         writeDeviceFileLocked(dir, id, emptyMap())
@@ -448,7 +465,7 @@ class DiagnosticRecorder(context: Context) {
 
     private fun deriveFindings(type: String, fields: Map<String, Any?>): List<Map<String, Any?>> {
         val output = mutableListOf<Map<String, Any?>>()
-        val timingCandidates = TIMING_FIELDS.mapNotNull { key ->
+        val timingCandidates = DiagnosticEventPolicy.latencyFields(type).mapNotNull { key ->
             (fields[key] as? Number)?.toDouble()?.let { key to it }
         }
         val slowest = timingCandidates.maxByOrNull { it.second }
@@ -504,7 +521,7 @@ class DiagnosticRecorder(context: Context) {
             )
         }
 
-        if (type.contains("CANCELLED") || type.contains("CANCELED")) {
+        if ((type.contains("CANCELLED") || type.contains("CANCELED")) && !DiagnosticEventPolicy.expectedCancellation(type,fields)) {
             output += finding(
                 code = "ANALYSIS_CANCELLED",
                 severity = "warning",
@@ -555,7 +572,7 @@ class DiagnosticRecorder(context: Context) {
         }
 
         val reason = fields["reason"]?.toString().orEmpty()
-        if (type in DROP_EVENTS && reason.isNotBlank() && reason !in EXPECTED_DROP_REASONS) {
+        if (type in DROP_EVENTS && reason.isNotBlank() && reason !in EXPECTED_DROP_REASONS && !DiagnosticEventPolicy.expectedReplacement(reason)) {
             output += finding(
                 code = "UNEXPECTED_FRAME_OR_QUEUE_DROP",
                 severity = "warning",
@@ -642,7 +659,7 @@ class DiagnosticRecorder(context: Context) {
                     put("eventCount", eventCount)
                     put("automaticFindingCount", findingCount)
                     put("visualFingerprintCount", fingerprintCount)
-                    put("imageCount", 0)
+                    put("imageCount", evidenceStore.files().count { it.relativeTo(evidenceStore.directory).invariantSeparatorsPath.startsWith(session.name+"/") })
                     put("firstEpochMs", firstEpoch ?: JSONObject.NULL)
                     put("lastEpochMs", lastEpoch ?: JSONObject.NULL)
                     put("bytes", directoryBytes(session))
