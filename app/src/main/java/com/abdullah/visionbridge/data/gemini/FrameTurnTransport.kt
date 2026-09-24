@@ -39,7 +39,7 @@ class FrameTurnTransport(private val networkManager: CellularNetworkManager) {
     suspend fun analyze(capture: AnalysisTurn, image: LiveFrameEncoder.EncodedFrame,
                         settings: AppSettings, apiKey: String,
                         onSubmitted: (AnalysisTurn) -> Boolean,
-                        onPartial: suspend (Output) -> Unit): Output = withContext(Dispatchers.IO) {
+                        onPartial: (Output) -> Unit): Output = withContext(Dispatchers.IO) {
         val networkSetupStarted=SystemClock.elapsedRealtimeNanos()
         networkManager.withNetwork(settings.forceCellular) { network ->
             DiagnosticHub.record("NETWORK_SETUP_COMPLETED",capture.fields()+mapOf(

@@ -161,7 +161,16 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                 suspend fun accept(o:FrameTurnTransport.Output) {
                     if(gate.rejection(o.turn)!=null) { DiagnosticHub.record("RESULT_DROPPED",o.turn.fields()+mapOf("reason" to gate.rejection(o.turn)));return }
                     if(textMode) {
+                        val verificationWaitStarted=SystemClock.elapsedRealtimeNanos()
                         val evidence=evidenceTask.await()
+                        DiagnosticHub.record("OUTPUT_VERIFICATION_READY",o.turn.fields()+mapOf(
+                            "verificationWaitMs" to (SystemClock.elapsedRealtimeNanos()-verificationWaitStarted)/1e6))
+                        // The target may have changed while optical evidence was being computed.
+                        val rejection=gate.rejection(o.turn)
+                        if(rejection!=null) {
+                            DiagnosticHub.record("RESULT_DROPPED",o.turn.fields()+mapOf("reason" to rejection))
+                            return
+                        }
                         val currentText=o.text.trimEnd()
                         if(readingComplete && currentText==acceptedReading)return
                         if(!currentText.startsWith(acceptedReading)) {
@@ -204,10 +213,19 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
                     accept(FrameTurnTransport.Output(turn,evidence.text,"",(evidence.confidence*100).toInt(),true,false))
                 } else {
                     val key = requireNotNull(apiKey)
-                    val output=transport.analyze(capture,encoded,settings,key,onSubmitted={
-                        if(activateAndBind(it)) { bound=it;true } else false
-                    },onPartial={accept(it)})
-                    accept(output)
+                    failureStage = "cloud_transport_or_optical_verification"
+                    val output=consumeLatestTurnOutput(
+                        produce={ emit ->
+                            // emit cannot suspend. Waiting for PP-OCR must never stop SSE draining
+                            // or spend the network timeout on local inference.
+                            transport.analyze(capture,encoded,settings,key,onSubmitted={
+                                if(activateAndBind(it)) { bound=it;true } else false
+                            },onPartial=emit).also {
+                                DiagnosticHub.record("TRANSPORT_RESPONSE_COMPLETED",it.turn.fields())
+                            }
+                        },
+                        consume={ accept(it) },
+                    )
                     if(textMode&&readingComplete&&acceptedReading==output.text.trimEnd()&&output.tail.isNotBlank()&&output.tail.split(Regex("\\s+")).size<=28) {
                         gate.commit(output.turn) {
                             val r=AnalysisResult(output.text,AnalysisSource.GEMINI,sceneTail=output.tail,turn=output.turn)
