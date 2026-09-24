@@ -75,14 +75,23 @@ jobs:
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging app/build/outputs/apk/validation/app-validation.apk > candidate-badging.txt
           python3 - <<'PY'
           from pathlib import Path
-          import hashlib, os, shutil
+          import hashlib, os, re, shutil
           badging = Path('candidate-badging.txt').read_text()
           assert "package: name='com.abdullah.visionbridge.stable'" in badging
-          assert 'stable-signing-test5' in badging
           assert "native-code: 'arm64-v8a'" in badging
+          # Read the version out of the APK instead of pinning it here. The pinned string was
+          # 'stable-signing-test5', so build 49's live-transport repair assembled cleanly and then
+          # failed this assert, the upload was skipped, and the newest installable APK stayed at
+          # build 48 for every field report that followed. What has to hold is that this is an
+          # isolated test package and not a release — the number is whatever was just built.
+          version = re.search(r"versionName='([^']*)'", badging).group(1)
+          code = re.search(r"versionCode='([^']*)'", badging).group(1)
+          assert re.search(r'-stable-signing-test\d+$', version), (
+              f'candidate {version} is not an isolated signing-test build')
           apk = Path('app/build/outputs/apk/validation/app-validation.apk')
-          name = 'VisionBridge-3.8.7-stable-signing-test5-arm64.apk'
+          name = f'VisionBridge-{version}-arm64.apk'
           shutil.copyfile(apk, name)
+          print(f'::notice::packaged {name} (versionCode {code})')
           Path('candidate-info.txt').write_text(
               'DEVICE TEST CANDIDATE — NOT AN APPROVED RELEASE\n'
               'Candidate package: com.abdullah.visionbridge.stable; final APK must use the pinned private signer.\n'
@@ -95,7 +104,7 @@ jobs:
         with:
           name: isolated-device-test-candidate
           path: |
-            VisionBridge-3.8.7-stable-signing-test5-arm64.apk
+            VisionBridge-*-arm64.apk
             candidate-info.txt
           if-no-files-found: error
           retention-days: 30
