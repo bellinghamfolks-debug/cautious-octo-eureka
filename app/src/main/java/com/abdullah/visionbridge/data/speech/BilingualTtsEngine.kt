@@ -491,6 +491,7 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build(),
         )
+        warmPreferredVoiceCache(engine)
         engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {
                 val id = utteranceId ?: return
@@ -958,6 +959,35 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
             consecutiveTimeouts = 0
         }
         return SpeechOutcome.COMPLETED
+    }
+
+    private fun warmPreferredVoiceCache(engine: TextToSpeech) {
+        val started = SystemClock.elapsedRealtimeNanos()
+        val voices = engine.voices.orEmpty()
+        listOf(Locale("ar"), Locale.ENGLISH).forEach { locale ->
+            val chosen = voices
+                .asSequence()
+                .filter { it.locale.language.equals(locale.language, ignoreCase = true) }
+                .sortedWith(
+                    compareByDescending<Voice> { femaleVoiceScore(it) }
+                        .thenBy { it.isNetworkConnectionRequired }
+                        .thenByDescending { it.quality }
+                        .thenBy { it.latency }
+                        .thenBy { it.name },
+                )
+                .firstOrNull { femaleVoiceScore(it) > 0 }
+            if (chosen != null) {
+                preferredVoices[locale.language.lowercase(Locale.ROOT)] = chosen
+            }
+        }
+        DiagnosticHub.record(
+            "TTS_VOICE_CACHE_WARMED",
+            mapOf(
+                "languages" to preferredVoices.keys.sorted(),
+                "durationMs" to
+                    (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0,
+            ),
+        )
     }
 
     private fun selectPreferredFemaleVoice(engine: TextToSpeech, locale: Locale): Voice? {
