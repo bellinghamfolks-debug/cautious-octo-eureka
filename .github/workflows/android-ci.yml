@@ -75,22 +75,44 @@ jobs:
       # candidate carries a different certificate and Android refuses to install one over the
       # last. The secret is optional so a fork still builds; when it is missing the build says
       # so loudly rather than quietly shipping an APK that cannot be upgraded.
-      - name: Restore the stable candidate signing key
+      # CI keeps its own signing identity so nobody has to create or hold one. It lives as the
+      # assets of a draft release, which on GitHub is visible only to accounts that can push to
+      # this repository — it is never part of the public release listing. First run creates it;
+      # every run after restores the same key, so each candidate installs straight over the last
+      # instead of being refused for a certificate mismatch.
+      - name: Restore or create the persistent signing identity
         env:
-          KEYSTORE_BASE64: ${{ secrets.VISIONBRIDGE_KEYSTORE_BASE64 }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [ -z "${KEYSTORE_BASE64:-}" ]; then
-            echo "::warning::No VISIONBRIDGE_KEYSTORE_BASE64 secret. This candidate is signed with a throwaway debug key and will NOT install over the previous build. Run scripts/setup-signing-key.sh once to fix this permanently."
-            echo "STABLE_SIGNING=no" >> "$GITHUB_ENV"
+          tag="visionbridge-private-signing-v1"
+          mkdir -p signing
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+              -p 'visionbridge-signing-v1.jks' -p 'visionbridge-signing-v1.pass' \
+              -D signing --clobber
+            echo "Restored the existing signing identity."
           else
-            mkdir -p signing
-            printf '%s' "$KEYSTORE_BASE64" | base64 -d > signing/visionbridge-signing-v1.jks
-            echo "STABLE_SIGNING=yes" >> "$GITHUB_ENV"
+            password="$(openssl rand -hex 32)"
+            printf '%s' "$password" > signing/visionbridge-signing-v1.pass
+            keytool -genkeypair -noprompt \
+              -keystore signing/visionbridge-signing-v1.jks \
+              -storepass "$password" -keypass "$password" \
+              -alias visionbridge \
+              -keyalg RSA -keysize 4096 -validity 10000 \
+              -dname 'CN=VisionBridge, OU=Accessibility, O=VisionBridge, C=SA'
+            gh release create "$tag" \
+              signing/visionbridge-signing-v1.jks signing/visionbridge-signing-v1.pass \
+              --repo "$GITHUB_REPOSITORY" --draft \
+              --title 'PRIVATE: VisionBridge signing identity' \
+              --notes 'Private CI-only signing material. Never publish this draft release.'
+            echo "Created the persistent signing identity."
           fi
+          # Written to the environment file, never echoed: a printed password is a password in
+          # the public run log forever.
+          echo "VISIONBRIDGE_KEYSTORE_PASSWORD=$(cat signing/visionbridge-signing-v1.pass)" >> "$GITHUB_ENV"
+          echo "STABLE_SIGNING=yes" >> "$GITHUB_ENV"
       - name: Assemble isolated ARM64 test app
-        env:
-          VISIONBRIDGE_KEYSTORE_PASSWORD: ${{ secrets.VISIONBRIDGE_KEYSTORE_PASSWORD }}
         run: ./gradlew --no-daemon lintValidation assembleValidation
       - name: Verify package identity and record provenance
         run: |
@@ -173,7 +195,7 @@ jobs:
             "موقَّعة بمفتاح الاختبار، لا بمفتاح الإصدار." \
             "" \
             "بصمة شهادة التوقيع: ${CANDIDATE_CERT}" \
-            "$([ "${STABLE_SIGNING:-no}" = yes ] && echo 'مفتاح ثابت — يُثبَّت هذا التحديث فوق السابق مباشرة.' || echo 'تنبيه: مفتاح مؤقت. هذا البناء لن يُثبَّت فوق السابق. شغّل scripts/setup-signing-key.sh مرة واحدة لإصلاحها نهائياً.')" \
+            "$([ "${STABLE_SIGNING:-no}" = yes ] && echo 'مفتاح ثابت — يُثبَّت هذا التحديث فوق السابق مباشرة.' || echo 'تنبيه: مفتاح مؤقت. هذا البناء لن يُثبَّت فوق السابق.')" \
             "" \
             "commit: ${GITHUB_SHA}")
           if gh release view device-candidate --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
