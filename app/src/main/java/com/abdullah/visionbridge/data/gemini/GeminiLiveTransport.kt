@@ -160,14 +160,18 @@ class GeminiLiveTransport(
         java.util.concurrent.ConcurrentHashMap<String, Boolean>(),
     )
 
+    /** Whether the drop from exact text to spoken transcript has already been announced. */
+    private val degradedToAudio = java.util.concurrent.atomic.AtomicBoolean(false)
+
     fun supports(settings: AppSettings): Boolean = LiveTransportRouting.carriedByLive(settings)
 
     suspend fun preconnect(settings: AppSettings) {
         if (!supports(settings)) return
         val apiKey = keys.get()?.takeIf { it.isNotBlank() } ?: return
         val started = SystemClock.elapsedRealtimeNanos()
-        val responseMode = LiveResponseMode.of(settings.mode)
-        val connected = ensureConnected(apiKey, responseMode)
+        val plan = resolvePlan(apiKey, settings) ?: return
+        val (model, responseMode) = plan
+        val connected = ensureConnected(apiKey, model, responseMode)
         DiagnosticHub.record(
             "LIVE_PRECONNECT_COMPLETED",
             mapOf(
@@ -249,9 +253,17 @@ class GeminiLiveTransport(
         val expectedGeneration = gate.generation()
         val apiKey = keys.get()?.takeIf { it.isNotBlank() } ?: return@withLock false
 
-        val responseMode = LiveResponseMode.of(settings.mode)
+        val plan = resolvePlan(apiKey, settings)
+        if (plan == null) {
+            DiagnosticHub.record(
+                "LIVE_FRAME_FALLBACK",
+                trace.fields(mapOf("reason" to "no_live_model_left_for_either_modality")),
+            )
+            return@withLock false
+        }
+        val (model, responseMode) = plan
         return@withLock coroutineScope {
-            val connection = async(Dispatchers.IO) { ensureConnected(apiKey, responseMode) }
+            val connection = async(Dispatchers.IO) { ensureConnected(apiKey, model, responseMode) }
             val encodedTask = async(Dispatchers.Default) { encoder.encode(bitmap, settings) }
             val connected = connection.await()
             val encoded = encodedTask.await()
@@ -329,7 +341,7 @@ class GeminiLiveTransport(
             val base64Ms = (SystemClock.elapsedRealtimeNanos() - base64Started) / 1_000_000.0
 
             val videoSent = currentSocket.send(videoMessage(imageBase64))
-            val turnSent = currentSocket.send(clientTurnMessage(instructionFor(settings)))
+            val turnSent = currentSocket.send(clientTurnMessage(instructionFor(settings, responseMode)))
             if (!videoSent || !turnSent) {
                 DiagnosticHub.record(
                     "LIVE_FRAME_FALLBACK",
@@ -465,11 +477,42 @@ class GeminiLiveTransport(
                     "modality" to responseMode.modality,
                     "candidates" to ordered.size,
                     "ruledOut" to unanswering.size,
-                    "fallsBackTo" to "FRAME_BOUND_SSE",
                 ),
             )
         }
         return chosen
+    }
+
+    /**
+     * How this frame will be answered, given what the account's models have proved they can do.
+     *
+     * Reading asks for text and gets it when any model can produce it. When none can, the choice
+     * is not between exact text and a transcript — exact text is already gone — it is between a
+     * transcript that streams and a transcript that does not. Leaving the socket for per-frame SSE
+     * costs the live response and buys nothing that staying does not, so a reading degrades to
+     * audio on Live first, and only leaves Live when Live itself has nothing left.
+     *
+     * Returns the model to talk to and how to ask, or null when the frame belongs on SSE.
+     */
+    private suspend fun resolvePlan(
+        apiKey: String,
+        settings: AppSettings,
+    ): Pair<String, LiveResponseMode>? {
+        val desired = LiveResponseMode.of(settings.mode)
+        chooseModel(apiKey, desired)?.let { return it to desired }
+        if (desired == LiveResponseMode.NATIVE_AUDIO) return null
+        val spoken = chooseModel(apiKey, LiveResponseMode.NATIVE_AUDIO) ?: return null
+        if (degradedToAudio.compareAndSet(false, true)) {
+            DiagnosticHub.record(
+                "LIVE_READING_DEGRADED_TO_AUDIO",
+                mapOf(
+                    "model" to spoken,
+                    "reason" to "no_model_answered_text",
+                    "consequence" to "text_is_a_transcript_of_speech_but_stays_live",
+                ),
+            )
+        }
+        return spoken to LiveResponseMode.NATIVE_AUDIO
     }
 
     /**
@@ -537,9 +580,12 @@ class GeminiLiveTransport(
         invalidateSocket(reason)
     }
 
-    private suspend fun ensureConnected(apiKey: String, responseMode: LiveResponseMode): Boolean {
+    private suspend fun ensureConnected(
+        apiKey: String,
+        model: String,
+        responseMode: LiveResponseMode,
+    ): Boolean {
         val fingerprint = fingerprint(apiKey)
-        val model = chooseModel(apiKey, responseMode) ?: return false
         val ready: CompletableDeferred<Boolean>
         synchronized(socketLock) {
             // A model that took this modality and then answered nothing is not talked to again.
@@ -626,12 +672,17 @@ class GeminiLiveTransport(
             DiagnosticHub.record(
                 "LIVE_SETUP_FAILED",
                 mapOf(
-                    "model" to activeModel,
+                    "model" to model,
                     "timeoutMs" to LIVE_SETUP_TIMEOUT_MS,
-                    "retryInMs" to LIVE_SETUP_RETRY_INTERVAL_MS,
                     "transportSessionId" to transportSessionId,
                 ),
             )
+            // A model whose handshake does not finish is out of the running for this session, the
+            // same as one that finishes and then says nothing. Waiting on it instead cost the
+            // 2026-09-25 19:22 session everything after 18 s: the second candidate's setup missed
+            // the deadline, the retry interval held that same candidate for fifteen seconds, and
+            // every frame in between fell out to SSE while seven untried models sat in the list.
+            ruleOut(model, responseMode, "setup_did_not_complete")
         }
         return connected
     }
@@ -1002,24 +1053,29 @@ class GeminiLiveTransport(
             )
             .toString()
 
-    private fun instructionFor(settings: AppSettings): String = when (settings.mode) {
+    private fun instructionFor(
+        settings: AppSettings,
+        responseMode: LiveResponseMode,
+    ): String = when (settings.mode) {
         AnalysisMode.TEXT_READING -> {
+            // A reading that had to fall back to a speaking model is still a reading; it is only
+            // the verb that changes, because this session answers out loud rather than in writing.
+            val verb = if (responseMode.carriesLiteralText) "Write out" else "Read aloud"
             val tail = if (settings.describeAlongsideText) {
                 " After the visible text, add one very short grounded scene sentence only if useful."
             } else {
                 ""
             }
-            // This session writes rather than speaks, so the instruction says output, not say.
             if (settings.captureProfile == CaptureProfile.FAST_TEXT) {
-                "Write out the currently visible text immediately, starting with the first clear " +
+                "$verb the currently visible text immediately, starting with the first clear " +
                     "words. Preserve Arabic, English and numbers exactly as written; do not " +
                     "translate, transliterate, repair, infer, or describe hidden text. If nothing " +
                     "is legible, output nothing.$tail"
             } else {
-                "Write out only the literal text visible in the current image, in reading order, " +
+                "$verb only the literal text visible in the current image, in reading order, " +
                     "keeping its line breaks and with no preamble. Preserve Arabic, English and " +
                     "numbers exactly as written. Never infer missing characters. If a word is not " +
-                    "legible, write غير واضح and continue.$tail"
+                    "legible, say غير واضح and continue.$tail"
             }
         }
         AnalysisMode.SCENE_DESCRIPTION -> when (settings.sceneDescriptionStyle) {
@@ -1104,7 +1160,12 @@ class GeminiLiveTransport(
          */
         private const val READING_COMPLETION_GRACE_MS = 12_000L
 
-        private const val LIVE_SETUP_TIMEOUT_MS = 4_000L
+        /**
+         * A first handshake with a model this process has not spoken to before can be slow. Four
+         * seconds was not enough on 2026-09-25: `gemini-3.1-flash-live-preview` — the most likely
+         * text-capable model in the catalogue — opened its socket and was abandoned mid-handshake.
+         */
+        private const val LIVE_SETUP_TIMEOUT_MS = 8_000L
 
         /** Long enough that a dead endpoint is not hammered, short enough to recover in a session. */
         private const val LIVE_SETUP_RETRY_INTERVAL_MS = 15_000L
