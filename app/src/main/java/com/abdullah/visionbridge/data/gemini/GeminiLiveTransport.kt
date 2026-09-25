@@ -214,6 +214,17 @@ class GeminiLiveTransport(
     /** How often the audio floor has been rebuilt, so a truly dead account still settles. */
     private val audioFloorRestores = java.util.concurrent.atomic.AtomicInteger(0)
 
+    /**
+     * Models that have actually produced an answer, per modality.
+     *
+     * Membership here is proof of capability, and it outranks the first-token deadline: a slow turn
+     * on a model that has answered is a slow turn, not a verdict. Without this, one turn over three
+     * seconds cost the 01:26 session every model it had.
+     */
+    private val answeringModels = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>(),
+    )
+
     fun supports(settings: AppSettings): Boolean = LiveTransportRouting.carriedByLive(settings)
 
     suspend fun preconnect(settings: AppSettings) {
@@ -459,6 +470,14 @@ class GeminiLiveTransport(
                 firstAudioSeen || firstTextSeen || transcript.isNotEmpty()
             }
             if (answered) return@launch
+            // A model that has answered before is not incapable; this turn is merely slow. The
+            // deadline exists to discover a model that cannot answer at all, and using it to
+            // police a proven one is what broke the 2026-09-26 01:26 session: gemini-3.8-live
+            // answered three turns, the fourth took longer than three seconds, and the model was
+            // struck off — after which the app walked the whole catalogue, each new model losing
+            // its own first turn to the same rule at about twenty seconds of the session each.
+            // One reading arrived and nothing after it did.
+            val proven = "$model/${responseMode.modality}" in answeringModels
             DiagnosticHub.record(
                 "LIVE_TURN_SILENT",
                 turn.fields() + mapOf(
@@ -466,9 +485,26 @@ class GeminiLiveTransport(
                     "modality" to responseMode.modality,
                     "deadlineMs" to FIRST_TOKEN_DEADLINE_MS,
                     "epoch" to epoch,
+                    "modelAlreadyAnswered" to proven,
+                    "ruledOut" to !proven,
                 ),
             )
+            if (proven) {
+                // Free the lane so the next frame is sent rather than deferred behind this one.
+                synchronized(stateLock) { if (activeEpoch == epoch) responseInFlight = false }
+                return@launch
+            }
             ruleOut(model, responseMode, "no_first_token_within_deadline")
+        }
+    }
+
+    /** Records that this model has answered, which makes the first-token deadline stop judging it. */
+    private fun markAnswering(model: String, responseMode: LiveResponseMode) {
+        if (answeringModels.add("$model/${responseMode.modality}")) {
+            DiagnosticHub.record(
+                "LIVE_MODEL_ANSWERED",
+                mapOf("model" to model, "modality" to responseMode.modality),
+            )
         }
     }
 
@@ -1034,6 +1070,7 @@ class GeminiLiveTransport(
 
                 if (!firstAudioSeen) {
                     firstAudioSeen = true
+                    markAnswering(activeModel, activeResponseMode)
                     val now = SystemClock.elapsedRealtimeNanos()
                     DiagnosticHub.record(
                         "LIVE_FIRST_AUDIO_PACKET",
@@ -1116,6 +1153,7 @@ class GeminiLiveTransport(
         if (fullText.isBlank()) return
         if (!firstTextSeen) {
             firstTextSeen = true
+            markAnswering(activeModel, activeResponseMode)
             val now = SystemClock.elapsedRealtimeNanos()
             DiagnosticHub.record(
                 "LIVE_FIRST_TEXT",
