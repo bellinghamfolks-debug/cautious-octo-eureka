@@ -50,6 +50,35 @@ object LiveModelDirectory {
     private val GENERAL_LIVE_MARKERS = listOf("flash-live", "live-preview", "flash-preview")
 
     /**
+     * Models this account's own device has already proved cannot answer in text.
+     *
+     * Ranking is a guess about a name; this is a measurement, and it outranks the guess. Every
+     * entry was refused or answered with silence on 2026-09-25, and re-testing them costs the user
+     * seconds of a live session to re-learn something already known:
+     *
+     * - `gemini-3.1-flash-live-preview` — the server said it outright, close 1007: "The requested
+     *   combination of response modalities (TEXT) is not supported by the model."
+     * - `gemini-3.5-transcribe-live` — accepted the setup, took seventeen frames, said nothing.
+     *   It transcribes speech, not pages.
+     * - `gemini-robotics-er-2-streaming-preview` — completed a turn carrying no text at all.
+     * - `gemini-3.5-live-translate-preview` — close 1007, "Request contains an invalid argument."
+     *
+     * `gemini-3.8-live-extended-thinking` is deliberately absent. It failed too, but only by
+     * asking to be told a thinking level — a request, not a refusal — and it has never actually
+     * been tried with one. It is the single untested candidate left, which is why the attempt is
+     * now one socket rather than a tour of the catalogue.
+     *
+     * The list is about text only. `gemini-3.8-live` answers audio on this device and is the path
+     * everything falls back to.
+     */
+    private val MEASURED_UNABLE_TO_WRITE = setOf(
+        "gemini-3.1-flash-live-preview",
+        "gemini-3.5-transcribe-live",
+        "gemini-robotics-er-2-streaming-preview",
+        "gemini-3.5-live-translate-preview",
+    )
+
+    /**
      * Orders [available] for [responseMode], best first. Nothing is dropped, only ranked, so a
      * catalogue full of wrong-shaped models still yields something to try — the deadline is what
      * bounds the cost of trying it.
@@ -57,8 +86,23 @@ object LiveModelDirectory {
     fun ordered(available: List<String>, responseMode: LiveResponseMode): List<String> {
         val candidates = available.map(::shortName).filter { it.isNotBlank() }.distinct()
             .ifEmpty { listOf(NATIVE_AUDIO_MODEL) }
-        return candidates.sortedBy { rank(it, responseMode) }
+        // Measurement beats ranking. A model already shown not to write is not a low-ranked
+        // candidate, it is not a candidate — and probing it again spends seconds of a live session
+        // re-learning it, which is what made reading feel broken rather than slow. A model built
+        // to speak is excluded on the same grounds: that it answers a text turn with nothing is
+        // the whole lesson of build 53, and it does not need proving once per session.
+        //
+        // An empty text list is a valid answer, not a failure. It means this catalogue has nothing
+        // left to try, and the caller degrades to audio on Live — which streams, and works.
+        return when (responseMode) {
+            LiveResponseMode.EXACT_TEXT ->
+                candidates.filterNot { it in MEASURED_UNABLE_TO_WRITE || looksNativeAudio(it) }
+            LiveResponseMode.NATIVE_AUDIO -> candidates
+        }.sortedBy { rank(it, responseMode) }
     }
+
+    /** Whether the device has already shown [model] cannot answer in text. */
+    fun measuredUnableToWrite(model: String): Boolean = shortName(model) in MEASURED_UNABLE_TO_WRITE
 
     /**
      * Lower sorts earlier. [List.sortedBy] is stable, so models sharing a rank keep the order the

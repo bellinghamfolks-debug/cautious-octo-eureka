@@ -39,44 +39,46 @@ class LiveModelDirectoryTest {
 
     // region reading
 
+    /**
+     * The probe is one socket now, not a tour. Every other model in this catalogue was refused or
+     * silent on the device, and re-testing them is the session time that made reading feel broken.
+     */
     @Test
-    fun `text tries the general live model first`() {
-        assertEquals("gemini-3.1-flash-live-preview", forText().first())
+    fun `text tries exactly the one candidate the device has not ruled out`() {
+        assertEquals(listOf("gemini-3.8-live-extended-thinking"), forText())
     }
 
-    /** The regression from build 55, named. */
     @Test
-    fun `text does not try a speech-transcription model before a general one`() {
-        val order = forText()
+    fun `text never offers a model built to speak`() {
         assertTrue(
-            "transcribe-live was tried before the general model: $order",
-            order.indexOf("gemini-3.1-flash-live-preview") <
-                order.indexOf("gemini-3.5-transcribe-live"),
+            "a speaking model was offered for text: ${forText()}",
+            forText().none { LiveModelDirectory.looksNativeAudio(it) },
         )
-    }
-
-    @Test
-    fun `text puts every model that can only speak last`() {
-        val order = forText()
-        val lastGeneral = order.indexOfLast { !LiveModelDirectory.looksNativeAudio(it) }
-        val firstSpeaking = order.indexOfFirst { LiveModelDirectory.looksNativeAudio(it) }
-        assertTrue("a speaking model outranked a writing one: $order", lastGeneral < firstSpeaking)
     }
 
     /** Translating is the one thing a reading must never do; robotics streams for control. */
     @Test
-    fun `text ranks the single-purpose models below the general ones`() {
-        val order = forText()
-        for (special in listOf(
+    fun `the models measured unable to write are not offered for text`() {
+        for (measured in listOf(
             "gemini-3.5-transcribe-live",
             "gemini-3.5-live-translate-preview",
             "gemini-robotics-er-2-streaming-preview",
+            "gemini-3.1-flash-live-preview",
         )) {
-            assertTrue(
-                "$special outranked gemini-3.8-live-extended-thinking: $order",
-                order.indexOf("gemini-3.8-live-extended-thinking") < order.indexOf(special),
-            )
+            assertTrue(measured, LiveModelDirectory.measuredUnableToWrite(measured))
+            assertFalse("$measured was offered for text", forText().contains(measured))
         }
+    }
+
+    /**
+     * It failed too, but by asking to be told a thinking level — a request, not a refusal — and it
+     * has never been tried with one. Removing it would end the search for live exact text.
+     */
+    @Test
+    fun `the model that only asked to be configured stays a candidate`() {
+        assertFalse(
+            LiveModelDirectory.measuredUnableToWrite("gemini-3.8-live-extended-thinking"),
+        )
     }
 
     // endregion
@@ -101,12 +103,28 @@ class LiveModelDirectoryTest {
 
     // region what is never done
 
-    /** Ranking, never discarding: a catalogue of wrong shapes must still yield something to try. */
+    /** Audio discards nothing: that path works, and its fallbacks must stay available. */
     @Test
-    fun `every model stays a candidate in both modes`() {
-        for (mode in LiveResponseMode.entries) {
-            assertEquals(CATALOGUE.toSet(), LiveModelDirectory.ordered(CATALOGUE, mode).toSet())
-        }
+    fun `every model stays a candidate for audio`() {
+        assertEquals(
+            CATALOGUE.toSet(),
+            LiveModelDirectory.ordered(CATALOGUE, LiveResponseMode.NATIVE_AUDIO).toSet(),
+        )
+    }
+
+    /**
+     * An empty text list is an answer, not a failure: it means nothing here can write, and the
+     * caller degrades to audio on Live, which streams. It must never mean "give up on Live".
+     */
+    @Test
+    fun `a catalogue with nothing that can write yields no text candidate`() {
+        assertEquals(
+            emptyList<String>(),
+            LiveModelDirectory.ordered(
+                listOf("gemini-3.8-live", "gemini-3.5-transcribe-live"),
+                LiveResponseMode.EXACT_TEXT,
+            ),
+        )
     }
 
     @Test
@@ -116,24 +134,19 @@ class LiveModelDirectoryTest {
     }
 
     @Test
-    fun `an empty listing still yields something to try`() {
+    fun `an empty listing still yields something to speak with`() {
         assertEquals(
             listOf(LiveModelDirectory.NATIVE_AUDIO_MODEL),
-            LiveModelDirectory.ordered(emptyList(), LiveResponseMode.EXACT_TEXT),
+            LiveModelDirectory.ordered(emptyList(), LiveResponseMode.NATIVE_AUDIO),
         )
     }
 
     @Test
     fun `blanks and duplicates and prefixes collapse to one candidate`() {
         assertEquals(
-            listOf("gemini-3.1-flash-live-preview"),
+            listOf("gemini-9-flash-live"),
             LiveModelDirectory.ordered(
-                listOf(
-                    "gemini-3.1-flash-live-preview",
-                    "models/gemini-3.1-flash-live-preview",
-                    "",
-                    " ",
-                ),
+                listOf("gemini-9-flash-live", "models/gemini-9-flash-live", "", " "),
                 LiveResponseMode.EXACT_TEXT,
             ),
         )
