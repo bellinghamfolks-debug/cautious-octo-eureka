@@ -556,7 +556,14 @@ class GeminiLiveTransport(
                     .put("model", "models/$MODEL")
                     .put(
                         "generationConfig",
-                        JSONObject().put("responseModalities", JSONArray().put("AUDIO")),
+                        JSONObject()
+                            .put("responseModalities", JSONArray().put("AUDIO"))
+                            // Native audio picks its language here, not from the prompt. Without
+                            // a languageCode Live answers in English however the instruction is
+                            // worded — which is what a field session on 2026-09-25 heard: scene
+                            // descriptions spoken in English to an Arabic-speaking user, while
+                            // the per-turn instruction said "in Arabic" the whole time.
+                            .put("speechConfig", JSONObject().put("languageCode", SPOKEN_LANGUAGE)),
                     )
                     .put(
                         "systemInstruction",
@@ -701,9 +708,16 @@ class GeminiLiveTransport(
             sessionId = "dummy",
         )
 
+        /** BCP-47 tag for the spoken answer. The user is Arabic-speaking; this is not a default. */
+        private const val SPOKEN_LANGUAGE = "ar-XA"
+
         private const val SYSTEM_INSTRUCTION =
             "You are VisionBridge, a real-time visual accessibility assistant for a blind or " +
-                "low-vision user. Respond with useful content immediately and without a preamble. " +
+                "low-vision user who speaks Arabic. Always speak Arabic, including every " +
+                "description, every explanation and every status remark. The one exception is " +
+                "text you are transcribing from the image: read that exactly as written, in its " +
+                "own script, without translating it. " +
+                "Respond with useful content immediately and without a preamble. " +
                 "Use only what is visibly supported by the current image. Never invent text, " +
                 "identity, distance, or hidden details. Spoken output must be concise and clear."
     }

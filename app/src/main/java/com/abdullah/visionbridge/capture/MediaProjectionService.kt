@@ -27,8 +27,8 @@ import androidx.core.app.ServiceCompat
 import com.abdullah.visionbridge.R
 import com.abdullah.visionbridge.VisionBridgeApp
 import com.abdullah.visionbridge.accessibility.EvidenceShortcut
-import com.abdullah.visionbridge.capture.vision.Viewport
 import com.abdullah.visionbridge.capture.vision.EsightViewportCalibration
+import com.abdullah.visionbridge.capture.vision.Viewport
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.FrameStages
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
@@ -1097,8 +1097,12 @@ class MediaProjectionService : Service() {
         )
         val applied = resolution.rect
         activeViewport = applied
-        DiagnosticHub.record("VIEWPORT_RESOLVED", trace.fields(applied.fields() + mapOf(
+        val calibration = EsightViewportCalibration.decide(
+            activeSettings.viewportMode, activeSettings.mode, source.width, source.height,
+        )
+        DiagnosticHub.record("VIEWPORT_RESOLVED", trace.fields(applied.fields() + calibration.fields + mapOf(
             "strategy" to resolution.strategy,
+            "viewportMode" to activeSettings.viewportMode.name,
             "sourceWidth" to source.width,
             "sourceHeight" to source.height,
             "mode" to activeSettings.mode.name,

@@ -35,13 +35,41 @@ object EsightViewportCalibration {
         analysisMode: AnalysisMode,
         width: Int,
         height: Int,
-    ): Viewport.Rect? {
+    ): Viewport.Rect? = decide(mode, analysisMode, width, height).rect
+
+    /**
+     * Why the calibrated eSight window was or was not used.
+     *
+     * The reason matters as much as the answer. A bundle that only records the rectangle finally
+     * applied cannot say whether the headset geometry was rejected, never requested, or simply did
+     * not match — and "the eSight window was ignored" is then a complaint nobody can settle from
+     * the evidence. [reason] settles it in one field.
+     */
+    data class Decision(val rect: Viewport.Rect?, val reason: String) {
+        val fields: Map<String, Any?> get() = mapOf(
+            "esightCalibrationApplied" to (rect != null),
+            "esightCalibrationReason" to reason,
+        )
+    }
+
+    fun decide(
+        mode: ViewportMode,
+        analysisMode: AnalysisMode,
+        width: Int,
+        height: Int,
+    ): Decision {
         val wantsFixed = mode == ViewportMode.ESIGHT_FIXED ||
             (mode == ViewportMode.ESIGHT_TEXT_SAFE && analysisMode == AnalysisMode.TEXT_READING)
-        if (!wantsFixed || width <= 0 || height <= 0) return null
+        if (!wantsFixed) return Decision(null, "not_requested_for_$mode/$analysisMode")
+        if (width <= 0 || height <= 0) return Decision(null, "no_frame_size")
         val aspect = width.toFloat() / height.toFloat()
-        if (aspect !in MIN_LANDSCAPE_ASPECT..MAX_LANDSCAPE_ASPECT) return null
-        return rect
+        // The reference capture is landscape. A portrait capture is not the Share Your View window
+        // the fractions were measured from — it is the phone held upright, and applying landscape
+        // fractions to it crops the wrong part of the screen.
+        if (aspect !in MIN_LANDSCAPE_ASPECT..MAX_LANDSCAPE_ASPECT) {
+            return Decision(null, "capture_not_landscape_aspect_${"%.3f".format(aspect)}")
+        }
+        return Decision(rect, "reference_geometry")
     }
 
     fun pixelFields(width: Int, height: Int): Map<String, Any?> {

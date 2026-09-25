@@ -40,8 +40,8 @@ android {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 50
-        versionName = "3.8.9"
+        versionCode = 51
+        versionName = "3.9.0"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -62,7 +62,7 @@ android {
         create("validation") {
             initWith(getByName("debug"))
             applicationIdSuffix = ".stable"
-            versionNameSuffix = "-stable-signing-test7"
+            versionNameSuffix = "-stable-signing-test8"
             // Prefer the stable key. The debug keystore is generated per machine, and on a CI
             // runner that means a new key for every build: Android then refuses to install one
             // candidate over the previous one, and the only way forward is to uninstall and lose
