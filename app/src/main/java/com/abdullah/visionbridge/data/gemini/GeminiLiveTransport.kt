@@ -163,6 +163,28 @@ class GeminiLiveTransport(
     /** Whether the drop from exact text to spoken transcript has already been announced. */
     private val degradedToAudio = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    /**
+     * Models that closed a session asking to be told a thinking level, learned from the close
+     * frame. Adding a name here grants exactly one more attempt: [interpretClose] rules the model
+     * out if it refuses again, so a model that always refuses cannot be retried forever.
+     */
+    private val thinkingLevelRequired = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>(),
+    )
+
+    /**
+     * The attempt whose refusal the server already explained.
+     *
+     * The setup deadline and the close frame are two verdicts on one attempt, and the close frame
+     * is the better one: it knows whether the refusal is permanent or a request to be called
+     * differently. Without this the deadline path would rule out a model that had just asked for a
+     * thinking level, and the retry it earned would never happen.
+     */
+    @Volatile private var closeInterpreted: String? = null
+
+    /** Set when a refusal was correctable, so the corrected attempt does not wait out the backoff. */
+    @Volatile private var retryImmediately = false
+
     fun supports(settings: AppSettings): Boolean = LiveTransportRouting.carriedByLive(settings)
 
     suspend fun preconnect(settings: AppSettings) {
@@ -632,7 +654,9 @@ class GeminiLiveTransport(
             // here so the next frame opens a fresh socket, at most once per backoff.
             if (existing != null && existing.isCompleted && existing.getCompleted() != true) {
                 val since = SystemClock.elapsedRealtime() - lastSetupFailureAtElapsedMs
-                if (since < LIVE_SETUP_RETRY_INTERVAL_MS) return false
+                val earned = retryImmediately
+                retryImmediately = false
+                if (!earned && since < LIVE_SETUP_RETRY_INTERVAL_MS) return false
                 socket?.close(NORMAL_CLOSE_CODE, "retry_live_setup")
                 socket = null
                 setupReady = null
@@ -649,9 +673,10 @@ class GeminiLiveTransport(
                 setupSucceeded = false
                 socketResponseMode = responseMode
                 keyFingerprint = fingerprint
+                closeInterpreted = null
                 transportSessionId = UUID.randomUUID().toString()
                 val request = Request.Builder().url("$LIVE_ENDPOINT?key=$apiKey").build()
-                socket = client.newWebSocket(request, listener(fingerprint, responseMode, deferred))
+                socket = client.newWebSocket(request, listener(fingerprint, model, responseMode, deferred))
                 DiagnosticHub.record(
                     "LIVE_SOCKET_CONNECTING",
                     mapOf(
@@ -682,18 +707,26 @@ class GeminiLiveTransport(
             // 2026-09-25 19:22 session everything after 18 s: the second candidate's setup missed
             // the deadline, the retry interval held that same candidate for fifteen seconds, and
             // every frame in between fell out to SSE while seven untried models sat in the list.
-            ruleOut(model, responseMode, "setup_did_not_complete")
+            //
+            // Unless the server already said why, in which case its reason stands and this one
+            // would only overwrite a correctable refusal with a permanent one.
+            if (closeInterpreted != "$model/${responseMode.modality}") {
+                ruleOut(model, responseMode, "setup_did_not_complete")
+            }
         }
         return connected
     }
 
     private fun listener(
         expectedFingerprint: String,
+        model: String,
         responseMode: LiveResponseMode,
         ready: CompletableDeferred<Boolean>,
     ): WebSocketListener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
-            if (!webSocket.send(setupMessage(responseMode)) && !ready.isCompleted) ready.complete(false)
+            if (!webSocket.send(setupMessage(model, responseMode)) && !ready.isCompleted) {
+                ready.complete(false)
+            }
             DiagnosticHub.record(
                 "LIVE_SOCKET_OPEN",
                 mapOf("httpCode" to response.code, "protocol" to response.protocol.toString()),
@@ -730,11 +763,68 @@ class GeminiLiveTransport(
             )
         }
 
+        /**
+         * The server's own verdict, read the moment it is sent.
+         *
+         * OkHttp calls this when the peer starts the closing handshake, and `onClosed` only once
+         * our side has closed too. Without this override the rejection sat unread until the setup
+         * deadline expired, so the 2026-09-25 21:22 session spent eight seconds per model to
+         * discover a refusal the server had already spelled out at four hundred milliseconds —
+         * and spent sixteen of its first seventeen seconds that way, on two models, before trying
+         * anything else.
+         *
+         * The text matters as much as the timing. "The requested combination of response
+         * modalities (TEXT) is not supported by the model" is a permanent no; "Thinking level must
+         * be specified for this model" is a correctable request, and treating the two the same
+         * threw away the one model in the catalogue that asked to be called differently.
+         */
+        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+            DiagnosticHub.record(
+                "LIVE_SOCKET_CLOSING",
+                mapOf("code" to code, "reason" to reason, "model" to model),
+            )
+            interpretClose(model, responseMode, code, reason)
+            if (!ready.isCompleted) ready.complete(false)
+            webSocket.close(NORMAL_CLOSE_CODE, null)
+            clearSocketIfCurrent(webSocket)
+        }
+
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             if (!ready.isCompleted) ready.complete(false)
             clearSocketIfCurrent(webSocket)
             DiagnosticHub.record("LIVE_SOCKET_CLOSED", mapOf("code" to code, "reason" to reason))
         }
+    }
+
+    /**
+     * Acts on what the server said when it closed, so a refusal is learned from rather than timed.
+     *
+     * Only one of the refusals seen in the field is correctable, and it is the important one:
+     * `gemini-3.8-live-extended-thinking` closed with "Thinking level must be specified for this
+     * model." That is not a modality refusal — it is the sibling of the model this app already
+     * speaks with, asking to be configured. It gets one more attempt carrying a thinking level
+     * before it is judged, and only that one, so a model that keeps refusing cannot loop.
+     */
+    private fun interpretClose(
+        model: String,
+        responseMode: LiveResponseMode,
+        code: Int,
+        reason: String,
+    ) {
+        closeInterpreted = "$model/${responseMode.modality}"
+        val verdict = LiveCloseVerdict.of(code, reason)
+        // Correctable, but only once: the second refusal of the same kind is a refusal.
+        if (verdict.correctable && thinkingLevelRequired.add(model)) {
+            // Earned retry, taken at once: the backoff exists to stop a dead endpoint being
+            // hammered, and this endpoint just said precisely what it wants instead.
+            retryImmediately = true
+            DiagnosticHub.record(
+                "LIVE_MODEL_NEEDS_THINKING_LEVEL",
+                mapOf("model" to model, "code" to code, "retryWith" to THINKING_LEVEL),
+            )
+            return
+        }
+        ruleOut(model, responseMode, "server_${verdict.name.lowercase()}_$code")
     }
 
     private fun handleServerMessage(raw: String, ready: CompletableDeferred<Boolean>) {
@@ -980,7 +1070,7 @@ class GeminiLiveTransport(
         )
     }
 
-    private fun setupMessage(responseMode: LiveResponseMode): String {
+    private fun setupMessage(model: String, responseMode: LiveResponseMode): String {
         val resumption = JSONObject()
         resumptionHandle?.takeIf { it.isNotBlank() }?.let { resumption.put("handle", it) }
         val generationConfig = JSONObject()
@@ -995,8 +1085,18 @@ class GeminiLiveTransport(
                 JSONObject().put("languageCode", SPOKEN_LANGUAGE),
             )
         }
+        // Some models will not open a session without being told how much to think, and say so on
+        // close rather than in any listing: gemini-3.8-live-extended-thinking refused with
+        // "Thinking level must be specified for this model." A name carrying "thinking" is asked
+        // the same way from the first attempt, so that answer costs a socket only once.
+        if (model in thinkingLevelRequired || model.lowercase().contains("thinking")) {
+            generationConfig.put(
+                "thinkingConfig",
+                JSONObject().put("thinkingLevel", THINKING_LEVEL),
+            )
+        }
         val setup = JSONObject()
-            .put("model", "models/$activeModel")
+            .put("model", "models/$model")
             .put("generationConfig", generationConfig)
             .put(
                 "systemInstruction",
@@ -1142,6 +1242,17 @@ class GeminiLiveTransport(
             "https://generativelanguage.googleapis.com/v1beta/models"
         private const val MODEL_PAGE_SIZE = 200
         private const val MODEL_DISCOVERY_TIMEOUT_SECONDS = 6L
+
+        /**
+         * How hard a thinking model is asked to think before answering.
+         *
+         * Reading a page is transcription, not reasoning, and thinking tokens are charged against
+         * the same output budget the answer needs — the 2026-08-13 session lost every scene
+         * response to exactly that, 343 median thinking tokens against a 360 ceiling. So the level
+         * asked for is the lowest one that satisfies the requirement.
+         */
+        private const val THINKING_LEVEL = "LOW"
+
 
         /**
          * How long a turn may produce nothing before its model is judged unable to answer.
