@@ -6,7 +6,6 @@ import android.util.Base64
 import com.abdullah.visionbridge.capture.CaptureRuntime
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
-import com.abdullah.visionbridge.data.speech.BilingualTtsEngine
 import com.abdullah.visionbridge.data.speech.LivePcmAudioPlayer
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AnalysisResult
@@ -38,19 +37,13 @@ import java.util.concurrent.TimeUnit
 /**
  * Persistent Gemini Live transport.
  *
- * The WebSocket is session-scoped; visual turns remain immutable and frame-bound.
- *
- * Which answer the session asks for depends on the mode, and [LiveResponseMode] carries the reason.
- * Describing a scene asks for AUDIO, and native model PCM goes directly to [LivePcmAudioPlayer].
- * Reading asks for TEXT, because a transcript of synthesised speech is not a transcription of a
- * page, and the literal text is spoken through [BilingualTtsEngine] instead. The modality is fixed
- * at setup, so changing mode reopens the socket.
+ * The WebSocket is session-scoped; visual turns remain immutable and frame-bound. Native model
+ * PCM goes directly to [LivePcmAudioPlayer]. Android TTS is intentionally not in this path.
  */
 class GeminiLiveTransport(
     private val runtime: CaptureRuntime,
     private val keys: ApiKeyStore,
     private val audioPlayer: LivePcmAudioPlayer,
-    private val tts: BilingualTtsEngine,
 ) {
     private val gate = runtime.turnGate
     private val encoder = LiveFrameEncoder()
@@ -69,13 +62,6 @@ class GeminiLiveTransport(
     @Volatile private var socket: WebSocket? = null
     @Volatile private var setupReady: CompletableDeferred<Boolean>? = null
     @Volatile private var setupSucceeded = false
-
-    /**
-     * What the open socket was set up to answer with. `responseModalities` is part of the setup
-     * payload and cannot be changed on a live session, so switching between reading and describing
-     * means a new socket rather than a different instruction.
-     */
-    @Volatile private var socketResponseMode: LiveResponseMode? = null
 
     /** When the last handshake gave up, so a retry costs one attempt per interval, not per frame. */
     @Volatile private var lastSetupFailureAtElapsedMs = 0L
@@ -100,35 +86,19 @@ class GeminiLiveTransport(
     @Volatile private var interruptRequested = false
     @Volatile private var staleBoundaryBlocked = false
     @Volatile private var firstAudioSeen = false
-
-    /**
-     * The reading path produces no audio packet, so `LIVE_FIRST_AUDIO_PACKET` cannot measure it.
-     * This is the same measurement on the channel a reading actually arrives by: how long after
-     * the frame went out the user had a first word.
-     */
-    @Volatile private var firstTextSeen = false
     @Volatile private var speechEnabled = true
-    @Volatile private var speechRate = 1f
-
-    /** The response mode of the turn currently being answered, which the parser dispatches on. */
-    @Volatile private var activeResponseMode = LiveResponseMode.NATIVE_AUDIO
 
     private var transcript = StringBuilder()
-
-    /** Holds literal model text until a clause is complete, for the reading path only. */
-    private val speechBuffer = SpokenTextBuffer()
     private var lastReservedAtElapsedMs = 0L
 
-    fun supports(settings: AppSettings): Boolean =
-        !settings.forceCellular &&
-            (settings.mode == AnalysisMode.SCENE_DESCRIPTION || !settings.useLocalOcr)
+    /** Scene description only; [LiveTransportRouting] holds the rule and the reason for it. */
+    fun supports(settings: AppSettings): Boolean = LiveTransportRouting.carriedByLive(settings)
 
     suspend fun preconnect(settings: AppSettings) {
         if (!supports(settings)) return
         val apiKey = keys.get()?.takeIf { it.isNotBlank() } ?: return
         val started = SystemClock.elapsedRealtimeNanos()
-        val responseMode = LiveResponseMode.of(settings.mode)
-        val connected = ensureConnected(apiKey, responseMode)
+        val connected = ensureConnected(apiKey)
         DiagnosticHub.record(
             "LIVE_PRECONNECT_COMPLETED",
             mapOf(
@@ -136,7 +106,6 @@ class GeminiLiveTransport(
                 "durationMs" to
                     (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0,
                 "model" to MODEL,
-                "responseMode" to responseMode.name,
             ),
         )
     }
@@ -210,9 +179,8 @@ class GeminiLiveTransport(
         val expectedGeneration = gate.generation()
         val apiKey = keys.get()?.takeIf { it.isNotBlank() } ?: return@withLock false
 
-        val responseMode = LiveResponseMode.of(settings.mode)
         return@withLock coroutineScope {
-            val connection = async(Dispatchers.IO) { ensureConnected(apiKey, responseMode) }
+            val connection = async(Dispatchers.IO) { ensureConnected(apiKey) }
             val encodedTask = async(Dispatchers.Default) { encoder.encode(bitmap, settings) }
             val connected = connection.await()
             val encoded = encodedTask.await()
@@ -275,13 +243,9 @@ class GeminiLiveTransport(
                     if (superseding) "live_turn_superseded" else "live_turn_started"
                 )
                 speechEnabled = settings.speechEnabled
-                speechRate = settings.speechRate
-                activeResponseMode = responseMode
                 staleBoundaryBlocked = superseding
                 firstAudioSeen = false
-                firstTextSeen = false
                 transcript = StringBuilder()
-                speechBuffer.reset()
                 responseInFlight = true
             }
 
@@ -317,9 +281,7 @@ class GeminiLiveTransport(
                     "quality" to encoded.quality,
                     "encodeTotalMs" to encoded.totalMs,
                     "base64Ms" to base64Ms,
-                    "responseMode" to responseMode.name,
-                    "responseModality" to responseMode.modality,
-                    "nativeAudio" to (responseMode.speaksItself && settings.speechEnabled),
+                    "nativeAudio" to settings.speechEnabled,
                     "supersedingActiveResponse" to superseding,
                     "epoch" to activeEpoch,
                 ),
@@ -352,37 +314,17 @@ class GeminiLiveTransport(
             interruptRequested = false
             staleBoundaryBlocked = false
             firstAudioSeen = false
-            firstTextSeen = false
             transcript = StringBuilder()
-            speechBuffer.reset()
         }
         audioPlayer.interrupt(reason)
         invalidateSocket(reason)
         resumptionHandle = null
     }
 
-    private suspend fun ensureConnected(apiKey: String, responseMode: LiveResponseMode): Boolean {
+    private suspend fun ensureConnected(apiKey: String): Boolean {
         val fingerprint = fingerprint(apiKey)
         val ready: CompletableDeferred<Boolean>
         synchronized(socketLock) {
-            // The modality is part of the setup handshake. A session opened to speak cannot be
-            // asked to write instead, so a mode change is a new socket, not a new instruction.
-            if (socket != null && socketResponseMode != null && socketResponseMode != responseMode) {
-                DiagnosticHub.record(
-                    "LIVE_SOCKET_MODE_SWITCHED",
-                    mapOf(
-                        "from" to socketResponseMode?.name,
-                        "to" to responseMode.name,
-                        "modality" to responseMode.modality,
-                    ),
-                )
-                socket?.close(NORMAL_CLOSE_CODE, "response_modality_changed")
-                socket = null
-                setupReady = null
-                setupSucceeded = false
-                socketResponseMode = null
-                resumptionHandle = null
-            }
             val existing = setupReady
             if (socket != null && setupSucceeded && keyFingerprint == fingerprint && existing != null) {
                 return true
@@ -409,19 +351,13 @@ class GeminiLiveTransport(
                 ready = deferred
                 setupReady = deferred
                 setupSucceeded = false
-                socketResponseMode = responseMode
                 keyFingerprint = fingerprint
                 transportSessionId = UUID.randomUUID().toString()
                 val request = Request.Builder().url("$LIVE_ENDPOINT?key=$apiKey").build()
-                socket = client.newWebSocket(request, listener(fingerprint, responseMode, deferred))
+                socket = client.newWebSocket(request, listener(fingerprint, deferred))
                 DiagnosticHub.record(
                     "LIVE_SOCKET_CONNECTING",
-                    mapOf(
-                        "model" to MODEL,
-                        "transportSessionId" to transportSessionId,
-                        "responseMode" to responseMode.name,
-                        "modality" to responseMode.modality,
-                    ),
+                    mapOf("model" to MODEL, "transportSessionId" to transportSessionId),
                 )
             }
         }
@@ -446,11 +382,10 @@ class GeminiLiveTransport(
 
     private fun listener(
         expectedFingerprint: String,
-        responseMode: LiveResponseMode,
         ready: CompletableDeferred<Boolean>,
     ): WebSocketListener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
-            if (!webSocket.send(setupMessage(responseMode)) && !ready.isCompleted) ready.complete(false)
+            if (!webSocket.send(setupMessage()) && !ready.isCompleted) ready.complete(false)
             DiagnosticHub.record(
                 "LIVE_SOCKET_OPEN",
                 mapOf("httpCode" to response.code, "protocol" to response.protocol.toString()),
@@ -546,11 +481,7 @@ class GeminiLiveTransport(
             synchronized(stateLock) {
                 staleBoundaryBlocked = false
                 firstAudioSeen = false
-                firstTextSeen = false
                 transcript = StringBuilder()
-                // Held-back text belongs to the generation that was just cut off. Speaking it now
-                // would attach the tail of an abandoned reading to the one replacing it.
-                speechBuffer.reset()
             }
             DiagnosticHub.record(
                 "LIVE_TURN_INTERRUPTED",
@@ -564,19 +495,6 @@ class GeminiLiveTransport(
 
         val parts = server.optJSONObject("modelTurn")?.optJSONArray("parts")
         if (parts != null) {
-            // A TEXT session carries the answer itself here, which for a reading is the page's own
-            // characters rather than a transcript of a voice reading them out. An audio session is
-            // answered by `outputTranscription` below; taking a stray text part from one as well
-            // would publish the same sentence down both paths and speak it twice.
-            if (activeResponseMode.carriesLiteralText) {
-                val literal = buildString {
-                    for (index in 0 until parts.length()) {
-                        append(parts.optJSONObject(index)?.optString("text").orEmpty())
-                    }
-                }
-                if (literal.isNotEmpty()) publishText(literal, fromLiteralModelText = true)
-            }
-
             for (index in 0 until parts.length()) {
                 val inline = parts.optJSONObject(index)?.optJSONObject("inlineData") ?: continue
                 val mime = inline.optString("mimeType")
@@ -621,162 +539,89 @@ class GeminiLiveTransport(
             }
         }
 
-        server.optJSONObject("outputTranscription")?.optString("text").orEmpty().let { delta ->
-            if (delta.isNotBlank()) publishText(delta, fromLiteralModelText = false)
+        val delta = server.optJSONObject("outputTranscription")?.optString("text").orEmpty()
+        if (delta.isNotBlank()) {
+            val turn: AnalysisTurn?
+            val fullText: String
+            synchronized(stateLock) {
+                turn = activeTurn
+                if (staleBoundaryBlocked || turn == null || gate.rejection(turn!!) != null) return
+                transcript.append(delta)
+                fullText = transcript.toString().trim()
+            }
+            if (fullText.isNotBlank() && turn != null) {
+                runtime.result(
+                    AnalysisResult(
+                        text = fullText,
+                        source = AnalysisSource.GEMINI,
+                        language = if (fullText.any { it in '\u0600'..'\u06FF' }) "mixed" else "en",
+                        turn = turn,
+                    )
+                )
+                DiagnosticHub.record(
+                    "LIVE_OUTPUT_TRANSCRIPTION",
+                    turn.fields() + mapOf("characters" to fullText.length),
+                )
+            }
         }
 
         if (server.optBoolean("turnComplete", false)) {
             val wasBoundary: Boolean
             val turn: AnalysisTurn?
-            val remainder: String
-            val fullText: String
             synchronized(stateLock) {
                 wasBoundary = staleBoundaryBlocked
-                fullText = transcript.toString().trim()
-                // Whatever is still held back is the end of the answer, and a clause that never
-                // got its full stop is still the user's text. Say it rather than lose it.
-                remainder = if (staleBoundaryBlocked) "".also { speechBuffer.reset() } else speechBuffer.flush()
                 if (staleBoundaryBlocked) {
                     staleBoundaryBlocked = false
                     transcript = StringBuilder()
                     firstAudioSeen = false
-                    firstTextSeen = false
                 } else {
                     responseInFlight = false
                 }
                 turn = activeTurn
             }
             if (!wasBoundary && turn != null) {
-                if (remainder.isNotBlank()) speak(turn, fullText, remainder)
                 DiagnosticHub.record(
                     "LIVE_TURN_COMPLETE",
-                    turn.fields() + mapOf(
-                        "epoch" to activeEpoch,
-                        "responseMode" to activeResponseMode.name,
-                    ),
+                    turn.fields() + mapOf("epoch" to activeEpoch),
                 )
             }
         }
     }
 
-    /**
-     * Publishes one growing answer, whichever channel it arrived on.
-     *
-     * Both channels stream a fragment at a time and both accumulate into the same transcript, so
-     * the displayed text is always the whole answer so far. The difference is what is done with
-     * the fragment: literal model text is the reading, so it is also spoken, a clause at a time;
-     * a speech transcript is the record of audio the model is already playing, so speaking it
-     * again would say everything twice.
-     */
-    private fun publishText(delta: String, fromLiteralModelText: Boolean) {
-        var turn: AnalysisTurn? = null
-        var fullText = ""
-        var toSpeak = ""
-        synchronized(stateLock) {
-            val current = activeTurn
-            if (staleBoundaryBlocked || current == null || gate.rejection(current) != null) return
-            transcript.append(delta)
-            fullText = transcript.toString().trim()
-            toSpeak = if (fromLiteralModelText) speechBuffer.take(delta) else ""
-            turn = current
-        }
-        val bound = turn ?: return
-        if (fullText.isBlank()) return
-        if (!firstTextSeen) {
-            firstTextSeen = true
-            val now = SystemClock.elapsedRealtimeNanos()
-            DiagnosticHub.record(
-                "LIVE_FIRST_TEXT",
-                bound.fields() + mapOf(
-                    "receivedAtElapsedNanos" to now,
-                    "submitToFirstTextMs" to
-                        bound.submittedAtNanos?.let { (now - it) / 1_000_000.0 },
-                    "responseMode" to activeResponseMode.name,
-                    "epoch" to activeEpoch,
-                ),
-            )
-        }
-        runtime.result(
-            AnalysisResult(
-                text = fullText,
-                source = AnalysisSource.GEMINI,
-                language = if (fullText.any { it in '\u0600'..'\u06FF' }) "mixed" else "en",
-                turn = bound,
-            )
-        )
-        if (toSpeak.isNotBlank()) speak(bound, fullText, toSpeak)
-        DiagnosticHub.record(
-            if (fromLiteralModelText) "LIVE_MODEL_TEXT" else "LIVE_OUTPUT_TRANSCRIPTION",
-            bound.fields() + mapOf(
-                "characters" to fullText.length,
-                "deltaCharacters" to delta.length,
-                "spokenCharacters" to toSpeak.length,
-            ),
-        )
-    }
-
-    /**
-     * Speaks a completed piece of a reading through the app's own bilingual engine.
-     *
-     * The result carries the whole reading so far and [delta] is the part not yet said, which is
-     * the same shape the frame-bound path uses: one identity per reading, spoken as a growing
-     * prefix rather than as a series of unrelated utterances.
-     */
-    private fun speak(turn: AnalysisTurn, fullText: String, delta: String) {
-        if (!speechEnabled || gate.rejection(turn) != null) return
-        tts.speakTurn(
-            AnalysisResult(
-                text = fullText,
-                source = AnalysisSource.GEMINI,
-                language = if (fullText.any { it in '\u0600'..'\u06FF' }) "mixed" else "en",
-                turn = turn,
-            ),
-            speechRate,
-            "READ_TEXT",
-            spokenText = delta,
-        )
-    }
-
-    private fun setupMessage(responseMode: LiveResponseMode): String {
+    private fun setupMessage(): String {
         val resumption = JSONObject()
         resumptionHandle?.takeIf { it.isNotBlank() }?.let { resumption.put("handle", it) }
-        val generationConfig = JSONObject()
-            .put("responseModalities", JSONArray().put(responseMode.modality))
-        if (responseMode.speaksItself) {
-            // Native audio picks its language here, not from the prompt. Without a languageCode
-            // Live answers in English however the instruction is worded — which is what a field
-            // session on 2026-09-25 heard: scene descriptions spoken in English to an
-            // Arabic-speaking user, while the per-turn instruction said "in Arabic" the whole time.
-            generationConfig.put(
-                "speechConfig",
-                JSONObject().put("languageCode", SPOKEN_LANGUAGE),
-            )
-        }
-        val setup = JSONObject()
-            .put("model", "models/$MODEL")
-            .put("generationConfig", generationConfig)
+        return JSONObject()
             .put(
-                "systemInstruction",
-                JSONObject().put(
-                    "parts",
-                    JSONArray().put(
+                "setup",
+                JSONObject()
+                    .put("model", "models/$MODEL")
+                    .put(
+                        "generationConfig",
+                        JSONObject()
+                            .put("responseModalities", JSONArray().put("AUDIO"))
+                            // Native audio picks its language here, not from the prompt. Without
+                            // a languageCode Live answers in English however the instruction is
+                            // worded — which is what a field session on 2026-09-25 heard: scene
+                            // descriptions spoken in English to an Arabic-speaking user, while
+                            // the per-turn instruction said "in Arabic" the whole time.
+                            .put("speechConfig", JSONObject().put("languageCode", SPOKEN_LANGUAGE)),
+                    )
+                    .put(
+                        "systemInstruction",
                         JSONObject().put(
-                            "text",
-                            if (responseMode.carriesLiteralText) {
-                                READING_SYSTEM_INSTRUCTION
-                            } else {
-                                SYSTEM_INSTRUCTION
-                            },
+                            "parts",
+                            JSONArray().put(JSONObject().put("text", SYSTEM_INSTRUCTION)),
                         ),
-                    ),
-                ),
+                    )
+                    .put("outputAudioTranscription", JSONObject())
+                    .put(
+                        "contextWindowCompression",
+                        JSONObject().put("slidingWindow", JSONObject()),
+                    )
+                    .put("sessionResumption", resumption),
             )
-            .put("contextWindowCompression", JSONObject().put("slidingWindow", JSONObject()))
-            .put("sessionResumption", resumption)
-        // Only meaningful for a session that produces audio; a TEXT session has nothing to
-        // transcribe, and the text it returns is the answer itself.
-        if (responseMode.speaksItself) setup.put("outputAudioTranscription", JSONObject())
-        return JSONObject().put("setup", setup).toString()
+            .toString()
     }
 
     private fun videoMessage(base64: String): String =
@@ -817,17 +662,14 @@ class GeminiLiveTransport(
             } else {
                 ""
             }
-            // This session writes rather than speaks, so the instruction says output, not say.
             if (settings.captureProfile == CaptureProfile.FAST_TEXT) {
-                "Write out the currently visible text immediately, starting with the first clear " +
-                    "words. Preserve Arabic, English and numbers exactly as written; do not " +
-                    "translate, transliterate, repair, infer, or describe hidden text. If nothing " +
-                    "is legible, output nothing.$tail"
+                "Read the currently visible text immediately. Start with the first clear words. " +
+                    "Preserve Arabic, English and numbers exactly; do not translate, repair, infer, " +
+                    "or describe hidden text. If nothing is legible, stay silent.$tail"
             } else {
-                "Write out only the literal text visible in the current image, in reading order, " +
-                    "keeping its line breaks and with no preamble. Preserve Arabic, English and " +
-                    "numbers exactly as written. Never infer missing characters. If a word is not " +
-                    "legible, write غير واضح and continue.$tail"
+                "Read only literal text visible in the current image, in reading order, with no " +
+                    "preamble. Preserve Arabic, English and numbers exactly. Never infer missing " +
+                    "characters. If a word is not legible, say غير واضح and continue.$tail"
             }
         }
         AnalysisMode.SCENE_DESCRIPTION -> when (settings.sceneDescriptionStyle) {
@@ -852,7 +694,6 @@ class GeminiLiveTransport(
             socket = null
             setupReady = null
             setupSucceeded = false
-            socketResponseMode = null
             keyFingerprint = null
         }
         synchronized(stateLock) {
@@ -868,7 +709,6 @@ class GeminiLiveTransport(
                 socket = null
                 setupReady = null
                 setupSucceeded = false
-                socketResponseMode = null
                 keyFingerprint = null
             }
         }
@@ -929,23 +769,5 @@ class GeminiLiveTransport(
                 "Respond with useful content immediately and without a preamble. " +
                 "Use only what is visibly supported by the current image. Never invent text, " +
                 "identity, distance, or hidden details. Spoken output must be concise and clear."
-
-        /**
-         * The reading session writes instead of speaking, so nothing here is about a voice. What
-         * it has to protect is the opposite of a description: the answer is the page's own words,
-         * in the page's own scripts, and any rewriting of them is a wrong answer however fluent.
-         */
-        private const val READING_SYSTEM_INSTRUCTION =
-            "You are VisionBridge, a real-time reading assistant for a blind or low-vision user. " +
-                "Your entire output is the literal text visible in the current image, written out " +
-                "exactly as it appears: the same script, the same digits, the same punctuation, " +
-                "the same line breaks and reading order. Never translate, transliterate, " +
-                "summarise, correct spelling, expand abbreviations, or write a number as words. " +
-                "Arabic stays Arabic and Latin stays Latin, including where both appear in one " +
-                "line. Never infer a character you cannot see; write غير واضح in place of an " +
-                "illegible word and carry on. Add no preamble and no commentary. Only when the " +
-                "turn's own instruction explicitly asks for a closing scene sentence may one " +
-                "follow the text, written in Arabic; otherwise write nothing after it. If there " +
-                "is no legible text, output nothing at all."
     }
 }

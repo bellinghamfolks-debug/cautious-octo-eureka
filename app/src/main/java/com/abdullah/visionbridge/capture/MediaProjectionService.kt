@@ -32,6 +32,7 @@ import com.abdullah.visionbridge.capture.vision.Viewport
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.FrameStages
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
+import com.abdullah.visionbridge.data.gemini.LiveTransportRouting
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
@@ -366,7 +367,9 @@ class MediaProjectionService : Service() {
             "imageTimestampNanos" to imageTimestampNanos,"captureClockBasis" to "image_reader_acquisition"))
         val settings = activeSettings
         // Capture scheduling is independent of speech; every cloud request owns one image.
-        val cloudLive = settings.mode == AnalysisMode.SCENE_DESCRIPTION || !settings.useLocalOcr
+        // One rule decides the lane, shared with the transport that would otherwise refuse the
+        // frame after it arrived — see LiveTransportRouting for why reading is not on Live.
+        val cloudLive = LiveTransportRouting.carriedByLive(settings)
         val now = System.currentTimeMillis()
 
         DiagnosticHub.record(
@@ -387,8 +390,7 @@ class MediaProjectionService : Service() {
             // SMART_TARGET_SCENE_OBSERVER_RATE_V381: sample locally for target switching at
             // ~4 Hz. GeminiLiveSession still enforces its own 1 FPS transport limit, so this
             // improves interruption reaction time without increasing model traffic.
-            cloudLive && settings.mode == AnalysisMode.SCENE_DESCRIPTION -> 260L
-            cloudLive -> 120L
+            cloudLive -> 260L
             settings.mode == AnalysisMode.SCENE_DESCRIPTION -> SCENE_FRAME_INTERVAL_MS
             settings.captureProfile == CaptureProfile.FAST_TEXT -> FAST_FRAME_INTERVAL_MS
             else -> STABLE_FRAME_INTERVAL_MS
