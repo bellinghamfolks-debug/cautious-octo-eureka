@@ -10,16 +10,13 @@ import org.junit.Test
 /**
  * Which lane a frame takes.
  *
- * This is the rule that build 53 got wrong, at the user's expense. Reading was put on the Live
- * socket and asked for TEXT; the setup was accepted and the model then produced nothing at all —
- * three frames sent, no content, no turnComplete, no error, a socket read timing out at 30.6 s,
- * and every reconnect after it closing 1011 "Internal error encountered." The Live model answers
- * in native audio and cannot answer a reading.
+ * One object answers it because two callers ask: the capture loop picks a lane before doing any
+ * work, and the transport refuses whatever reaches it anyway. When those disagreed, a frame entered
+ * the Live lane, was refused inside it, and fell back — at a four-second setup timeout per frame.
  *
- * The rule lives in one object because the two callers must not be able to disagree: the capture
- * loop picks the lane before doing any work, and the transport refuses whatever reaches it anyway.
- * When they were written separately, reading entered the Live lane, was refused inside it, and fell
- * back — at a four-second setup timeout per frame while the socket was unhealthy.
+ * Both modes stream over Live. Whether a *reading* can be streamed is decided by the model, at
+ * connection time, by [LiveModelDirectory] and the transport's first-token deadline — never by
+ * quietly routing reading somewhere slower.
  */
 class LiveTransportRoutingTest {
 
@@ -36,39 +33,51 @@ class LiveTransportRoutingTest {
     )
 
     @Test
-    fun `describing a scene goes to Live, where native audio is the point`() {
+    fun `describing a scene streams over Live`() {
         assertTrue(LiveTransportRouting.carriedByLive(settings(AnalysisMode.SCENE_DESCRIPTION)))
     }
 
     /**
-     * The regression this file exists for. No combination of the other settings may put a reading
-     * back on a socket that answers in synthesised speech.
+     * The requirement this file defends: reading is streamed too. Build 54 sent it down the SSE
+     * lane to get correct text, which cost the live response the user asked for; correctness now
+     * comes from choosing the right model instead of from leaving the socket.
      */
     @Test
-    fun `reading never goes to Live, whatever else is set`() {
-        for (forceCellular in listOf(false, true)) {
-            for (useLocalOcr in listOf(false, true)) {
-                for (profile in CaptureProfile.entries) {
-                    val current = settings(
-                        AnalysisMode.TEXT_READING, forceCellular, useLocalOcr, profile,
-                    )
-                    assertFalse(
-                        "reading reached Live with cellular=$forceCellular local=$useLocalOcr " +
-                            "profile=$profile",
-                        LiveTransportRouting.carriedByLive(current),
-                    )
-                }
-            }
+    fun `reading streams over Live at every capture profile`() {
+        for (profile in CaptureProfile.entries) {
+            assertTrue(
+                "reading left the live lane at profile $profile",
+                LiveTransportRouting.carriedByLive(
+                    settings(AnalysisMode.TEXT_READING, captureProfile = profile),
+                ),
+            )
         }
     }
 
-    /** Live opens its own socket, which the per-request cellular binding does not cover. */
+    /** Choosing the on-device reader is a choice about where screen content goes. */
     @Test
-    fun `forcing cellular keeps even a description off Live`() {
+    fun `the on-device reader keeps reading off the network`() {
         assertFalse(
             LiveTransportRouting.carriedByLive(
-                settings(AnalysisMode.SCENE_DESCRIPTION, forceCellular = true),
+                settings(AnalysisMode.TEXT_READING, useLocalOcr = true),
             ),
         )
+        // Describing has no on-device engine, so that setting cannot divert it.
+        assertTrue(
+            LiveTransportRouting.carriedByLive(
+                settings(AnalysisMode.SCENE_DESCRIPTION, useLocalOcr = true),
+            ),
+        )
+    }
+
+    /** Live holds one socket open; the per-request cellular binding does not cover it. */
+    @Test
+    fun `forcing cellular takes every mode off Live`() {
+        for (mode in AnalysisMode.entries) {
+            assertFalse(
+                "$mode stayed on Live while pinned to cellular",
+                LiveTransportRouting.carriedByLive(settings(mode, forceCellular = true)),
+            )
+        }
     }
 }

@@ -390,7 +390,8 @@ class MediaProjectionService : Service() {
             // SMART_TARGET_SCENE_OBSERVER_RATE_V381: sample locally for target switching at
             // ~4 Hz. GeminiLiveSession still enforces its own 1 FPS transport limit, so this
             // improves interruption reaction time without increasing model traffic.
-            cloudLive -> 260L
+            cloudLive && settings.mode == AnalysisMode.SCENE_DESCRIPTION -> 260L
+            cloudLive -> 120L
             settings.mode == AnalysisMode.SCENE_DESCRIPTION -> SCENE_FRAME_INTERVAL_MS
             settings.captureProfile == CaptureProfile.FAST_TEXT -> FAST_FRAME_INTERVAL_MS
             else -> STABLE_FRAME_INTERVAL_MS
