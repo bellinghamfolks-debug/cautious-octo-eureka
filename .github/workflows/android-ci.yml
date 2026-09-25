@@ -94,6 +94,7 @@ jobs:
             echo "Restored the existing signing identity."
           else
             password="$(openssl rand -hex 32)"
+            echo "::add-mask::$password"
             printf '%s' "$password" > signing/visionbridge-signing-v1.pass
             keytool -genkeypair -noprompt \
               -keystore signing/visionbridge-signing-v1.jks \
@@ -108,9 +109,13 @@ jobs:
               --notes 'Private CI-only signing material. Never publish this draft release.'
             echo "Created the persistent signing identity."
           fi
-          # Written to the environment file, never echoed: a printed password is a password in
-          # the public run log forever.
-          echo "VISIONBRIDGE_KEYSTORE_PASSWORD=$(cat signing/visionbridge-signing-v1.pass)" >> "$GITHUB_ENV"
+          # Registering the mask is what actually keeps the password out of the log. Writing it
+          # to the environment file is not enough on its own: GitHub prints the whole env block
+          # at the head of every later step, so an unmasked value ends up in a public run log
+          # once per step. It leaked exactly that way in run 513 before this line existed.
+          password="$(cat signing/visionbridge-signing-v1.pass)"
+          echo "::add-mask::$password"
+          echo "VISIONBRIDGE_KEYSTORE_PASSWORD=$password" >> "$GITHUB_ENV"
           echo "STABLE_SIGNING=yes" >> "$GITHUB_ENV"
       - name: Assemble isolated ARM64 test app
         run: ./gradlew --no-daemon lintValidation assembleValidation
