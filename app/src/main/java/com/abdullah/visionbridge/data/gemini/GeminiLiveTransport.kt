@@ -77,11 +77,13 @@ class GeminiLiveTransport(
     @Volatile private var setupSucceeded = false
 
     /**
-     * What the open socket was set up to answer with. `responseModalities` is part of the setup
-     * payload and cannot be changed on a live session, so switching between reading and describing
-     * means a new socket rather than a different instruction.
+     * The configuration the open socket was set up with, as [socketProfile] spells it.
+     *
+     * The modality, the model, the system instruction and the declared tools are all fixed at the
+     * handshake and cannot be changed on a live session, so switching between reading and
+     * describing means a new socket rather than a different instruction.
      */
-    @Volatile private var socketResponseMode: LiveResponseMode? = null
+    @Volatile private var socketConfiguration: String? = null
 
     /** When the last handshake gave up, so a retry costs one attempt per interval, not per frame. */
     @Volatile private var lastSetupFailureAtElapsedMs = 0L
@@ -175,6 +177,15 @@ class GeminiLiveTransport(
         java.util.concurrent.ConcurrentHashMap<String, Boolean>(),
     )
 
+    /**
+     * Whether this turn's text already came back through the tool.
+     *
+     * The two channels answer the same frame, and the tool's answer is the better one. Letting the
+     * speech transcript append to it afterwards would put a summary of the page onto the end of the
+     * page itself.
+     */
+    @Volatile private var toolTextForTurn = false
+
     /** Whether the drop from exact text to spoken transcript has already been announced. */
     private val degradedToAudio = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -233,7 +244,7 @@ class GeminiLiveTransport(
         val started = SystemClock.elapsedRealtimeNanos()
         val plan = resolvePlan(apiKey, settings) ?: return
         val (model, responseMode) = plan
-        val connected = ensureConnected(apiKey, model, responseMode)
+        val connected = ensureConnected(apiKey, model, responseMode, settings.mode)
         DiagnosticHub.record(
             "LIVE_PRECONNECT_COMPLETED",
             mapOf(
@@ -325,7 +336,7 @@ class GeminiLiveTransport(
         }
         val (model, responseMode) = plan
         return@withLock coroutineScope {
-            val connection = async(Dispatchers.IO) { ensureConnected(apiKey, model, responseMode) }
+            val connection = async(Dispatchers.IO) { ensureConnected(apiKey, model, responseMode, settings.mode) }
             val encodedTask = async(Dispatchers.Default) { encoder.encode(bitmap, settings) }
             val connected = connection.await()
             val encoded = encodedTask.await()
@@ -393,6 +404,7 @@ class GeminiLiveTransport(
                 staleBoundaryBlocked = superseding
                 firstAudioSeen = false
                 firstTextSeen = false
+                toolTextForTurn = false
                 transcript = StringBuilder()
                 speechBuffer.reset()
                 responseInFlight = true
@@ -536,6 +548,7 @@ class GeminiLiveTransport(
             staleBoundaryBlocked = false
             firstAudioSeen = false
             firstTextSeen = false
+            toolTextForTurn = false
             transcript = StringBuilder()
             speechBuffer.reset()
         }
@@ -697,7 +710,9 @@ class GeminiLiveTransport(
         apiKey: String,
         model: String,
         responseMode: LiveResponseMode,
+        analysisMode: AnalysisMode,
     ): Boolean {
+        val profile = socketProfile(model, responseMode, analysisMode)
         val fingerprint = fingerprint(apiKey)
         val ready: CompletableDeferred<Boolean>
         synchronized(socketLock) {
@@ -712,26 +727,22 @@ class GeminiLiveTransport(
                 socket = null
                 setupReady = null
                 setupSucceeded = false
-                socketResponseMode = null
+                socketConfiguration = null
                 resumptionHandle = null
             }
             activeModel = model
             // The modality is part of the setup handshake. A session opened to speak cannot be
             // asked to write instead, so a mode change is a new socket, not a new instruction.
-            if (socket != null && socketResponseMode != null && socketResponseMode != responseMode) {
+            if (socket != null && socketConfiguration != null && socketConfiguration != profile) {
                 DiagnosticHub.record(
-                    "LIVE_SOCKET_MODE_SWITCHED",
-                    mapOf(
-                        "from" to socketResponseMode?.name,
-                        "to" to responseMode.name,
-                        "modality" to responseMode.modality,
-                    ),
+                    "LIVE_SOCKET_PROFILE_SWITCHED",
+                    mapOf("from" to socketConfiguration, "to" to profile),
                 )
-                socket?.close(NORMAL_CLOSE_CODE, "response_modality_changed")
+                socket?.close(NORMAL_CLOSE_CODE, "session_configuration_changed")
                 socket = null
                 setupReady = null
                 setupSucceeded = false
-                socketResponseMode = null
+                socketConfiguration = null
                 resumptionHandle = null
             }
             val existing = setupReady
@@ -762,12 +773,12 @@ class GeminiLiveTransport(
                 ready = deferred
                 setupReady = deferred
                 setupSucceeded = false
-                socketResponseMode = responseMode
+                socketConfiguration = profile
                 keyFingerprint = fingerprint
                 closeInterpreted = null
                 transportSessionId = UUID.randomUUID().toString()
                 val request = Request.Builder().url("$LIVE_ENDPOINT?key=$apiKey").build()
-                socket = client.newWebSocket(request, listener(fingerprint, model, responseMode, deferred))
+                socket = client.newWebSocket(request, listener(fingerprint, model, responseMode, analysisMode, deferred))
                 DiagnosticHub.record(
                     "LIVE_SOCKET_CONNECTING",
                     mapOf(
@@ -812,10 +823,11 @@ class GeminiLiveTransport(
         expectedFingerprint: String,
         model: String,
         responseMode: LiveResponseMode,
+        analysisMode: AnalysisMode,
         ready: CompletableDeferred<Boolean>,
     ): WebSocketListener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
-            val payload = setupMessage(model, responseMode)
+            val payload = setupMessage(model, responseMode, analysisMode)
             // One-shot: it exists to get past the handle that broke the previous attempt.
             suppressResumption = false
             if (!webSocket.send(payload) && !ready.isCompleted) ready.complete(false)
@@ -983,9 +995,13 @@ class GeminiLiveTransport(
         root.optJSONObject("sessionResumptionUpdate")?.let { update ->
             val resumable = update.optBoolean("resumable", false)
             val handle = update.optString("newHandle").takeIf { it.isNotBlank() }
+            // A handle issued while the model is generating or running a function call is
+            // documented to lose data when resumed from, and the server marks those as not
+            // resumable. Only a handle the server vouches for is kept.
             if (resumable && handle != null) {
                 resumptionHandle = handle
-                resumptionOwner = socketResponseMode?.let { "$activeModel/${it.modality}" }
+                // Bound to the configuration that issued it, so it is never replayed elsewhere.
+                resumptionOwner = socketConfiguration
             }
             DiagnosticHub.record(
                 "LIVE_SESSION_RESUMPTION_UPDATE",
@@ -1003,7 +1019,27 @@ class GeminiLiveTransport(
                 mapOf(
                     "timeLeft" to goAway.optString("timeLeft"),
                     "hasResumptionHandle" to !resumptionHandle.isNullOrBlank(),
+                    "willReconnectOnNextFrame" to true,
                 ),
+            )
+            // The warning is the moment to move, not the close frame that follows it. By the time
+            // the socket closes the handover is already late, and the resumption handle is what
+            // makes the next socket continue this conversation rather than start a new one.
+            synchronized(socketLock) {
+                setupSucceeded = false
+                setupReady = null
+            }
+            retryImmediately = true
+        }
+
+        root.optJSONObject("toolCall")?.let { handleToolCall(it) }
+
+        // Arrives when the client interrupted a server turn. A reply for a cancelled call is
+        // meaningless, and the call itself belongs to speech the user is no longer hearing.
+        root.optJSONObject("toolCallCancellation")?.let { cancellation ->
+            DiagnosticHub.record(
+                "LIVE_TOOL_CALL_CANCELLED",
+                mapOf("ids" to cancellation.optJSONArray("ids")?.length()),
             )
         }
 
@@ -1015,6 +1051,7 @@ class GeminiLiveTransport(
                 staleBoundaryBlocked = false
                 firstAudioSeen = false
                 firstTextSeen = false
+                toolTextForTurn = false
                 transcript = StringBuilder()
                 // Held-back text belongs to the generation that was just cut off. Speaking it now
                 // would attach the tail of an abandoned reading to the one replacing it.
@@ -1129,6 +1166,94 @@ class GeminiLiveTransport(
     }
 
     /**
+     * Takes the page's own characters out of a function call, and answers the call.
+     *
+     * This is the channel that a spoken session cannot otherwise provide. The arguments are JSON
+     * generated as output tokens, so digits arrive as digits, Latin stays Latin, and the line
+     * structure of the page survives — none of which is true of a transcript of synthesised speech.
+     *
+     * The reply is sent from this same loop, immediately. A call left unanswered has no documented
+     * server-side timeout, and under a blocking declaration it would halt generation; `SILENT`
+     * scheduling puts the acknowledgement into context without provoking the model into talking
+     * about it.
+     */
+    private fun handleToolCall(toolCall: JSONObject) {
+        val calls = toolCall.optJSONArray("functionCalls") ?: return
+        for (index in 0 until calls.length()) {
+            val call = calls.optJSONObject(index) ?: continue
+            val name = call.optString("name")
+            val id = call.optString("id").takeIf { it.isNotBlank() }
+            // Answer every call, including one this build does not recognise: an unanswered call is
+            // a risk to the turn, and a stranger's name is not a reason to leave it hanging.
+            socket?.send(LiveReadingTool.acknowledgement(id, name))
+            if (name != LiveReadingTool.NAME) {
+                DiagnosticHub.record("LIVE_TOOL_CALL_UNKNOWN", mapOf("name" to name))
+                continue
+            }
+            val args = call.optJSONObject("args")
+            val text = LiveReadingTool.textFrom(args)
+            DiagnosticHub.record(
+                "LIVE_TOOL_TEXT_REPORTED",
+                (activeTurn?.fields() ?: emptyMap()) + mapOf(
+                    "model" to activeModel,
+                    "characters" to text.length,
+                    "lines" to (args?.optJSONArray(LiveReadingTool.LINES)?.length() ?: 0),
+                    "unreadable" to (args?.optBoolean(LiveReadingTool.UNREADABLE) ?: false),
+                    "hasId" to (id != null),
+                ),
+            )
+            if (text.isNotBlank()) publishReportedText(text)
+        }
+    }
+
+    /**
+     * Publishes and speaks a reading that came back as tool arguments.
+     *
+     * Unlike the transcript channel, this text does not stream — the arguments arrive in one
+     * message — so it replaces the turn's text outright rather than being appended to it, and it is
+     * spoken by the app's own bilingual engine, which is what puts an English word on the page into
+     * an English voice.
+     */
+    private fun publishReportedText(text: String) {
+        var turn: AnalysisTurn? = null
+        synchronized(stateLock) {
+            val current = activeTurn
+            if (staleBoundaryBlocked || current == null || gate.rejection(current) != null) return
+            // This is the authoritative reading of the frame; anything the voice said about it is
+            // a summary, and keeping both would say the same page twice.
+            transcript = StringBuilder(text)
+            speechBuffer.reset()
+            toolTextForTurn = true
+            turn = current
+        }
+        val bound = turn ?: return
+        markAnswering(activeModel, activeResponseMode)
+        runtime.result(
+            AnalysisResult(
+                text = text,
+                source = AnalysisSource.GEMINI,
+                language = if (text.any { it in '\u0600'..'\u06FF' }) "mixed" else "en",
+                turn = bound,
+            )
+        )
+        if (speechEnabled) {
+            // The model was asked not to read the text out, so the exact characters are spoken
+            // here — which is the whole point, since its voice is what mangled them.
+            tts.speakTurn(
+                AnalysisResult(
+                    text = text,
+                    source = AnalysisSource.GEMINI,
+                    language = if (text.any { it in '\u0600'..'\u06FF' }) "mixed" else "en",
+                    turn = bound,
+                ),
+                speechRate,
+                "READ_TEXT",
+                spokenText = text,
+            )
+        }
+    }
+
+    /**
      * Publishes one growing answer, whichever channel it arrived on.
      *
      * Both channels stream a fragment at a time and both accumulate into the same transcript, so
@@ -1144,6 +1269,9 @@ class GeminiLiveTransport(
         synchronized(stateLock) {
             val current = activeTurn
             if (staleBoundaryBlocked || current == null || gate.rejection(current) != null) return
+            // The tool already gave this frame's exact characters; a spoken summary must not be
+            // appended to them.
+            if (toolTextForTurn && !fromLiteralModelText) return
             transcript.append(delta)
             fullText = transcript.toString().trim()
             toSpeak = if (fromLiteralModelText) speechBuffer.take(delta) else ""
@@ -1207,22 +1335,39 @@ class GeminiLiveTransport(
         )
     }
 
-    private fun setupMessage(model: String, responseMode: LiveResponseMode): String {
+    private fun setupMessage(
+        model: String,
+        responseMode: LiveResponseMode,
+        analysisMode: AnalysisMode,
+    ): String {
+        val profile = socketProfile(model, responseMode, analysisMode)
         val resumption = JSONObject()
-        // Only ever offered back to the exact session that issued it.
-        if (resumptionOwner == "$model/${responseMode.modality}" && !suppressResumption) {
+        // Only ever offered back to the exact session that issued it. A handle is a pointer into
+        // one server-side session; replayed onto a different model, modality or instruction set it
+        // does not resume anything — the server restores the old configuration and validates the
+        // merge, which is how a request for TEXT alone came back refused as "(AUDIO, TEXT)".
+        if (resumptionOwner == profile && !suppressResumption) {
             resumptionHandle?.takeIf { it.isNotBlank() }?.let { resumption.put("handle", it) }
         }
+        val reading = analysisMode == AnalysisMode.TEXT_READING
         val generationConfig = JSONObject()
             .put("responseModalities", JSONArray().put(responseMode.modality))
-        // gemini-2.5-flash-native-audio-* refused ar-XA outright: "Unsupported language code
-        // 'ar-XA' for model ...". Asked again without one, the model picks its own voice, which is
-        // a worse Arabic than asking for it but far better than no description at all.
+            // The single most important accuracy setting, and it was never set. HIGH is the level
+            // Google names for reading dense text and small detail out of video frames; without it
+            // the frame is tokenised at an undocumented default. Every tile is resampled to 768px
+            // regardless, so this — not the JPEG's pixel count — is what decides legibility.
+            .put("mediaResolution", MEDIA_RESOLUTION)
+            // A reading is transcription. Sampling has nothing to offer it but paraphrase.
+            .put("temperature", 0)
+            // The reported text is generated as ordinary output tokens, so a tight ceiling would
+            // truncate either the reading or the speech. Build 48 lost every scene response to
+            // exactly that.
+            .put("maxOutputTokens", MAX_OUTPUT_TOKENS)
+        // The native-audio family rejects a language code as a class — not only ar-XA but en-GB and
+        // es-ES too — and chooses its own language instead. Where it is accepted it is still the
+        // only reliable way to get Arabic speech, so it is asked for until refused, and the system
+        // instruction carries the language for the models that refuse.
         if (responseMode.speaksItself && model !in languageUnsupported) {
-            // Native audio picks its language here, not from the prompt. Without a languageCode
-            // Live answers in English however the instruction is worded — which is what a field
-            // session on 2026-09-25 heard: scene descriptions spoken in English to an
-            // Arabic-speaking user, while the per-turn instruction said "in Arabic" the whole time.
             generationConfig.put(
                 "speechConfig",
                 JSONObject().put("languageCode", SPOKEN_LANGUAGE),
@@ -1230,8 +1375,8 @@ class GeminiLiveTransport(
         }
         // Some models will not open a session without being told how much to think, and say so on
         // close rather than in any listing: gemini-3.8-live-extended-thinking refused with
-        // "Thinking level must be specified for this model." A name carrying "thinking" is asked
-        // the same way from the first attempt, so that answer costs a socket only once.
+        // "Thinking level must be specified for this model." Every other model rejects the field
+        // outright, so it is sent only where a name or a refusal has asked for it.
         if (model in thinkingLevelRequired || model.lowercase().contains("thinking")) {
             generationConfig.put(
                 "thinkingConfig",
@@ -1248,22 +1393,54 @@ class GeminiLiveTransport(
                     JSONArray().put(
                         JSONObject().put(
                             "text",
-                            if (responseMode.carriesLiteralText) {
-                                READING_SYSTEM_INSTRUCTION
-                            } else {
-                                SYSTEM_INSTRUCTION
+                            when {
+                                responseMode.carriesLiteralText -> READING_SYSTEM_INSTRUCTION
+                                reading -> SPOKEN_READING_SYSTEM_INSTRUCTION
+                                else -> SYSTEM_INSTRUCTION
                             },
                         ),
                     ),
                 ),
             )
-            .put("contextWindowCompression", JSONObject().put("slidingWindow", JSONObject()))
+            // A sibling of generationConfig, not a member of it — a silent misplacement otherwise.
+            // An audio-and-video session's context is capped at about two minutes without this.
+            // The window keeps the suffix and exempts the system instruction, so it cannot drop
+            // the frame being answered.
+            .put(
+                "contextWindowCompression",
+                JSONObject()
+                    .put("triggerTokens", COMPRESSION_TRIGGER_TOKENS)
+                    .put(
+                        "slidingWindow",
+                        JSONObject().put("targetTokens", COMPRESSION_TARGET_TOKENS),
+                    ),
+            )
+            // Must be present or the server never sends a resumption update at all.
             .put("sessionResumption", resumption)
         // Only meaningful for a session that produces audio; a TEXT session has nothing to
-        // transcribe, and the text it returns is the answer itself.
+        // transcribe, and the text it returns is the answer itself. On a reading session it stays
+        // as the fallback channel and as the cross-check against what the tool reported.
         if (responseMode.speaksItself) setup.put("outputAudioTranscription", JSONObject())
+        // A spoken session cannot return the page's characters in its transcript, but it can hand
+        // them over as the arguments of a function call, which are JSON rather than speech.
+        if (reading && responseMode.speaksItself) {
+            setup.put("tools", LiveReadingTool.declaration())
+        }
         return JSONObject().put("setup", setup).toString()
     }
+
+    /**
+     * The identity of a session's configuration.
+     *
+     * Everything in it is fixed at the handshake — the model, the modality, the system instruction
+     * and the declared tools — so a change to any of them is a new socket, and a resumption handle
+     * issued under one is meaningless under another.
+     */
+    private fun socketProfile(
+        model: String,
+        responseMode: LiveResponseMode,
+        analysisMode: AnalysisMode,
+    ): String = "$model/${responseMode.modality}/${analysisMode.name}"
 
     private fun videoMessage(base64: String): String =
         JSONObject()
@@ -1343,7 +1520,7 @@ class GeminiLiveTransport(
             socket = null
             setupReady = null
             setupSucceeded = false
-            socketResponseMode = null
+            socketConfiguration = null
             keyFingerprint = null
         }
         synchronized(stateLock) {
@@ -1359,7 +1536,7 @@ class GeminiLiveTransport(
                 socket = null
                 setupReady = null
                 setupSucceeded = false
-                socketResponseMode = null
+                socketConfiguration = null
                 keyFingerprint = null
             }
         }
@@ -1412,6 +1589,33 @@ class GeminiLiveTransport(
          * account which genuinely cannot stream audio stops re-opening sockets and settles on SSE.
          */
         private const val MAX_AUDIO_FLOOR_RESTORES = 3
+
+        /**
+         * How much of each frame the model is allowed to see.
+         *
+         * HIGH is the level Google names for reading dense text and small detail out of video, and
+         * until build 61 this field was never sent at all, so every frame was tokenised at an
+         * undocumented default. It costs more tokens per frame, which is what the context window
+         * compression below is for.
+         */
+        private const val MEDIA_RESOLUTION = "MEDIA_RESOLUTION_HIGH"
+
+        /**
+         * Generous on purpose. The reported text is generated as ordinary output tokens, so a tight
+         * ceiling truncates the reading or the speech — which is exactly how build 48 lost every
+         * scene response, at 343 median thinking tokens against a ceiling of 360.
+         */
+        private const val MAX_OUTPUT_TOKENS = 8192
+
+        /**
+         * When the context starts being trimmed, and to what.
+         *
+         * An audio-and-video session's context is capped at about two minutes without compression.
+         * The window keeps the suffix and exempts the system instruction, so trimming cannot lose
+         * the frame being answered or the instruction not to translate.
+         */
+        private const val COMPRESSION_TRIGGER_TOKENS = 32_000
+        private const val COMPRESSION_TARGET_TOKENS = 12_000
 
 
         /**
@@ -1469,6 +1673,29 @@ class GeminiLiveTransport(
                 "Respond with useful content immediately and without a preamble. " +
                 "Use only what is visibly supported by the current image. Never invent text, " +
                 "identity, distance, or hidden details. Spoken output must be concise and clear."
+
+        /**
+         * A reading on a spoken session: the voice gives one short line, and the page's own
+         * characters come back through the tool, where nothing can reshape them.
+         *
+         * The language is stated the way the native-audio family requires, in capitals and twice,
+         * because those models reject `speechConfig.languageCode` as a class and choose their own
+         * language from the instruction instead.
+         */
+        private const val SPOKEN_READING_SYSTEM_INSTRUCTION =
+            "RESPOND IN ARABIC. YOU MUST RESPOND UNMISTAKABLY IN ARABIC. " +
+                "You are VisionBridge, assisting a blind or low-vision user. " +
+                "Whenever any readable text is visible you MUST call the function " +
+                "report_visible_text. In that call, reproduce every character exactly as printed, " +
+                "in its original script: never translate, never transliterate Latin words into " +
+                "Arabic letters or Arabic words into Latin letters, keep every digit in the form " +
+                "printed whether Arabic-Indic or Latin, keep the punctuation, and give one array " +
+                "entry per visual line from top to bottom. Where a span is illegible write the " +
+                "marker [؟] in its place rather than guessing, and set unreadable to true. " +
+                "Do not read the text out loud and do not spell it: say only one very short " +
+                "Arabic sentence naming what kind of text it is, and nothing else. " +
+                "If no text is legible, say so in one short Arabic sentence and do not call the " +
+                "function."
 
         /**
          * The reading session writes instead of speaking, so nothing here is about a voice. What

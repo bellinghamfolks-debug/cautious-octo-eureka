@@ -110,8 +110,17 @@ class LiveFrameEncoder {
         const val TEXT_FAST_EDGE = 1440
         const val SCENE_BRIEF_EDGE = 640
         const val SCENE_COMPREHENSIVE_EDGE = 760
-        const val TEXT_STABLE_QUALITY = 96
-        const val TEXT_FAST_QUALITY = 92
+        /**
+         * Lowered from 96 in build 61.
+         *
+         * Gemini resamples every tile to 768 px regardless of what it is sent, so the last few
+         * points of JPEG quality buy no legibility at all — while the bytes are paid for on a
+         * mobile uplink before the model has seen anything. The field measured 1.8-2.1 s to first
+         * audio on a model whose thinking level cannot be lowered, which leaves upload size as the
+         * one remaining lever on that delay.
+         */
+        const val TEXT_STABLE_QUALITY = 90
+        const val TEXT_FAST_QUALITY = 88
         const val SCENE_QUALITY = 74
     }
 }
