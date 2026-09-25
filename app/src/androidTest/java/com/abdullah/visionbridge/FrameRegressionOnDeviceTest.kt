@@ -84,7 +84,13 @@ class FrameRegressionOnDeviceTest {
                 assertEquals(hash,encoded.imageHash)
                 val decoded=BitmapFactory.decodeByteArray(encoded.bytes,0,encoded.bytes.size)
                 try { assertEquals(encoded.width,decoded.width);assertEquals(encoded.height,decoded.height) } finally { decoded.recycle() }
-                assertTrue(encoded.quality>=92)
+                // The floor moved from 92 to 88 in build 61, deliberately. Gemini resamples every
+                // image tile to 768px whatever it is sent, so the top few points of JPEG quality
+                // buy no legibility — while their bytes are paid for on a mobile uplink before the
+                // model has seen the frame at all, and that upload is the one remaining lever on
+                // the 1.8-2.1s to first audio measured in the field. The floor still exists: below
+                // this, blocking artefacts start closing up Arabic letter joins.
+                assertTrue("quality ${encoded.quality} is below the OCR floor",encoded.quality>=88)
                 val request=FrameTurnTransport.payload("synthetic-image",settings)
                 assertEquals(1,request.getJSONArray("contents").length())
                 val parts=request.getJSONArray("contents").getJSONObject(0).getJSONArray("parts")
