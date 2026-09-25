@@ -42,7 +42,7 @@ import com.abdullah.visionbridge.domain.model.AnalysisSource
 /**
  * The minimal operating surface: what the app is doing, what it should look for, and start or stop.
  *
- * Everything that is configured once and then left alone lives in [SettingsScreen]. A screen reader
+ * Everything that is configured once and then left alone lives in [VerifiedSettingsScreen]. A screen reader
  * user reaches the start control after three swipes instead of scrolling past a key field, a model
  * picker, a slider and six switches on every single launch.
  */
@@ -188,6 +188,7 @@ private fun StatusCard(state: MainUiState) {
                     if (!state.hasApiKey && !state.settings.useLocalOcr) {
                         append("لا يوجد Gemini API Key محفوظ، وPP-OCRv5 غير مفعّل. ")
                     }
+                    state.capture.live?.let { append("${it.summary}. ") }
                     state.capture.error?.let { append("الخطأ: $it. ") }
                     state.capture.lastResult?.text?.let { append("آخر نتيجة: $it") }
                 }
@@ -198,6 +199,14 @@ private fun StatusCard(state: MainUiState) {
             Text(state.capture.status)
             Text(engineSummary(state))
             if (state.capture.isProcessing) Text("جارٍ تحليل أحدث لقطة")
+            // How the answer is being delivered, which until build 63 could only be learned by
+            // exporting a diagnostic bundle. It decides both how fast a reading arrives and
+            // whether its digits can be trusted, so it belongs on the surface the user is on.
+            state.capture.live?.let { live ->
+                Text("طريقة التسليم", style = MaterialTheme.typography.titleMedium)
+                Text(live.summary)
+                if (live.model.isNotBlank()) Text("النموذج: ${live.model}")
+            }
             if (!state.hasApiKey && !state.settings.useLocalOcr) {
                 Text("يلزم Gemini API Key أو تفعيل PP-OCRv5 من الإعدادات.")
             }

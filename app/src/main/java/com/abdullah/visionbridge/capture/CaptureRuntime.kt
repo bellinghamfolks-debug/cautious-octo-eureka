@@ -2,6 +2,7 @@ package com.abdullah.visionbridge.capture
 
 import com.abdullah.visionbridge.domain.model.AnalysisResult
 import com.abdullah.visionbridge.domain.model.CaptureState
+import com.abdullah.visionbridge.domain.model.LiveStatus
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
 import com.abdullah.visionbridge.data.diagnostics.FrameStages
 import android.os.SystemClock
@@ -40,6 +41,30 @@ class CaptureRuntime {
         copy(isRunning = true, status = "مشاركة الشاشة فعّالة", error = null)
     }
     fun processing(active: Boolean) = update { copy(isProcessing = active) }
+
+    /**
+     * Records how the current answer is being delivered, for the screen to say.
+     *
+     * Merged rather than replaced, because the facts arrive from different places at different
+     * moments: the model and the lane are known when a frame is sent, the latency when the first
+     * word comes back, and whether the characters were exact only when the reading tool reports.
+     */
+    fun liveStatus(
+        model: String? = null,
+        streaming: Boolean? = null,
+        exactText: Boolean? = null,
+        firstAnswerMs: Double? = null,
+    ) = update {
+        val current = live ?: LiveStatus()
+        copy(
+            live = current.copy(
+                model = model ?: current.model,
+                streaming = streaming ?: current.streaming,
+                exactText = exactText ?: current.exactText,
+                firstAnswerMs = firstAnswerMs ?: current.firstAnswerMs,
+            ),
+        )
+    }
     fun result(value: AnalysisResult): Boolean {
         val runtimeStartedAt = SystemClock.elapsedRealtimeNanos()
         val turn = value.turn ?: run {

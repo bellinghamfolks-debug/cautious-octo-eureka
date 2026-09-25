@@ -23,7 +23,10 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
     override val settings: Flow<AppSettings> = context.settingsDataStore.data.map { values ->
         AppSettings(
             mode = AnalysisMode.fromStored(values[Keys.MODE]),
-            // There is one Gemini model in this build. Old stored model preferences are ignored.
+            // Constants, not preferences: there is one Gemini model in this build, the live
+            // socket cannot be bound per request, and strict verification governs only the
+            // fallback path. Nothing writes them, so nothing reads them back — and as of build 63
+            // no screen offers a control that would quietly do nothing.
             model = AppSettings.CURRENT_FRAME_MODEL,
             forceCellular = false,
             speechEnabled = values[Keys.SPEECH] ?: true,
@@ -43,16 +46,7 @@ class SettingsRepositoryImpl(private val context: Context) : SettingsRepository 
 
     override suspend fun setMode(mode: AnalysisMode) = update(Keys.MODE, mode.name)
 
-    override suspend fun setModel(model: String) {
-        require(model == AppSettings.CURRENT_FRAME_MODEL) { "هذا الإصدار يستخدم Gemini 3.6 Flash" }
-        // Intentionally no persistence. Model selection was removed from the product.
-    }
-
-    override suspend fun setForceCellular(enabled: Boolean) = Unit
-
     override suspend fun setSpeechEnabled(enabled: Boolean) = update(Keys.SPEECH, enabled)
-
-    override suspend fun setTrustGateEnabled(enabled: Boolean) = Unit
 
     override suspend fun setCaptureProfile(profile: CaptureProfile) = update(Keys.CAPTURE_PROFILE, profile.name)
     override suspend fun setInterruptSpeechOnVisualChange(enabled: Boolean) =

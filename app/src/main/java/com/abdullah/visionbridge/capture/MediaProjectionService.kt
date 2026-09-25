@@ -609,6 +609,9 @@ class MediaProjectionService : Service() {
                     "LIVE_FALLBACK_TO_FRAME_SSE",
                     trace.fields(mapOf("reason" to "configuration_requires_sse")),
                 )
+                // The screen says which lane answered, so a slower reading is explained rather
+                // than merely felt.
+                container.runtime.liveStatus(streaming = false, exactText = false)
                 val candidate = container.coordinator.candidate(view, trace, settings, smartDecision)
                 submitLatestFrame(PendingFrame(view, candidate.trace, candidate))
                 return
@@ -656,6 +659,7 @@ class MediaProjectionService : Service() {
                         "LIVE_FALLBACK_TO_FRAME_SSE",
                         trace.fields(mapOf("reason" to "live_transport_unavailable")),
                     )
+                    container.runtime.liveStatus(streaming = false, exactText = false)
                     val candidate = container.coordinator.candidate(view, trace, settings, smartDecision)
                     submitLatestFrame(PendingFrame(view, candidate.trace, candidate))
                 }

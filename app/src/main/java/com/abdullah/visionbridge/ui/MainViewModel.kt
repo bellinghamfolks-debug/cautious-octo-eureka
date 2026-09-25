@@ -118,10 +118,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         DiagnosticHub.record("MODE_SELECTED", mapOf("mode" to mode.name))
     }
-    fun setModel(model: String) = viewModelScope.launch { container.settingsRepository.setModel(model) }
-    fun setForceCellular(enabled: Boolean) = viewModelScope.launch { container.settingsRepository.setForceCellular(enabled) }
     fun setSpeechEnabled(enabled: Boolean) = viewModelScope.launch { container.settingsRepository.setSpeechEnabled(enabled) }
-    fun setTrustGateEnabled(enabled: Boolean) = viewModelScope.launch { container.settingsRepository.setTrustGateEnabled(enabled) }
     fun setCaptureProfile(profile: CaptureProfile) = viewModelScope.launch { container.settingsRepository.setCaptureProfile(profile) }
     fun setInterruptSpeechOnVisualChange(enabled: Boolean) = viewModelScope.launch {
         container.settingsRepository.setInterruptSpeechOnVisualChange(enabled)

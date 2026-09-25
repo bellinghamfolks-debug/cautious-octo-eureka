@@ -180,7 +180,16 @@ fun VerifiedSettingsScreen(
 
                 SectionTitle("قص نافذة النظارة")
                 Text(
-                    "مرجع eSight الحقيقي: في لقطة 1356×610 نافذة الرؤية هي تقريبًا x 68 إلى 1034، و y 76 إلى 533. النسب تُطبّق على دقة الشاشة الحالية.",
+                    "النسب مقيسة من لقطة أفقية 1356×610 لنافذة «شارك رؤيتك»: الكاميرا من x 68 إلى " +
+                        "1034 و y 76 إلى 533، وتُطبّق على دقة الشاشة الحالية.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                // The crop is refused outright when the capture is not the landscape shape it was
+                // measured from — an upright phone camera, for instance. Saying so here is the
+                // difference between a setting that looks active and one that is.
+                Text(
+                    "لا يُطبّق القص إلا على لقطة أفقية بنفس نسبة المرجع. عند رفضه يُسجَّل السبب " +
+                        "في ملف التشخيص باسم esightCalibrationReason.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 ViewportMode.entries.forEach { mode ->
@@ -242,12 +251,6 @@ fun VerifiedSettingsScreen(
                                 modifier = Modifier.fillMaxWidth().height(56.dp),
                             ) { Text(if (selected) "✓ $label" else label) }
                         }
-                        AccessibleSwitchRow(
-                            title = "إيقاف النطق عند تغيّر الهدف",
-                            description = "يعمل في مسار PP-OCR المحلي فقط، حيث يتوفر تتبع الهدف البصري الكامل.",
-                            checked = state.settings.interruptSpeechOnVisualChange,
-                            onCheckedChange = onInterruptSpeechChange,
-                        )
                     }
 
                     SectionTitle("أسلوب التقاط النص")
@@ -289,6 +292,22 @@ fun VerifiedSettingsScreen(
                         )
                     }
                 }
+
+                // Out of the PP-OCR block it was buried in until build 63, where it was unreachable
+                // for anyone using the cloud path — and labelled as local-only, which stopped being
+                // true when Smart Target started governing the live lane as well.
+                SectionTitle("مقاطعة النطق")
+                AccessibleSwitchRow(
+                    title = "إيقاف النطق عند تغيّر الهدف",
+                    description = if (state.settings.interruptSpeechOnVisualChange) {
+                        "عند تأكّد أن الكاميرا انتقلت إلى هدف آخر يتوقف النطق الحالي فورًا. " +
+                            "الاهتزاز والتقريب وتغيّر الإضاءة لا تقاطع وحدها. يعمل في المسارين."
+                    } else {
+                        "الجملة الحالية تُكمل حتى نهايتها وإن انتقلت الكاميرا. يعمل في المسارين."
+                    },
+                    checked = state.settings.interruptSpeechOnVisualChange,
+                    onCheckedChange = onInterruptSpeechChange,
+                )
 
                 SectionTitle("النطق")
                 AccessibleSwitchRow(

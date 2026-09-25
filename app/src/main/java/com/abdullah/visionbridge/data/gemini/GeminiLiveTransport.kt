@@ -449,6 +449,7 @@ class GeminiLiveTransport(
                     "epoch" to activeEpoch,
                 ),
             )
+            runtime.liveStatus(model = model, streaming = true)
             watchFirstToken(bound, activeEpoch, activeModel, responseMode)
             true
         }
@@ -1109,6 +1110,9 @@ class GeminiLiveTransport(
                     firstAudioSeen = true
                     markAnswering(activeModel, activeResponseMode)
                     val now = SystemClock.elapsedRealtimeNanos()
+                    turn.submittedAtNanos?.let {
+                        runtime.liveStatus(firstAnswerMs = (now - it) / 1_000_000.0)
+                    }
                     DiagnosticHub.record(
                         "LIVE_FIRST_AUDIO_PACKET",
                         turn.fields() + mapOf(
@@ -1202,7 +1206,10 @@ class GeminiLiveTransport(
                     "hasId" to (id != null),
                 ),
             )
-            if (text.isNotBlank()) publishReportedText(text)
+            if (text.isNotBlank()) {
+                runtime.liveStatus(exactText = true)
+                publishReportedText(text)
+            }
         }
     }
 
@@ -1283,6 +1290,9 @@ class GeminiLiveTransport(
             firstTextSeen = true
             markAnswering(activeModel, activeResponseMode)
             val now = SystemClock.elapsedRealtimeNanos()
+            bound.submittedAtNanos?.let {
+                runtime.liveStatus(firstAnswerMs = (now - it) / 1_000_000.0)
+            }
             DiagnosticHub.record(
                 "LIVE_FIRST_TEXT",
                 bound.fields() + mapOf(
