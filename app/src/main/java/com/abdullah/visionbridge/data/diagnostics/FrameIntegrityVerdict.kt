@@ -6,6 +6,9 @@ object FrameIntegrityVerdict {
     private val identity=listOf("turnId","traceId","frameId","visualGeneration","mode","model",
         "transportSessionId","imageHash","promptVersion")
     private val outputs=setOf("RUNTIME_RESULT","TEXT_DISPLAYED","TTS_UTTERANCE_STARTED")
+
+    /** The events that mean "this turn's image is now with an engine", one per transport. */
+    private val submissions=setOf("FRAME_REQUEST_SENT","LIVE_FRAME_SENT","LOCAL_FRAME_BOUND")
     fun analyse(events:List<SessionVerdict.Event>):List<SessionVerdict.Finding> {
         val submitted=mutableMapOf<String,SessionVerdict.Event>()
         // Streaming can accept several increasing prefixes for one image. A speech delta may
@@ -20,7 +23,13 @@ object FrameIntegrityVerdict {
                 generation=e.number("visualGeneration")?.toLong();active=null
             }
             if(e.type=="TURN_ACTIVATED") { active=e.text("turnId");generation=e.number("visualGeneration")?.toLong() }
-            if(e.type in setOf("FRAME_REQUEST_SENT","LOCAL_FRAME_BOUND")) e.text("turnId")?.let { submitted[it]=e }
+            // Every transport that can own a turn has to be listed here. Live was not, and the
+            // accounting inverted: its turns had no recorded submission, so all forty outputs of
+            // one session counted as identity-less, no revision could ever be marked accepted, and
+            // correctly published text was reported as UNACCEPTED_CONTENT_OUTPUT — a FATAL verdict
+            // against the one path that was working. LIVE_FRAME_SENT carries the full identity;
+            // it was only ever missing from this list.
+            if(e.type in submissions) e.text("turnId")?.let { submitted[it]=e }
             if(e.type !in outputs) continue
             // Operational notices are not frame content. Legacy frame-tagged output still needs
             // its missing identity reported rather than assumed valid.
@@ -47,7 +56,7 @@ object FrameIntegrityVerdict {
         queueLate=maxOf(queueLate,events.count { it.type=="TTS_UTTERANCE_STARTED" &&
             (it.number("queueAgeMs") ?: it.number("queueWaitMs") ?: 0.0)>1000 })
         val selected=events.count { it.type=="FRAME_SELECTED_FOR_ANALYSIS" }
-        val sent=events.count { it.type in setOf("FRAME_REQUEST_SENT","LIVE_FRAME_SENT","LOCAL_FRAME_BOUND") }
+        val sent=events.count { it.type in submissions }
         val justified=events.count { it.type=="FRAME_SKIPPED" && (it.text("reason")?.let { r ->
             r.contains("duplicate") || r.contains("quality") || r.contains("stability") || r.contains("obsolete")
         }==true) }

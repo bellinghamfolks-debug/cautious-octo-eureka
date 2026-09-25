@@ -43,6 +43,29 @@ class FrameIntegrityVerdictTest {
             "visualGeneration" to gen,"mode" to "TEXT_READING","model" to "test",
             "transportSessionId" to "session-$id","imageHash" to "a".repeat(64),"promptVersion" to "test",
             "acceptedContentHash" to "c".repeat(64))+extra)
+    /**
+     * The 2026-09-25 session in miniature. Every cloud turn went over the Live socket, and the
+     * accounting knew only about the SSE and local transports, so it saw forty results whose image
+     * had apparently never been submitted. That alone is a MAJOR finding; worse, an unowned turn
+     * can never have a revision accepted, so correctly published text came back as a FATAL
+     * UNACCEPTED_CONTENT_OUTPUT against the one path that was working.
+     */
+    @Test fun liveTransportOwnsItsTurnJustAsTheHttpTransportDoes() {
+        val result=FrameIntegrityVerdict.analyse(listOf(event("TURN_ACTIVATED"),event("LIVE_FRAME_SENT"),
+            event("RUNTIME_RESULT"),event("TEXT_DISPLAYED"),event("TTS_UTTERANCE_STARTED")))
+        assertTrue("a healthy live turn must be silent, got $result",result.isEmpty())
+    }
+    /** The rule still has to work on Live: a hash nobody accepted is reported whatever the transport. */
+    @Test fun liveTransportStillReportsOutputThatWasNeverAccepted() {
+        val result=FrameIntegrityVerdict.analyse(listOf(event("TURN_ACTIVATED"),event("LIVE_FRAME_SENT"),
+            event("RUNTIME_RESULT"),event("TEXT_DISPLAYED",extra=mapOf("acceptedContentHash" to "d".repeat(64)))))
+        assertEquals("count=1",result.single { it.code=="UNACCEPTED_CONTENT_OUTPUT" }.measurement)
+    }
+    /** A result whose image no transport ever submitted is still unprovable, as it should be. */
+    @Test fun aResultWithNoSubmissionAtAllIsStillUnprovable() {
+        val result=FrameIntegrityVerdict.analyse(listOf(event("TURN_ACTIVATED"),event("RUNTIME_RESULT")))
+        assertTrue(result.any { it.code=="UNPROVABLE_FRAME_RESULT_IDENTITY" })
+    }
     @Test fun matchingFrameIdentityDoesNotPermitUnacceptedSpeechOrDisplay() {
         val result=FrameIntegrityVerdict.analyse(listOf(event("TURN_ACTIVATED"),event("FRAME_REQUEST_SENT"),
             event("RUNTIME_RESULT"),event("TEXT_DISPLAYED",extra=mapOf("acceptedContentHash" to "d".repeat(64))),

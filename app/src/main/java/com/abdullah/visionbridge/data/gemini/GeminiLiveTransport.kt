@@ -72,6 +72,18 @@ class GeminiLiveTransport(
     @Volatile private var activeTurn: AnalysisTurn? = null
     @Volatile private var activeEpoch = 0L
     @Volatile private var responseInFlight = false
+
+    /**
+     * Whether the last target change asked for the current answer to be cut off.
+     *
+     * A reading and a scene description expire differently. A transcription stays true about the
+     * object it was taken from even after the camera drifts, so finishing it costs the user
+     * nothing and cutting it costs them the rest of the label. A field session on 2026-09-25
+     * shows what that cost: of twenty-one frames sent, eight produced speech, and six of those
+     * eight were cut off mid-answer by the next frame — the visual generation had moved on while
+     * the model was still reading a perfume bottle held in the hand.
+     */
+    @Volatile private var interruptRequested = false
     @Volatile private var staleBoundaryBlocked = false
     @Volatile private var firstAudioSeen = false
     @Volatile private var speechEnabled = true
@@ -109,6 +121,30 @@ class GeminiLiveTransport(
             // A page gets one Live turn until the visual tracker proves that the target changed.
             // Re-sending the same page every second only interrupts its own native-audio reading.
             if (settings.mode == AnalysisMode.TEXT_READING && sameGeneration) return false
+
+            // The target did change, but the policy that judged it said not to cut the speech.
+            // Dispatching anyway supersedes the turn in flight and the user hears half a label,
+            // which is the same cancellation the policy had just declined to make. The reading is
+            // allowed to finish; the newest frame is still the one sent when it does, and the
+            // bound stops a turn that never completes from holding the lane forever.
+            if (
+                settings.mode == AnalysisMode.TEXT_READING &&
+                responseInFlight &&
+                !interruptRequested &&
+                now - lastReservedAtElapsedMs < READING_COMPLETION_GRACE_MS
+            ) {
+                DiagnosticHub.record(
+                    "LIVE_FRAME_DEFERRED",
+                    mapOf(
+                        "reason" to "reading_in_flight_and_change_did_not_request_interrupt",
+                        "activeTurnId" to activeTurn?.turnId,
+                        "activeGeneration" to activeTurn?.visualGeneration,
+                        "currentGeneration" to currentGeneration,
+                        "inFlightForMs" to (now - lastReservedAtElapsedMs),
+                    ),
+                )
+                return false
+            }
 
             // A scene may be sampled again after its short response completes, but never interrupt
             // an in-flight response merely because the one-second sampling clock fired.
@@ -201,6 +237,8 @@ class GeminiLiveTransport(
             val superseding: Boolean
             synchronized(stateLock) {
                 superseding = responseInFlight
+                // Consumed here: the decision belonged to the change that has now been acted on.
+                interruptRequested = false
                 activeTurn = bound
                 activeEpoch = audioPlayer.beginTurn(
                     if (superseding) "live_turn_superseded" else "live_turn_started"
@@ -258,6 +296,10 @@ class GeminiLiveTransport(
             // Keep the global one-frame-per-second Live video budget across target changes.
             // A target replacement may preempt audio, but it must not violate the transport limit.
             if (interruptSpeech) audioPlayer.interrupt("visual_target_changed")
+            // Remembered so the next frame knows whether it is allowed to cut a reading short.
+            // The smart-target policy already decides this; it was simply not consulted again at
+            // the moment the replacement frame was dispatched.
+            interruptRequested = interruptSpeech
         }
         DiagnosticHub.record(
             "LIVE_VISUAL_TARGET_CHANGED",
@@ -270,6 +312,7 @@ class GeminiLiveTransport(
             lastReservedAtElapsedMs = 0L
             activeTurn = null
             responseInFlight = false
+            interruptRequested = false
             staleBoundaryBlocked = false
             firstAudioSeen = false
             transcript = StringBuilder()
@@ -687,6 +730,13 @@ class GeminiLiveTransport(
         const val PROMPT_VERSION = "live-frame-bound-v1"
         private const val LIVE_ENDPOINT =
             "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+        /**
+         * How long a reading may hold the lane after the target moved on. Long enough for a label
+         * to finish — the longest useful turn measured in the field was about ten seconds — and
+         * short enough that a turn which never completes cannot stall the session.
+         */
+        private const val READING_COMPLETION_GRACE_MS = 12_000L
+
         private const val LIVE_SETUP_TIMEOUT_MS = 4_000L
 
         /** Long enough that a dead endpoint is not hammered, short enough to recover in a session. */
