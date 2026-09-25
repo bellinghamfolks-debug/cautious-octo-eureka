@@ -40,8 +40,8 @@ android {
         applicationId = "com.abdullah.visionbridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 58
-        versionName = "3.11.3"
+        versionCode = 59
+        versionName = "3.11.4"
 
         ndk {
             abiFilters += "arm64-v8a"

@@ -23,6 +23,22 @@ enum class LiveCloseVerdict {
     /** Correctable: re-open the same model carrying a thinking level. */
     NEEDS_THINKING_LEVEL,
 
+    /** Correctable: re-open the same model without asking for a spoken language. */
+    LANGUAGE_UNSUPPORTED,
+
+    /**
+     * Correctable, and the cause of almost everything in the 2026-09-26 00:09 session: the setup
+     * carried a session-resumption handle that did not belong to it. Re-open without resuming.
+     */
+    STALE_RESUMPTION,
+
+    /**
+     * The connection failed on the server's side. This says nothing about what the model can do,
+     * so the model keeps its place in the queue — judging it here is what stripped the app of all
+     * nine models in thirteen seconds and left reading with no live transport at all.
+     */
+    TRANSPORT_ERROR,
+
     /** Permanent for this modality: the model cannot answer this way. */
     MODALITY_REFUSED,
 
@@ -33,8 +49,20 @@ enum class LiveCloseVerdict {
     UNEXPLAINED,
     ;
 
-    /** Whether this verdict leaves the model worth another attempt. */
-    val correctable: Boolean get() = this == NEEDS_THINKING_LEVEL
+    /** Whether the same model deserves another attempt, configured differently. */
+    val correctable: Boolean
+        get() = this == NEEDS_THINKING_LEVEL ||
+            this == LANGUAGE_UNSUPPORTED ||
+            this == STALE_RESUMPTION
+
+    /**
+     * Whether this verdict is evidence about the model's capability at all.
+     *
+     * Only a refusal is. A transport error is about the connection, and a correctable refusal is a
+     * request; treating either as "this model cannot answer" removes a working model permanently.
+     */
+    val provesIncapable: Boolean
+        get() = this == MODALITY_REFUSED || this == INVALID_ARGUMENT
 
     companion object {
         /** Reads [code] and [reason] exactly as the server sent them. */
@@ -42,9 +70,15 @@ enum class LiveCloseVerdict {
             val text = reason.lowercase()
             return when {
                 text.contains("thinking level") -> NEEDS_THINKING_LEVEL
+                // "Unsupported language code 'ar-XA' for model models/gemini-2.5-flash-native-*"
+                text.contains("language code") -> LANGUAGE_UNSUPPORTED
+                // "BidiGenerateContent session history not found"
+                text.contains("session history") -> STALE_RESUMPTION
                 // "modalities" in the long form, "modality" in the short; match the stem.
                 text.contains("modalit") -> MODALITY_REFUSED
                 text.contains("not supported") -> MODALITY_REFUSED
+                code == INTERNAL_ERROR_CODE -> TRANSPORT_ERROR
+                code == POLICY_VIOLATION_CODE -> TRANSPORT_ERROR
                 code == INVALID_ARGUMENT_CODE -> INVALID_ARGUMENT
                 else -> UNEXPLAINED
             }
@@ -52,5 +86,11 @@ enum class LiveCloseVerdict {
 
         /** RFC 6455 1007: the peer rejected the payload. Gemini uses it for a refused setup. */
         const val INVALID_ARGUMENT_CODE = 1007
+
+        /** RFC 6455 1008: Gemini uses it for a resumption handle it no longer holds. */
+        const val POLICY_VIOLATION_CODE = 1008
+
+        /** RFC 6455 1011: the server failed, which is not the model's verdict on itself. */
+        const val INTERNAL_ERROR_CODE = 1011
     }
 }

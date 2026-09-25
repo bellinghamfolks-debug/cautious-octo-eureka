@@ -89,6 +89,21 @@ class GeminiLiveTransport(
     @Volatile private var transportSessionId = UUID.randomUUID().toString()
     @Volatile private var resumptionHandle: String? = null
 
+    /**
+     * Which model and modality the handle in [resumptionHandle] belongs to.
+     *
+     * A resumption handle is a pointer into one server-side session. Replaying it into a setup for
+     * a different model does not continue anything — it merges the old session's configuration
+     * into the new request, and the 2026-09-26 00:09 session shows every way that fails: the first
+     * setup came back "The requested combination of response modalities (AUDIO, TEXT) is not
+     * supported by the model. models/gemini_api_beyond_live" — two modalities the app never asked
+     * for together, and a model name it never sent — then 1008 "BidiGenerateContent session
+     * history not found" twice, and 1011 on gemini-3.8-live, the one model measured working.
+     *
+     * Nine models were ruled out in thirteen seconds over a handle that belonged to none of them.
+     */
+    @Volatile private var resumptionOwner: String? = null
+
     @Volatile private var activeTurn: AnalysisTurn? = null
     @Volatile private var activeEpoch = 0L
     @Volatile private var responseInFlight = false
@@ -184,6 +199,20 @@ class GeminiLiveTransport(
 
     /** Set when a refusal was correctable, so the corrected attempt does not wait out the backoff. */
     @Volatile private var retryImmediately = false
+
+    /** Models that refused a spoken language code, to be re-opened without a speechConfig. */
+    private val languageUnsupported = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>(),
+    )
+
+    /** Set while a setup must be sent with no resumption handle at all. */
+    @Volatile private var suppressResumption = false
+
+    /** Corrections already spent per model, so a model cannot be retried without end. */
+    private val correctionsUsed = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /** How often the audio floor has been rebuilt, so a truly dead account still settles. */
+    private val audioFloorRestores = java.util.concurrent.atomic.AtomicInteger(0)
 
     fun supports(settings: AppSettings): Boolean = LiveTransportRouting.carriedByLive(settings)
 
@@ -489,10 +518,36 @@ class GeminiLiveTransport(
      */
     private suspend fun chooseModel(apiKey: String, responseMode: LiveResponseMode): String? {
         val ordered = LiveModelDirectory.ordered(discoverModels(apiKey), responseMode)
-        val chosen = ordered.firstOrNull { "$it/${responseMode.modality}" !in unanswering }
+        ordered.firstOrNull { "$it/${responseMode.modality}" !in unanswering }?.let { return it }
+
+        // Nothing left. For text that is a real answer — the caller degrades to audio, which
+        // streams. For audio it is not an answer at all: audio is the floor, and a floor that can
+        // be removed is what left description with no transport in the 00:09 session, thirteen
+        // seconds in, after nine models were struck off for errors that were never theirs.
+        //
+        // So the audio verdicts are forgotten once, and the model measured working on this device
+        // is tried again. A genuine refusal will simply be recorded again, at the cost of one
+        // socket; a passing server fault will not have cost the session its voice.
+        if (responseMode == LiveResponseMode.NATIVE_AUDIO && audioFloorRestores.get() < MAX_AUDIO_FLOOR_RESTORES) {
+            audioFloorRestores.incrementAndGet()
+            unanswering.removeAll(ordered.map { "$it/${responseMode.modality}" }.toSet())
+            exhaustedModality.remove(responseMode.modality)
+            correctionsUsed.clear()
+            val restored = ordered.firstOrNull()
+            DiagnosticHub.record(
+                "LIVE_AUDIO_FLOOR_RESTORED",
+                mapOf(
+                    "model" to restored,
+                    "restoreCount" to audioFloorRestores.get(),
+                    "reason" to "audio_is_the_floor_and_must_not_be_ruled_out_of_existence",
+                ),
+            )
+            return restored
+        }
+
         // Said once. Every later frame takes the same decision, and a line per frame would bury
         // the rest of the bundle under the one fact the reader already has.
-        if (chosen == null && exhaustedModality.add(responseMode.modality)) {
+        if (exhaustedModality.add(responseMode.modality)) {
             DiagnosticHub.record(
                 "LIVE_NO_MODEL_AVAILABLE",
                 mapOf(
@@ -502,7 +557,7 @@ class GeminiLiveTransport(
                 ),
             )
         }
-        return chosen
+        return null
     }
 
     /**
@@ -724,9 +779,10 @@ class GeminiLiveTransport(
         ready: CompletableDeferred<Boolean>,
     ): WebSocketListener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
-            if (!webSocket.send(setupMessage(model, responseMode)) && !ready.isCompleted) {
-                ready.complete(false)
-            }
+            val payload = setupMessage(model, responseMode)
+            // One-shot: it exists to get past the handle that broke the previous attempt.
+            suppressResumption = false
+            if (!webSocket.send(payload) && !ready.isCompleted) ready.complete(false)
             DiagnosticHub.record(
                 "LIVE_SOCKET_OPEN",
                 mapOf("httpCode" to response.code, "protocol" to response.protocol.toString()),
@@ -813,17 +869,57 @@ class GeminiLiveTransport(
     ) {
         closeInterpreted = "$model/${responseMode.modality}"
         val verdict = LiveCloseVerdict.of(code, reason)
-        // Correctable, but only once: the second refusal of the same kind is a refusal.
-        if (verdict.correctable && thinkingLevelRequired.add(model)) {
-            // Earned retry, taken at once: the backoff exists to stop a dead endpoint being
-            // hammered, and this endpoint just said precisely what it wants instead.
-            retryImmediately = true
+
+        // A correctable refusal is the server naming what to change. Each model gets a bounded
+        // number of those, so a model that keeps asking for something new cannot loop forever.
+        if (verdict.correctable) {
+            val spent = correctionsUsed.merge(model, 1, Int::plus) ?: 1
+            if (spent <= MAX_CORRECTIONS_PER_MODEL) {
+                when (verdict) {
+                    LiveCloseVerdict.NEEDS_THINKING_LEVEL -> thinkingLevelRequired.add(model)
+                    LiveCloseVerdict.LANGUAGE_UNSUPPORTED -> languageUnsupported.add(model)
+                    LiveCloseVerdict.STALE_RESUMPTION -> Unit
+                    else -> Unit
+                }
+                // Whatever the correction, drop the handle: it is either the cause or irrelevant.
+                resumptionHandle = null
+                resumptionOwner = null
+                suppressResumption = true
+                retryImmediately = true
+                DiagnosticHub.record(
+                    "LIVE_SETUP_CORRECTION",
+                    mapOf(
+                        "model" to model,
+                        "modality" to responseMode.modality,
+                        "verdict" to verdict.name,
+                        "code" to code,
+                        "attempt" to spent,
+                    ),
+                )
+                return
+            }
+        }
+
+        // A transport failure is the connection's fault, not the model's. Ruling the model out
+        // here is what left the app with nothing: nine models gone in thirteen seconds, including
+        // the only one ever measured answering.
+        if (!verdict.provesIncapable) {
+            resumptionHandle = null
+            resumptionOwner = null
+            suppressResumption = true
             DiagnosticHub.record(
-                "LIVE_MODEL_NEEDS_THINKING_LEVEL",
-                mapOf("model" to model, "code" to code, "retryWith" to THINKING_LEVEL),
+                "LIVE_TRANSPORT_ERROR",
+                mapOf(
+                    "model" to model,
+                    "modality" to responseMode.modality,
+                    "verdict" to verdict.name,
+                    "code" to code,
+                    "modelKeptAsCandidate" to true,
+                ),
             )
             return
         }
+
         ruleOut(model, responseMode, "server_${verdict.name.lowercase()}_$code")
     }
 
@@ -851,7 +947,10 @@ class GeminiLiveTransport(
         root.optJSONObject("sessionResumptionUpdate")?.let { update ->
             val resumable = update.optBoolean("resumable", false)
             val handle = update.optString("newHandle").takeIf { it.isNotBlank() }
-            if (resumable && handle != null) resumptionHandle = handle
+            if (resumable && handle != null) {
+                resumptionHandle = handle
+                resumptionOwner = socketResponseMode?.let { "$activeModel/${it.modality}" }
+            }
             DiagnosticHub.record(
                 "LIVE_SESSION_RESUMPTION_UPDATE",
                 mapOf(
@@ -1072,10 +1171,16 @@ class GeminiLiveTransport(
 
     private fun setupMessage(model: String, responseMode: LiveResponseMode): String {
         val resumption = JSONObject()
-        resumptionHandle?.takeIf { it.isNotBlank() }?.let { resumption.put("handle", it) }
+        // Only ever offered back to the exact session that issued it.
+        if (resumptionOwner == "$model/${responseMode.modality}" && !suppressResumption) {
+            resumptionHandle?.takeIf { it.isNotBlank() }?.let { resumption.put("handle", it) }
+        }
         val generationConfig = JSONObject()
             .put("responseModalities", JSONArray().put(responseMode.modality))
-        if (responseMode.speaksItself) {
+        // gemini-2.5-flash-native-audio-* refused ar-XA outright: "Unsupported language code
+        // 'ar-XA' for model ...". Asked again without one, the model picks its own voice, which is
+        // a worse Arabic than asking for it but far better than no description at all.
+        if (responseMode.speaksItself && model !in languageUnsupported) {
             // Native audio picks its language here, not from the prompt. Without a languageCode
             // Live answers in English however the instruction is worded — which is what a field
             // session on 2026-09-25 heard: scene descriptions spoken in English to an
@@ -1252,6 +1357,23 @@ class GeminiLiveTransport(
          * asked for is the lowest one that satisfies the requirement.
          */
         private const val THINKING_LEVEL = "LOW"
+
+        /**
+         * How many times one model may be told what to change before it is judged.
+         *
+         * Three covers the corrections actually seen — a thinking level, a language code, a stale
+         * resumption handle — without letting a model that answers every attempt with a new
+         * demand hold the lane.
+         */
+        private const val MAX_CORRECTIONS_PER_MODEL = 3
+
+        /**
+         * How many times the audio candidates may be forgiven wholesale.
+         *
+         * Enough that a passing server fault cannot cost a session its voice, few enough that an
+         * account which genuinely cannot stream audio stops re-opening sockets and settles on SSE.
+         */
+        private const val MAX_AUDIO_FLOOR_RESTORES = 3
 
 
         /**

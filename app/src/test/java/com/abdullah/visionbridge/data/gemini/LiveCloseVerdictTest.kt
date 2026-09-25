@@ -72,9 +72,70 @@ class LiveCloseVerdictTest {
         )
     }
 
-    /** Exactly one verdict may ever be acted on by retrying, or a refusal becomes a loop. */
+    // region the 2026-09-26 session, where one stale handle broke everything
+
+    /**
+     * The first error of that session, and the one that explains the rest. The app asked for TEXT
+     * alone, of gemini-3.8-live-extended-thinking. What came back named two modalities it never
+     * combined and a model it never sent — the signature of a resumption handle from an older
+     * session being merged into the new setup.
+     */
     @Test
-    fun `only one verdict is correctable`() {
-        assertEquals(1, LiveCloseVerdict.entries.count { it.correctable })
+    fun `a merged modality combination is still a modality refusal`() {
+        val verdict = LiveCloseVerdict.of(
+            1007,
+            "The requested combination of response modalities (AUDIO, TEXT) is not supported by " +
+                "the model. models/gemini_api_beyond_live",
+        )
+        assertEquals(LiveCloseVerdict.MODALITY_REFUSED, verdict)
+    }
+
+    /** Named outright by the server, twice in that session. */
+    @Test
+    fun `a handle the server no longer holds is correctable, not a verdict on the model`() {
+        val verdict = LiveCloseVerdict.of(1008, "BidiGenerateContent session history not found")
+        assertEquals(LiveCloseVerdict.STALE_RESUMPTION, verdict)
+        assertTrue(verdict.correctable)
+        assertFalse("a stale handle says nothing about the model", verdict.provesIncapable)
+    }
+
+    /** ar-XA, added in build 51 to stop English descriptions, is refused by a whole family. */
+    @Test
+    fun `an unsupported language code is correctable by dropping the language`() {
+        val verdict = LiveCloseVerdict.of(
+            1007,
+            "Unsupported language code 'ar-XA' for model models/gemini-2.5-flash-native-audio-latest",
+        )
+        assertEquals(LiveCloseVerdict.LANGUAGE_UNSUPPORTED, verdict)
+        assertTrue(verdict.correctable)
+        assertFalse(verdict.provesIncapable)
+    }
+
+    /**
+     * gemini-3.8-live — the only model ever measured answering on this device — closed 1011 and
+     * was struck off for it. A server fault is not a model's verdict on itself.
+     */
+    @Test
+    fun `an internal server error never counts against the model`() {
+        val verdict = LiveCloseVerdict.of(1011, "Internal error encountered.")
+        assertEquals(LiveCloseVerdict.TRANSPORT_ERROR, verdict)
+        assertFalse("a server fault must not rule a model out", verdict.provesIncapable)
+    }
+
+    // endregion
+
+    /** Only a refusal is evidence about capability; everything else is about the connection. */
+    @Test
+    fun `exactly the two refusals prove a model incapable`() {
+        assertEquals(
+            setOf(LiveCloseVerdict.MODALITY_REFUSED, LiveCloseVerdict.INVALID_ARGUMENT),
+            LiveCloseVerdict.entries.filter { it.provesIncapable }.toSet(),
+        )
+    }
+
+    /** A verdict may be correctable or damning, never both. */
+    @Test
+    fun `no verdict is both correctable and proof of incapability`() {
+        assertTrue(LiveCloseVerdict.entries.none { it.correctable && it.provesIncapable })
     }
 }
