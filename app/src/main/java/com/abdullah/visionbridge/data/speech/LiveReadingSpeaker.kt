@@ -61,7 +61,7 @@ class LiveReadingSpeaker(private val tts: BilingualTtsEngine) {
     /**
      * Speaks [text] if the user has not heard it, or only the part they have not heard.
      *
-     * [scene] describes the object and its surroundings; it is spoken before a new page and not
+     * [scene] describes the object and its surroundings; it is spoken after a new page and not
      * recorded as part of it. [fields] identify the turn in the diagnostics. Returns whether anything was
      * queued.
      */
@@ -101,9 +101,9 @@ class LiveReadingSpeaker(private val tts: BilingualTtsEngine) {
         // continuation — a page that shares a stray line with an old one is "continued" by it —
         // but if it is not the page in flight, the page in flight is no longer what is in view.
         val interrupting = interruptPrevious && !samePageAsInFlight
-        // Said first, and once per page: it says what is being read before the reading starts.
-        // After a thirty-line page it arrived minutes late, or never, once a new page cut in.
-        val intro = if (decision.continuation) "" else scene
+        // Once per page, and after it: the user wants the text first and the description as its
+        // close. Build 67 moved it to the front and that was the wrong order for them.
+        val description = if (decision.continuation) "" else scene
         DiagnosticHub.record(
             "LIVE_READING_ACCEPTED",
             fields + mapOf(
@@ -113,7 +113,7 @@ class LiveReadingSpeaker(private val tts: BilingualTtsEngine) {
                 "continuation" to decision.continuation,
                 "interruptPrevious" to interrupting,
                 "contentHash" to contentHash(decision.document),
-                "sceneCharacters" to intro.length,
+                "sceneCharacters" to description.length,
             ),
         )
         scope.launch {
@@ -121,11 +121,13 @@ class LiveReadingSpeaker(private val tts: BilingualTtsEngine) {
                 val readingId = tts.beginReading(interruptPrevious = interrupting)
                 pending.readingId = readingId
                 tracker.open(readingId, decision.alreadyHeard, blocks)
-                // Outside the tracker's blocks, so the description can neither hold up the page's
-                // accounting nor be mistaken for a line of it.
-                if (intro.isNotBlank()) tts.speakReadingBlock(readingId, SCENE_BLOCK, intro, rate)
                 blocks.forEachIndexed { index, block ->
                     tts.speakReadingBlock(readingId, index, block, rate)
+                }
+                // Outside the tracker's blocks, so the description can neither hold up the page's
+                // accounting nor be mistaken for a line of it.
+                if (description.isNotBlank()) {
+                    tts.speakReadingBlock(readingId, SCENE_BLOCK, description, rate)
                 }
                 tts.finishReading(readingId)
             }
