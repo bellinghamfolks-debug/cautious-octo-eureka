@@ -15,7 +15,11 @@ REQUIRED = [
     "app/build.gradle.kts",
     "app/src/main/AndroidManifest.xml",
     "app/src/main/java/com/abdullah/visionbridge/capture/MediaProjectionService.kt",
-    "app/src/main/java/com/abdullah/visionbridge/data/gemini/GeminiVisionRepository.kt",
+    # The reading path, end to end: the capture loop, the lane that owns one turn at a time, and
+    # the transport that answers it. Named here so a refactor cannot quietly delete the path the
+    # app actually runs — which is what happened to the stack this line used to name.
+    "app/src/main/java/com/abdullah/visionbridge/capture/FrameBoundCoordinator.kt",
+    "app/src/main/java/com/abdullah/visionbridge/data/gemini/GeminiLiveTransport.kt",
     ".github/workflows/android-ci.yml",
     "scripts/fetch_ocr_models.py",
     "app/src/main/java/com/abdullah/visionbridge/data/paddleocr/PaddleOcrEngine.kt",

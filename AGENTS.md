@@ -3,6 +3,15 @@
 ## Goal
 Maintain a native Kotlin Android accessibility application that captures a user-approved screen stream with MediaProjection and produces spoken OCR or scene descriptions.
 
+## One path only
+There is exactly one reading path and one describing path. An earlier parallel analysis stack
+(`FrameAnalysisCoordinator`, `GeminiVisionRepository`, `RoutingVisionRepository`,
+`PaddleOcrVisionRepository`, `AnalyzeFrameUseCase`, `VisionAiRepository`, `TextImageEnhancer`) was
+deleted in build 65: 2,883 lines that nothing could reach, kept alive only by referring to each
+other. It cost real debugging time — every audit of "does X run on the live path?" had to rule it
+out first. Do not reintroduce a second engine. If a file is not reachable from
+`MediaProjectionService`, `VerifiedSettingsScreen` or the manifest, delete it.
+
 ## Non-negotiable constraints
 - Native Android only. No WebView, React Native, Flutter, or browser UI.
 - Kotlin, Jetpack Compose, Coroutines, StateFlow, and the existing manual dependency container.
@@ -38,10 +47,16 @@ covered by `app/src/androidTest/.../PaddleOcrOnDeviceTest.kt`, which needs a rea
 assert on-device behaviour from unit tests alone.
 
 ## Important files
-- `capture/MediaProjectionService.kt`: foreground capture lifecycle and frame throttling.
-- `capture/FrameAnalysisCoordinator.kt`: hybrid local/cloud analysis policy.
+- `capture/MediaProjectionService.kt`: foreground capture lifecycle, frame throttling, and the one
+  place that chooses a lane for each frame.
+- `capture/FrameBoundCoordinator.kt`: the single analysis lane. One turn is active at a time and a
+  superseding turn cancels it.
+- `data/gemini/GeminiLiveTransport.kt`: the persistent Live WebSocket. Scene description is answered
+  as native audio; a reading is answered as native audio plus a `report_visible_text` function call
+  whose arguments carry the page's exact characters, because an audio session's only other text is a
+  transcript of its own speech. Read `LiveModelDirectory` and `LiveCloseVerdict` before changing how
+  a model is chosen or a refusal is judged — both encode verdicts measured on a real device.
 - `data/network/CellularNetworkManager.kt`: per-request cellular acquisition.
-- `data/gemini/GeminiVisionRepository.kt`: official Gemini REST call.
 - `data/security/AndroidKeystoreApiKeyStore.kt`: AES-GCM key storage.
 - `data/speech/BilingualTtsEngine.kt`: Arabic/English speech segmentation and the ordered, lossless
   reading queue. Blocks of one reading are never dropped for capacity; only a superseding reading
@@ -52,13 +67,12 @@ assert on-device behaviour from unit tests alone.
 - `ui/MainScreen.kt`: minimal TalkBack-first surface — status, mode, start/stop.
 - `ui/SettingsScreen.kt`: everything configured once — key, model, capture accuracy, speech,
   diagnostics.
-- `data/vision/RoutingVisionRepository.kt`: cloud vs on-device routing for both Read and Describe.
-  Never add a silent local-to-cloud fallback; choosing the local engine is a choice about where
-  screen content goes.
+- Routing between cloud and on-device is `data/gemini/LiveTransportRouting.kt` plus the lane choice
+  in `MediaProjectionService`. Never add a silent local-to-cloud fallback; choosing the local engine
+  is a choice about where screen content goes.
 - `data/paddleocr/`: the optional on-device reader — PP-OCRv5 detection, orientation and the Arabic
-  and English recognition heads, run through ONNX Runtime. `PaddleOcrVisionRepository` implements the
-  same `VisionAiRepository` interface as the cloud path, so the coordinator, reading ledger and
-  speech queue stay engine-agnostic. It reads text only and refuses scene description by design; do
-  not paper over that with a stub description. See `docs/LOCAL_OCR_SETUP.md`.
+  and English recognition heads, run through ONNX Runtime. `PaddleOcrEngine` is driven directly by
+  `FrameBoundCoordinator`. It reads text only and refuses scene description by design; do not paper
+  over that with a stub description. See `docs/LOCAL_OCR_SETUP.md`.
 - `data/paddleocr/RecognizedLine.kt`: the rule that picks between the two recognizers' readings of
   the same crop. The two confidences are not comparable — read the comment there before changing it.
