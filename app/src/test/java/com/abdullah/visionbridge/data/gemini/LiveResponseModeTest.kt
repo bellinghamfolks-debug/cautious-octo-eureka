@@ -18,12 +18,17 @@ import org.junit.Test
  */
 class LiveResponseModeTest {
 
+    /**
+     * Reading no longer asks for TEXT, because nothing on this account will serve it: every
+     * candidate answered 1007 "The requested combination of response modalities (AUDIO, TEXT) is
+     * not supported by the model." The probe cost the first eight seconds of every session, and the
+     * page's exact characters now come back through the reading tool on the audio session instead.
+     */
     @Test
-    fun `reading asks for text, because a reading must be the page's own characters`() {
+    fun `reading asks for audio, because text is refused and the tool carries the characters`() {
         val mode = LiveResponseMode.of(AnalysisMode.TEXT_READING)
-        assertEquals("TEXT", mode.modality)
-        assertTrue(mode.carriesLiteralText)
-        assertFalse("a reading session must not be answered by a voice", mode.speaksItself)
+        assertEquals("AUDIO", mode.modality)
+        assertTrue(mode.speaksItself)
     }
 
     @Test
@@ -34,20 +39,20 @@ class LiveResponseModeTest {
         assertFalse(mode.carriesLiteralText)
     }
 
-    /**
-     * Live fixes the modality in the setup handshake, so the two modes cannot share one socket.
-     * If these ever collapsed to the same value, one of the two would be silently wrong.
-     */
+    /** No mode may ask for a modality this account's models refuse. */
     @Test
-    fun `the two modes never share a modality`() {
-        assertEquals(
-            AnalysisMode.entries.size,
-            AnalysisMode.entries.map { LiveResponseMode.of(it).modality }.toSet().size,
-        )
+    fun `no mode asks for text`() {
+        assertTrue(AnalysisMode.entries.none { LiveResponseMode.of(it).carriesLiteralText })
     }
 
+    /**
+     * The type still describes both channels even though only one is requested: the setup code that
+     * serves TEXT documents the protocol, and costs nothing while unreachable.
+     */
     @Test
-    fun `exactly one mode speaks for itself`() {
-        assertEquals(1, AnalysisMode.entries.count { LiveResponseMode.of(it).speaksItself })
+    fun `the text channel is still described, just never asked for`() {
+        assertEquals("TEXT", LiveResponseMode.EXACT_TEXT.modality)
+        assertTrue(LiveResponseMode.EXACT_TEXT.carriesLiteralText)
+        assertFalse(LiveResponseMode.EXACT_TEXT.speaksItself)
     }
 }

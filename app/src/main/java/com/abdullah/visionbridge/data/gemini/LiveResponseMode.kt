@@ -40,9 +40,24 @@ enum class LiveResponseMode(val modality: String) {
     val carriesLiteralText: Boolean get() = this == EXACT_TEXT
 
     companion object {
-        fun of(mode: AnalysisMode): LiveResponseMode = when (mode) {
-            AnalysisMode.TEXT_READING -> EXACT_TEXT
-            AnalysisMode.SCENE_DESCRIPTION -> NATIVE_AUDIO
-        }
+        /**
+         * Always audio, and the reading's exact characters come back through the tool instead.
+         *
+         * Asking for TEXT is no longer a thing this account can do. Every candidate refused it, and
+         * the refusal is the same every time: 1007 "The requested combination of response
+         * modalities (AUDIO, TEXT) is not supported by the model." Google removed TEXT from the
+         * general-purpose Live families, and the one model that still accepts it transcribes speech
+         * rather than reading pixels.
+         *
+         * Attempting it anyway was not free. In the 2026-09-26 03:18 session the probe burned the
+         * first eight seconds of the session — connect, refusal, strike-off, degrade — before a
+         * single frame could be answered, and it did that at the start of every session. The tool
+         * call it was competing with had already worked: three readings came back through
+         * `report_visible_text`, character for character.
+         *
+         * [EXACT_TEXT] stays in the type, and the setup code that serves it stays with it, because
+         * it documents the protocol and costs nothing while unreachable. It is simply not asked for.
+         */
+        fun of(mode: AnalysisMode): LiveResponseMode = NATIVE_AUDIO
     }
 }

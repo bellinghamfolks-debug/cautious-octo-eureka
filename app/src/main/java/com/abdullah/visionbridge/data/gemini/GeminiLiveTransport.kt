@@ -186,6 +186,9 @@ class GeminiLiveTransport(
      */
     @Volatile private var toolTextForTurn = false
 
+    /** Whether this turn's model audio was dropped because the tool had already answered. */
+    @Volatile private var modelAudioSuppressed = false
+
     /** Whether the drop from exact text to spoken transcript has already been announced. */
     private val degradedToAudio = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -405,6 +408,7 @@ class GeminiLiveTransport(
                 firstAudioSeen = false
                 firstTextSeen = false
                 toolTextForTurn = false
+                modelAudioSuppressed = false
                 transcript = StringBuilder()
                 speechBuffer.reset()
                 responseInFlight = true
@@ -550,6 +554,7 @@ class GeminiLiveTransport(
             firstAudioSeen = false
             firstTextSeen = false
             toolTextForTurn = false
+            modelAudioSuppressed = false
             transcript = StringBuilder()
             speechBuffer.reset()
         }
@@ -1053,6 +1058,7 @@ class GeminiLiveTransport(
                 firstAudioSeen = false
                 firstTextSeen = false
                 toolTextForTurn = false
+                modelAudioSuppressed = false
                 transcript = StringBuilder()
                 // Held-back text belongs to the generation that was just cut off. Speaking it now
                 // would attach the tail of an abandoned reading to the one replacing it.
@@ -1105,6 +1111,25 @@ class GeminiLiveTransport(
                     }
                 }
                 if (!allowed) continue
+
+                // Whichever channel speaks first for this turn is the only one that speaks. The
+                // 03:18 session had both: Gemini read the label aloud and the app then read the
+                // tool's exact text over the top of it, so the user heard the same page twice. The
+                // tool's text is the better reading, so when it has already arrived the model's
+                // audio is dropped rather than played.
+                if (toolTextForTurn) {
+                    if (!modelAudioSuppressed) {
+                        modelAudioSuppressed = true
+                        DiagnosticHub.record(
+                            "LIVE_MODEL_AUDIO_SUPPRESSED",
+                            turn.fields() + mapOf(
+                                "reason" to "exact_text_already_reported_for_this_turn",
+                                "epoch" to epoch,
+                            ),
+                        )
+                    }
+                    continue
+                }
 
                 if (!firstAudioSeen) {
                     firstAudioSeen = true
@@ -1243,7 +1268,17 @@ class GeminiLiveTransport(
                 turn = bound,
             )
         )
-        if (speechEnabled) {
+        // If the model already began reading this page aloud, the user has heard it; saying the
+        // exact text again would be the doubling, not a correction. The text is still published,
+        // so the screen and the diagnostics carry the accurate version either way.
+        val alreadySpoken = firstAudioSeen
+        if (alreadySpoken) {
+            DiagnosticHub.record(
+                "LIVE_TOOL_TEXT_NOT_SPOKEN",
+                bound.fields() + mapOf("reason" to "model_voice_already_read_this_turn"),
+            )
+        }
+        if (speechEnabled && !alreadySpoken) {
             // The model was asked not to read the text out, so the exact characters are spoken
             // here — which is the whole point, since its voice is what mangled them.
             tts.speakTurn(
@@ -1695,8 +1730,12 @@ class GeminiLiveTransport(
         private const val SPOKEN_READING_SYSTEM_INSTRUCTION =
             "RESPOND IN ARABIC. YOU MUST RESPOND UNMISTAKABLY IN ARABIC. " +
                 "You are VisionBridge, assisting a blind or low-vision user. " +
-                "Whenever any readable text is visible you MUST call the function " +
-                "report_visible_text. In that call, reproduce every character exactly as printed, " +
+                // Order matters, not just obedience. When the model spoke first and called the
+                // function afterwards, its voice read the whole label and the app then read the
+                // exact text over the top of it — the same page twice, eleven seconds apart.
+                "Whenever any readable text is visible, your FIRST action MUST be to call the " +
+                "function report_visible_text, before you say anything at all. " +
+                "In that call, reproduce every character exactly as printed, " +
                 "in its original script: never translate, never transliterate Latin words into " +
                 "Arabic letters or Arabic words into Latin letters, keep every digit in the form " +
                 "printed whether Arabic-Indic or Latin, keep the punctuation, and give one array " +

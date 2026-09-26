@@ -288,9 +288,26 @@ class FrameBoundCoordinator(private val transport: FrameTurnTransport, private v
         }
     }
 
+    /**
+     * The visual generation moved on. Whether the current speech dies with it is a separate
+     * question, and [interruptSpeech] is the answer to it.
+     *
+     * That parameter was logged and then ignored: `tts.invalidateVisualContent()` ran on every
+     * target change, so Smart Target's careful decision not to cut a phrase was thrown away at the
+     * last step. The 2026-09-26 03:18 session shows the cost — three readings killed with
+     * `visual_turn_invalidated`, including the exact Arabic text a tool call had just delivered
+     * character for character. The user heard the camera move and then silence.
+     *
+     * A reading is durable: the label still says what it said when the frame was taken, so letting
+     * it finish costs nothing and cutting it costs the whole reading.
+     */
     fun onVisualTargetChanged(interruptSpeech:Boolean) {
         advisoryLane.cancel()
-        gate.invalidate { runtime.clearVisualResult();tts.invalidateVisualContent();policy.reset();scenePolicy.reset();acceptedOpticalText="" }
+        gate.invalidate {
+            runtime.clearVisualResult()
+            if(interruptSpeech)tts.invalidateVisualContent() else tts.retireVisualTimeline()
+            policy.reset();scenePolicy.reset();acceptedOpticalText=""
+        }
         activeJob?.cancel()
         synchronized(this) { previous=null;stableSince=0;opportunityCapturedAt=null }
         DiagnosticHub.record("VISUAL_GENERATION_CHANGED",mapOf("visualGeneration" to gate.generation(),"interruptPreference" to interruptSpeech))

@@ -44,6 +44,16 @@ class BilingualTtsEngine(context: Context, private val turnGate: com.abdullah.vi
     private val visualTimeline = VisualSpeechTimeline()
     fun invalidateVisualContent() { visualTimeline.invalidate();interruptInternal("visual_turn_invalidated") }
 
+    /**
+     * The view moved on, but what is being said about the old view may still finish.
+     *
+     * Retires the timeline so nothing *new* is admitted against the old visual turn, without
+     * cutting the phrase already in the user's ear. This is what a target change means when the
+     * policy judged the change too weak to interrupt: a reading taken from a label is still true
+     * about that label after the camera drifts off it.
+     */
+    fun retireVisualTimeline() { visualTimeline.invalidate() }
+
     fun speakTurn(result: com.abdullah.visionbridge.domain.model.AnalysisResult, rate: Float, section: String, spokenText:String=result.text) {
         val turn = result.turn ?: return
         val queuedAt = SystemClock.elapsedRealtimeNanos()
