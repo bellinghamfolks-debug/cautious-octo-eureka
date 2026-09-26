@@ -12,12 +12,9 @@ import com.abdullah.visionbridge.domain.model.AppSettings
  * Live lane, was refused inside it, and fell back — paying a four-second setup timeout per frame
  * while the socket was unhealthy.
  *
- * Both modes belong on Live. They are streamed differently, and [LiveResponseMode] says why:
- * describing asks for audio and reading asks for text. What decides whether reading *can* be
- * streamed is the model, not the mode — a native-audio model accepts a text setup and then answers
- * nothing — and that is resolved at connection time by [LiveModelDirectory] and the transport's
- * first-token deadline, not here. Falling back to [FrameTurnTransport] over SSE stays the last
- * resort rather than the plan.
+ * Both modes belong on Live, on one pinned model; [LiveTurnPolicy] says which and why. Describing is
+ * answered in the model's own voice, reading by the `report_visible_text` call that the app speaks.
+ * Falling back to [FrameTurnTransport] over SSE stays the last resort rather than the plan.
  *
  * Forcing cellular is the one setting that takes a frame off Live outright: the per-request binding
  * covers Gemini's HTTP sockets, and this is a WebSocket the app holds open across requests.

@@ -13,6 +13,7 @@ import com.abdullah.visionbridge.data.security.AndroidKeystoreApiKeyStore
 import com.abdullah.visionbridge.data.settings.SettingsRepositoryImpl
 import com.abdullah.visionbridge.data.speech.BilingualTtsEngine
 import com.abdullah.visionbridge.data.speech.LivePcmAudioPlayer
+import com.abdullah.visionbridge.data.speech.LiveReadingSpeaker
 import com.abdullah.visionbridge.domain.repository.ApiKeyStore
 import com.abdullah.visionbridge.domain.repository.SettingsRepository
 
@@ -25,7 +26,8 @@ class AppContainer(context: Context) {
     val localOcrEngine = PaddleOcrEngine(appContext)
     val tts = BilingualTtsEngine(appContext,runtime.turnGate)
     val liveAudio = LivePcmAudioPlayer()
-    val liveTransport = GeminiLiveTransport(runtime, apiKeyStore, liveAudio, tts)
+    val liveReadingSpeaker = LiveReadingSpeaker(tts)
+    val liveTransport = GeminiLiveTransport(runtime, apiKeyStore, liveAudio, liveReadingSpeaker)
     val coordinator = FrameBoundCoordinator(FrameTurnTransport(CellularNetworkManager(appContext)),
         localOcrEngine,apiKeyStore,tts,runtime,PaddleOcrEngine(appContext,advisoryProfile=true))
 }

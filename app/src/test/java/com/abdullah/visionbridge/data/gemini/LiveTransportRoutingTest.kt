@@ -14,9 +14,8 @@ import org.junit.Test
  * work, and the transport refuses whatever reaches it anyway. When those disagreed, a frame entered
  * the Live lane, was refused inside it, and fell back — at a four-second setup timeout per frame.
  *
- * Both modes stream over Live. Whether a *reading* can be streamed is decided by the model, at
- * connection time, by [LiveModelDirectory] and the transport's first-token deadline — never by
- * quietly routing reading somewhere slower.
+ * Both modes stream over Live, to the model [LiveTurnPolicy] pins — never by quietly routing
+ * reading somewhere slower.
  */
 class LiveTransportRoutingTest {
 

@@ -82,7 +82,7 @@ object SessionVerdict {
             boundNetworkNeverValidated(events),
             resolutionNeverSettled(events),
             analysisStarved(events),
-        ) + FrameIntegrityVerdict.analyse(events)).sortedBy { it.severity.ordinal }
+        ) + FrameIntegrityVerdict.analyse(events) + LiveVerdict.analyse(events)).sortedBy { it.severity.ordinal }
 
         // Last, and only when there is something it would have settled: a pointer at the one
         // control that turns the next bundle from an argument into a measurement.

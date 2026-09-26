@@ -546,7 +546,18 @@ class MediaProjectionService : Service() {
                         ),
                     ),
                 )
-                if (policy.action != SmartTargetInterruptionPolicy.Action.NONE) {
+                if (
+                    policy.action != SmartTargetInterruptionPolicy.Action.NONE &&
+                    !container.liveTransport.hasSentFrameThisSession()
+                ) {
+                    // Nothing has been sent yet, so there is no answer to invalidate and no reading
+                    // to cut. In the 2026-09-26 16:33 session the tracker declared three strong
+                    // changes in the first half second, before any socket existed.
+                    DiagnosticHub.record(
+                        "SMART_TARGET_TRANSITION_IGNORED_WARMUP",
+                        trace.fields(mapOf("action" to policy.action.name)),
+                    )
+                } else if (policy.action != SmartTargetInterruptionPolicy.Action.NONE) {
                     val interruptNow = settings.interruptSpeechOnVisualChange &&
                         policy.action == SmartTargetInterruptionPolicy.Action.IMMEDIATE
                     container.coordinator.onVisualTargetChanged(interruptNow)
@@ -617,7 +628,8 @@ class MediaProjectionService : Service() {
                 return
             }
 
-            if (!container.liveTransport.reserveFrame(settings)) {
+            val ticket = container.liveTransport.reserveFrame(settings)
+            if (ticket == null) {
                 DiagnosticHub.record(
                     "FRAME_SKIPPED",
                     trace.fields(
@@ -644,7 +656,7 @@ class MediaProjectionService : Service() {
             )
             serviceScope.launch {
                 val handledByLive = try {
-                    container.liveTransport.submitFrame(view, trace, settings)
+                    container.liveTransport.submitFrame(view, trace, settings, ticket)
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
                     view.recycle()
                     throw cancelled

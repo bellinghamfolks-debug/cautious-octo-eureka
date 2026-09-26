@@ -51,11 +51,14 @@ assert on-device behaviour from unit tests alone.
   place that chooses a lane for each frame.
 - `capture/FrameBoundCoordinator.kt`: the single analysis lane. One turn is active at a time and a
   superseding turn cancels it.
-- `data/gemini/GeminiLiveTransport.kt`: the persistent Live WebSocket. Scene description is answered
-  as native audio; a reading is answered as native audio plus a `report_visible_text` function call
-  whose arguments carry the page's exact characters, because an audio session's only other text is a
-  transcript of its own speech. Read `LiveModelDirectory` and `LiveCloseVerdict` before changing how
-  a model is chosen or a refusal is judged — both encode verdicts measured on a real device.
+- `data/gemini/GeminiLiveTransport.kt`: the persistent Live WebSocket, to one pinned model. Scene
+  description is answered in the model's own voice; a reading is answered by a `report_visible_text`
+  function call whose arguments carry the page's exact characters, and the app speaks them — the
+  model's voice is never played while reading. Read `LiveTurnPolicy` and `LiveCloseVerdict` before
+  changing which model is used, what counts as an answer, who speaks, or how a refusal is judged —
+  each rule there encodes a failure measured on a real device, and `LiveTurnPolicyTest` replays it.
+- `data/speech/LiveReadingSpeaker.kt`: the one voice of a live reading. Every page goes through
+  `ReadingLedger` and the engine's reading queue, and a page still being spoken counts as heard.
 - `data/network/CellularNetworkManager.kt`: per-request cellular acquisition.
 - `data/security/AndroidKeystoreApiKeyStore.kt`: AES-GCM key storage.
 - `data/speech/BilingualTtsEngine.kt`: Arabic/English speech segmentation and the ordered, lossless

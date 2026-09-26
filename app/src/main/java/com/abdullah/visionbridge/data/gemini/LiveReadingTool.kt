@@ -36,6 +36,13 @@ object LiveReadingTool {
     const val UNREADABLE = "unreadable"
 
     /**
+     * One short Arabic sentence about the surroundings, asked for only when reading-with-description
+     * is on. It travels in the same call as the page because the model's own voice is not played
+     * while reading, so this is the only way a closing scene sentence can reach the user.
+     */
+    const val SCENE = "scene"
+
+    /**
      * Never [BLOCKING]: a blocking call halts generation until the client answers, which for a
      * blind user is speech stopping mid-sentence. `NON_BLOCKING` is the default on gemini-3.8-live
      * and mandatory on the extended-thinking variant, which rejects blocking declarations outright.
@@ -94,6 +101,16 @@ object LiveReadingTool {
                                                 "description",
                                                 "True when any part of the text could not be read.",
                                             ),
+                                    )
+                                    .put(
+                                        SCENE,
+                                        JSONObject()
+                                            .put("type", "STRING")
+                                            .put(
+                                                "description",
+                                                "Only when asked: one very short Arabic sentence " +
+                                                    "about the surroundings. Otherwise omit it.",
+                                            ),
                                     ),
                             )
                             .put("required", JSONArray().put(LINES)),
@@ -136,4 +153,7 @@ object LiveReadingTool {
             .filter { it.isNotEmpty() }
             .joinToString("\n")
     }
+
+    /** The optional closing scene sentence, trimmed, or empty. */
+    fun sceneFrom(args: JSONObject?): String = args?.optString(SCENE).orEmpty().trim()
 }
