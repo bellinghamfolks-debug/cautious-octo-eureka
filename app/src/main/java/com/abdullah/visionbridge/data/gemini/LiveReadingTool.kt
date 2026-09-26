@@ -36,9 +36,9 @@ object LiveReadingTool {
     const val UNREADABLE = "unreadable"
 
     /**
-     * One short Arabic sentence about the surroundings, asked for only when reading-with-description
-     * is on. It travels in the same call as the page because the model's own voice is not played
-     * while reading, so this is the only way a closing scene sentence can reach the user.
+     * A short Arabic description of the object and its surroundings, asked for only when
+     * reading-with-description is on. It travels in the same call as the page because the model's
+     * own voice is not played while reading, so this is the only way a description reaches the user.
      */
     const val SCENE = "scene"
 
@@ -108,8 +108,9 @@ object LiveReadingTool {
                                             .put("type", "STRING")
                                             .put(
                                                 "description",
-                                                "Only when asked: one very short Arabic sentence " +
-                                                    "about the surroundings. Otherwise omit it.",
+                                                "Only when asked: a two or three sentence Arabic " +
+                                                    "description of the object and its " +
+                                                    "surroundings. Otherwise omit it.",
                                             ),
                                     ),
                             )

@@ -31,19 +31,16 @@ class LiveTurnPolicyTest {
     }
 
     @Test
-    fun `a silent turn frees the lane and leaves the model where it is`() {
-        assertEquals(AfterSilence.FREE_LANE, LiveTurnPolicy.afterSilentTurn(1))
-        assertEquals(AfterSilence.FREE_LANE, LiveTurnPolicy.afterSilentTurn(2))
+    fun `a silent turn reopens the socket and leaves the model where it is`() {
+        // 17:28, 40.07 → 58.72: three quiet turns, then a reconnect, then the page 82 ms later.
+        assertEquals(AfterSilence.RECONNECT_SAME_MODEL, LiveTurnPolicy.afterSilentTurn(1))
         // Silence is not a connection failure, so it never reaches nextModel as one.
         assertEquals(PRIMARY_MODEL, LiveTurnPolicy.nextModel(PRIMARY_MODEL, 0, 0L, 9_190L))
     }
 
     @Test
-    fun `a run of silent turns reopens the socket to the same model`() {
-        assertEquals(
-            AfterSilence.RECONNECT_SAME_MODEL,
-            LiveTurnPolicy.afterSilentTurn(LiveTurnPolicy.SILENT_TURNS_BEFORE_RECONNECT),
-        )
+    fun `no turn is left waiting before the first reconnect`() {
+        assertEquals(AfterSilence.FREE_LANE, LiveTurnPolicy.afterSilentTurn(0))
     }
 
     @Test
@@ -126,6 +123,29 @@ class LiveTurnPolicyTest {
         assertFalse(LiveTurnPolicy.speaksTranscriptAtTurnEnd(AnalysisMode.TEXT_READING, false, false))
         // A description's transcript is already being heard in the model's voice.
         assertFalse(LiveTurnPolicy.speaksTranscriptAtTurnEnd(AnalysisMode.SCENE_DESCRIPTION, false, true))
+    }
+
+    // endregion
+
+    // region 17:28 session: answers thrown away because the camera moved
+
+    @Test
+    fun `a reading that arrives after the view moved is still read`() {
+        // 72.28 a small head movement; 73.21 the answer to the frame before it, marked stale.
+        assertTrue(LiveTurnPolicy.keepsAnswerAfterViewMoved(AnalysisMode.TEXT_READING))
+    }
+
+    @Test
+    fun `a description that arrives after the view moved is not`() {
+        assertFalse(LiveTurnPolicy.keepsAnswerAfterViewMoved(AnalysisMode.SCENE_DESCRIPTION))
+    }
+
+    @Test
+    fun `moving the camera does not cut a reading, only a different page does`() {
+        // 66.04, 71.15, 103.40: the chemistry summary cut and restarted from its first line.
+        assertFalse(LiveTurnPolicy.cutsSpeechOnTargetChange(AnalysisMode.TEXT_READING, true))
+        assertTrue(LiveTurnPolicy.cutsSpeechOnTargetChange(AnalysisMode.SCENE_DESCRIPTION, true))
+        assertFalse(LiveTurnPolicy.cutsSpeechOnTargetChange(AnalysisMode.SCENE_DESCRIPTION, false))
     }
 
     // endregion

@@ -18,6 +18,7 @@ object LiveVerdict {
         modelStruckAfterAnswering(events),
         readingSpokenByModelVoice(events),
         exactTextNeverSpoken(events),
+        answerDiscarded(events),
         frameBurst(events),
         pageReadTwice(events),
         firstFrameLate(events),
@@ -90,6 +91,23 @@ object LiveVerdict {
             headline = "النص الحرفي وصل من النموذج ولم يُقرأ ولم يُتخطَّ عمداً.",
             measurement = "$lost من ${reported.size} نصاً حرفياً بلا قراءة.",
             evidence = listOf("LIVE_TOOL_TEXT_REPORTED", "LIVE_READING_ACCEPTED", "LIVE_READING_SKIPPED"),
+        )
+    }
+
+    /** The model answered with a page and the app threw the answer away as stale. */
+    private fun answerDiscarded(events: List<Event>): Finding? {
+        val discarded = events.filter {
+            it.type == "LIVE_TOOL_TEXT_REPORTED" &&
+                it.flag("stale") == true &&
+                (it.number("characters") ?: 0.0) > 0.0
+        }
+        if (discarded.isEmpty()) return null
+        return Finding(
+            code = "ANSWER_DISCARDED_AS_STALE",
+            severity = Severity.MAJOR,
+            headline = "وصل النص من النموذج ورُمي لأن الكاميرا تحركت أثناء انتظاره.",
+            measurement = "${discarded.size} إجابة، مجموعها ${discarded.sumOf { it.number("characters") ?: 0.0 }.toInt()} حرفاً.",
+            evidence = listOf("LIVE_TOOL_TEXT_REPORTED"),
         )
     }
 

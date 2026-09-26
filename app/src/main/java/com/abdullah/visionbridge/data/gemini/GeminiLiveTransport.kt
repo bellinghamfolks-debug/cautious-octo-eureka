@@ -148,9 +148,6 @@ class GeminiLiveTransport(
      */
     @Volatile private var interruptRequested = false
 
-    /** Output until the next turn boundary belongs to a turn that a newer frame superseded. */
-    @Volatile private var staleBoundaryBlocked = false
-
     @Volatile private var firstAudioSeen = false
     @Volatile private var firstTextSeen = false
     @Volatile private var toolCallSeen = false
@@ -368,7 +365,10 @@ class GeminiLiveTransport(
                 speechRate = settings.speechRate
                 interruptOnChange = settings.interruptSpeechOnVisualChange
                 describeAlongside = settings.describeAlongsideText
-                staleBoundaryBlocked = superseding
+                // What arrives next answers this frame. The model answers a burst of frames once,
+                // from the newest image, and never closes the turn it abandoned: in the 17:28
+                // session no superseded turn produced an `interrupted` or a turnComplete of its
+                // own, so waiting for that boundary threw away the only answer that came.
                 resetTurnOutputLocked()
                 responseInFlight = true
             }
@@ -550,7 +550,6 @@ class GeminiLiveTransport(
             activeTurn = null
             responseInFlight = false
             interruptRequested = false
-            staleBoundaryBlocked = false
             lastAnswerHadText = false
             consecutiveSilentTurns = 0
             resetTurnOutputLocked()
@@ -899,10 +898,7 @@ class GeminiLiveTransport(
         val server = root.optJSONObject("serverContent") ?: return
 
         if (server.optBoolean("interrupted", false)) {
-            synchronized(stateLock) {
-                staleBoundaryBlocked = false
-                resetTurnOutputLocked()
-            }
+            synchronized(stateLock) { resetTurnOutputLocked() }
             DiagnosticHub.record(
                 "LIVE_TURN_INTERRUPTED",
                 activeTurn?.fields().orEmpty() + mapOf("epoch" to activeEpoch),
@@ -932,7 +928,7 @@ class GeminiLiveTransport(
             val first: Boolean
             synchronized(stateLock) {
                 val current = activeTurn ?: return
-                if (staleBoundaryBlocked || gate.rejection(current) != null) return
+                if (gate.rejection(current) != null) return
                 turn = current
                 epoch = activeEpoch
                 first = !firstAudioSeen
@@ -1001,7 +997,7 @@ class GeminiLiveTransport(
             val turn: AnalysisTurn?
             synchronized(stateLock) {
                 val current = activeTurn
-                turn = current?.takeIf { !staleBoundaryBlocked && gate.rejection(it) == null }
+                turn = current?.takeIf(::stillAnswerable)
                 if (turn != null) toolCallSeen = true
             }
             DiagnosticHub.record(
@@ -1029,7 +1025,7 @@ class GeminiLiveTransport(
     private fun publishReportedText(turn: AnalysisTurn, text: String, scene: String) {
         val first: Boolean
         synchronized(stateLock) {
-            if (activeTurn !== turn || staleBoundaryBlocked) return
+            if (activeTurn !== turn) return
             transcript = StringBuilder(text)
             toolTextForTurn = true
             first = !firstTextSeen
@@ -1076,7 +1072,7 @@ class GeminiLiveTransport(
         val first: Boolean
         synchronized(stateLock) {
             val current = activeTurn ?: return
-            if (staleBoundaryBlocked || gate.rejection(current) != null) return
+            if (!stillAnswerable(current)) return
             if (toolTextForTurn) return
             transcript.append(delta)
             fullText = transcript.toString().trim()
@@ -1104,29 +1100,21 @@ class GeminiLiveTransport(
     }
 
     private fun completeTurn() {
-        val wasBoundary: Boolean
         val turn: AnalysisTurn?
         val fullText: String
         val toolText: Boolean
         val mode: AnalysisMode
         synchronized(stateLock) {
-            wasBoundary = staleBoundaryBlocked
             fullText = transcript.toString().trim()
             toolText = toolTextForTurn
             mode = activeMode
             turn = activeTurn
-            if (wasBoundary) {
-                // The superseded turn ended; what follows belongs to the frame now in flight.
-                staleBoundaryBlocked = false
-                resetTurnOutputLocked()
-            } else {
-                responseInFlight = false
-                lastAnswerHadText = toolText || fullText.isNotBlank()
-            }
+            responseInFlight = false
+            lastAnswerHadText = toolText || fullText.isNotBlank()
         }
-        if (wasBoundary || turn == null) return
+        if (turn == null) return
         val fallback = LiveTurnPolicy.speaksTranscriptAtTurnEnd(mode, toolText, fullText.isNotBlank())
-        if (fallback && speechEnabled && gate.rejection(turn) == null) {
+        if (fallback && speechEnabled && stillAnswerable(turn)) {
             DiagnosticHub.record(
                 "LIVE_READING_FELL_BACK_TO_TRANSCRIPT",
                 turn.fields() + mapOf("characters" to fullText.length, "model" to activeModel),
@@ -1148,6 +1136,13 @@ class GeminiLiveTransport(
             ),
         )
     }
+
+    /**
+     * Whether output for [turn] may still be used. A description expires the moment the view moves;
+     * a reading does not — see [LiveTurnPolicy.keepsAnswerAfterViewMoved].
+     */
+    private fun stillAnswerable(turn: AnalysisTurn): Boolean =
+        LiveTurnPolicy.keepsAnswerAfterViewMoved(turn.mode) || gate.rejection(turn) == null
 
     private fun recordFirstText(turn: AnalysisTurn, channel: String) {
         val now = SystemClock.elapsedRealtimeNanos()
@@ -1250,9 +1245,13 @@ class GeminiLiveTransport(
 
     private fun instructionFor(settings: AppSettings): String = when (settings.mode) {
         AnalysisMode.TEXT_READING -> {
+            // Asked for as a real description, because "one very short sentence" produced exactly
+            // that: every scene in the 17:28 session was 11 to 30 characters — "غرفة مظلمة" — and
+            // the user's verdict was that the description was far too brief.
             val scene = if (settings.describeAlongsideText) {
-                " Also set scene to one very short Arabic sentence about the surroundings, only " +
-                    "if it is useful."
+                " Also set scene to a useful Arabic description in two or three sentences: what " +
+                    "the object or document is, its colours, shape and layout, where the text " +
+                    "sits on it, and anything around it that matters. Do not repeat the text itself."
             } else {
                 ""
             }
@@ -1306,10 +1305,7 @@ class GeminiLiveTransport(
             closeSocketLocked(reason)
             keyFingerprint = null
         }
-        synchronized(stateLock) {
-            responseInFlight = false
-            staleBoundaryBlocked = false
-        }
+        synchronized(stateLock) { responseInFlight = false }
         DiagnosticHub.record("LIVE_SOCKET_INVALIDATED", mapOf("reason" to reason))
     }
 
@@ -1326,10 +1322,7 @@ class GeminiLiveTransport(
             }
         }
         if (wasCurrent) {
-            synchronized(stateLock) {
-                responseInFlight = false
-                staleBoundaryBlocked = false
-            }
+            synchronized(stateLock) { responseInFlight = false }
         }
     }
 
@@ -1399,7 +1392,13 @@ class GeminiLiveTransport(
                 "punctuation, and give one array entry per visual line from top to bottom. Where a " +
                 "span is illegible write [؟] in its place rather than guessing, and set unreadable " +
                 "to true. If no text is legible, call the function with an empty lines array. " +
-                "Do not read the text aloud, do not summarise it and do not describe it. After the " +
+                // The glasses draw their own indicators into the mirrored image — a zoom level
+                // "1x" and a "0.6" at the edge — and in the 17:28 session they were read out as a
+                // page of their own and tacked onto the end of a fridge label.
+                "Ignore the viewing device's own on-screen indicators drawn over the camera image, " +
+                "such as a zoom level like 1x or a lone small number at the edge of the frame. " +
+                "Do not read the text aloud and do not summarise it; when the turn asks for a " +
+                "description, it goes in the function's scene field, never in speech. After the " +
                 "call, say nothing."
     }
 }

@@ -82,10 +82,11 @@ class LiveVerdictTest {
     }
 
     @Test
-    fun `a stale report belongs to a superseded turn and is not owed`() {
-        assertTrue(
-            codes(event("LIVE_TOOL_TEXT_REPORTED", 50_000, "turnId" to "t5", "characters" to 40, "stale" to true))
-                .isEmpty(),
+    fun `a page thrown away as stale is reported as discarded, not as unspoken`() {
+        // 17:28, 73.21: the answer to the frame in flight, discarded after a small head movement.
+        assertEquals(
+            listOf("ANSWER_DISCARDED_AS_STALE"),
+            codes(event("LIVE_TOOL_TEXT_REPORTED", 73_210, "turnId" to "t5", "characters" to 40, "stale" to true)),
         )
     }
 

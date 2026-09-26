@@ -91,8 +91,16 @@ object LiveTurnPolicy {
     /** How long a turn may go without any sign of an answer before the lane is freed. */
     const val FIRST_ANSWER_DEADLINE_MS = 6_000L
 
-    /** Quiet turns in a row on one socket before it is reopened, to the same model. */
-    const val SILENT_TURNS_BEFORE_RECONNECT = 3
+    /**
+     * Quiet turns in a row on one socket before it is reopened, to the same model.
+     *
+     * One. In the 17:28 session (build 66) a socket went quiet for three turns — eighteen seconds —
+     * and the moment it was reopened the model delivered a 938-character page 82 ms later: the
+     * answer had been stuck, not absent. Every other quiet turn in that session was the app
+     * discarding an answer it had received, which is fixed separately, so a quiet turn that is
+     * left is a stuck socket, and reopening it costs about a second.
+     */
+    const val SILENT_TURNS_BEFORE_RECONNECT = 1
 
     enum class AfterSilence {
         /** Stop waiting for this turn and let the newest frame go out. */
@@ -149,6 +157,31 @@ object LiveTurnPolicy {
         toolTextArrived: Boolean,
         transcriptNonBlank: Boolean,
     ): Boolean = mode == AnalysisMode.TEXT_READING && !toolTextArrived && transcriptNonBlank
+
+    /**
+     * Whether an answer still counts after the view moved on while it was being generated.
+     *
+     * In a reading, yes. A page says what it said when the frame was taken, and in the 17:28
+     * session a small head movement arrived during nearly every long answer: the answer was
+     * thrown away as stale, the next frame was deferred waiting for it, and the user waited two
+     * to six seconds for a page that had already arrived. Whether the view really changed is
+     * decided by the next answer — a different page replaces this one, the same page is skipped.
+     *
+     * In a description, no: a room is only true about the moment it was seen.
+     */
+    fun keepsAnswerAfterViewMoved(mode: AnalysisMode): Boolean = mode == AnalysisMode.TEXT_READING
+
+    /**
+     * Whether a target change should cut the speech that is playing.
+     *
+     * Not in a reading. The tracker sees the camera, not the page: in the 17:28 session it
+     * declared an immediate change every few seconds while the user held one chemistry summary,
+     * and the page was cut and restarted from its first line four times without a line of it
+     * finishing. What replaces a reading is a different page, and that is known only when the next
+     * answer arrives — [com.abdullah.visionbridge.data.speech.LiveReadingSpeaker] cuts it then.
+     */
+    fun cutsSpeechOnTargetChange(mode: AnalysisMode, immediateAndAllowed: Boolean): Boolean =
+        immediateAndAllowed && mode != AnalysisMode.TEXT_READING
 
     // endregion
 

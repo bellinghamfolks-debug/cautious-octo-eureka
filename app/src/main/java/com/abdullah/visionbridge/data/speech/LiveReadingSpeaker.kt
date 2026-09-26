@@ -61,8 +61,8 @@ class LiveReadingSpeaker(private val tts: BilingualTtsEngine) {
     /**
      * Speaks [text] if the user has not heard it, or only the part they have not heard.
      *
-     * [scene] is a closing sentence about the surroundings, spoken after the page and not recorded
-     * as part of it. [fields] identify the turn in the diagnostics. Returns whether anything was
+     * [scene] describes the object and its surroundings; it is spoken before a new page and not
+     * recorded as part of it. [fields] identify the turn in the diagnostics. Returns whether anything was
      * queued.
      */
     fun speak(
@@ -72,10 +72,12 @@ class LiveReadingSpeaker(private val tts: BilingualTtsEngine) {
         scene: String = "",
         fields: Map<String, Any?> = emptyMap(),
     ): Boolean {
+        val samePageAsInFlight: Boolean
         val (outcome, accepted) = synchronized(lock) {
             val current = liveInFlight()
-            val verdict = continuesInFlight(current?.document, current?.alreadyHeard, text)
-                ?: ledger.evaluate(text)
+            val continued = continuesInFlight(current?.document, current?.alreadyHeard, text)
+            samePageAsInFlight = continued != null
+            val verdict = continued ?: ledger.evaluate(text)
             val entry = (verdict as? ReadingLedger.Decision.Speak)
                 ?.let { InFlight(it.document, it.alreadyHeard) }
             if (entry != null) inFlight = entry
@@ -95,7 +97,13 @@ class LiveReadingSpeaker(private val tts: BilingualTtsEngine) {
         val decision = outcome as ReadingLedger.Decision.Speak
         val pending = checkNotNull(accepted)
         val blocks = blocksOf(decision.text)
-        val interrupting = interruptPrevious && !decision.continuation
+        // Only a different page cuts the one being read. The ledger may still call it a
+        // continuation — a page that shares a stray line with an old one is "continued" by it —
+        // but if it is not the page in flight, the page in flight is no longer what is in view.
+        val interrupting = interruptPrevious && !samePageAsInFlight
+        // Said first, and once per page: it says what is being read before the reading starts.
+        // After a thirty-line page it arrived minutes late, or never, once a new page cut in.
+        val intro = if (decision.continuation) "" else scene
         DiagnosticHub.record(
             "LIVE_READING_ACCEPTED",
             fields + mapOf(
@@ -105,7 +113,7 @@ class LiveReadingSpeaker(private val tts: BilingualTtsEngine) {
                 "continuation" to decision.continuation,
                 "interruptPrevious" to interrupting,
                 "contentHash" to contentHash(decision.document),
-                "sceneCharacters" to scene.length,
+                "sceneCharacters" to intro.length,
             ),
         )
         scope.launch {
@@ -113,12 +121,12 @@ class LiveReadingSpeaker(private val tts: BilingualTtsEngine) {
                 val readingId = tts.beginReading(interruptPrevious = interrupting)
                 pending.readingId = readingId
                 tracker.open(readingId, decision.alreadyHeard, blocks)
+                // Outside the tracker's blocks, so the description can neither hold up the page's
+                // accounting nor be mistaken for a line of it.
+                if (intro.isNotBlank()) tts.speakReadingBlock(readingId, SCENE_BLOCK, intro, rate)
                 blocks.forEachIndexed { index, block ->
                     tts.speakReadingBlock(readingId, index, block, rate)
                 }
-                // After the page and outside the tracker's blocks, so a scene sentence can neither
-                // hold up the page's accounting nor be mistaken for a line of it.
-                if (scene.isNotBlank()) tts.speakReadingBlock(readingId, blocks.size, scene, rate)
                 tts.finishReading(readingId)
             }
         }
@@ -156,6 +164,9 @@ class LiveReadingSpeaker(private val tts: BilingualTtsEngine) {
 
     companion object {
         private const val UNASSIGNED = -1L
+
+        /** The description's block index: outside every page's range, so the tracker ignores it. */
+        private const val SCENE_BLOCK = -2
 
         /** Longer than any page takes to read aloud; see [liveInFlight]. */
         private const val IN_FLIGHT_MAX_MS = 180_000L

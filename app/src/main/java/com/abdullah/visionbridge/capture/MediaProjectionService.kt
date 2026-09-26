@@ -33,6 +33,7 @@ import com.abdullah.visionbridge.data.diagnostics.DiagnosticHub
 import com.abdullah.visionbridge.data.diagnostics.FrameStages
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticTrace
 import com.abdullah.visionbridge.data.gemini.LiveTransportRouting
+import com.abdullah.visionbridge.data.gemini.LiveTurnPolicy
 import com.abdullah.visionbridge.domain.model.AnalysisMode
 import com.abdullah.visionbridge.domain.model.AppSettings
 import com.abdullah.visionbridge.domain.model.CaptureProfile
@@ -560,7 +561,12 @@ class MediaProjectionService : Service() {
                 } else if (policy.action != SmartTargetInterruptionPolicy.Action.NONE) {
                     val interruptNow = settings.interruptSpeechOnVisualChange &&
                         policy.action == SmartTargetInterruptionPolicy.Action.IMMEDIATE
-                    container.coordinator.onVisualTargetChanged(interruptNow)
+                    // The transport still hears the full decision, so a strong change sends the
+                    // new view at once. Whether the voice stops is the policy's call: a reading is
+                    // cut by a different page arriving, not by the camera moving.
+                    container.coordinator.onVisualTargetChanged(
+                        LiveTurnPolicy.cutsSpeechOnTargetChange(settings.mode, interruptNow),
+                    )
                     container.liveTransport.onVisualTargetChanged(interruptNow)
                     DiagnosticHub.record(
                         "SMART_TARGET_TRANSITION_APPLIED",
@@ -569,7 +575,7 @@ class MediaProjectionService : Service() {
                                 "lane" to "GEMINI_LIVE",
                                 "action" to policy.action.name,
                                 "interruptSettingEnabled" to settings.interruptSpeechOnVisualChange,
-                                "speechInterruptedNow" to interruptNow,
+                                "speechInterruptedNow" to LiveTurnPolicy.cutsSpeechOnTargetChange(settings.mode, interruptNow),
                                 "liveGenerationInvalidated" to true,
                                 "latestFrameWillWin" to true,
                             ),
