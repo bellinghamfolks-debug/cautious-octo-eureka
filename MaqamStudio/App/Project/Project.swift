@@ -84,6 +84,8 @@ struct MaqamSettings: Codable, Equatable {
 /// phases, and the structure exists now so saved projects carry it forward.
 struct ProcessingSettings: Codable, Equatable {
     var chainVersion: Int = 1
+    /// Pitch correction; absent until the user first tunes this project.
+    var tuning: PitchCorrectionSettings?
 }
 
 struct PlaybackSettings: Codable, Equatable {

@@ -105,7 +105,11 @@ def main() -> int:
     used = used_keys(prefixes)
     for key in sorted(used):
         for lang, entries in tables.items():
-            if key not in entries:
+            if key.endswith("."):
+                # A key built at run time ("preset." + name): its family must exist.
+                if not any(existing.startswith(key) for existing in entries):
+                    problems.append(f"{lang}: no keys for the run-time family {key}*")
+            elif key not in entries:
                 problems.append(f"{lang}: key used in code but not defined: {key}")
     if problems:
         print("\n".join(problems))

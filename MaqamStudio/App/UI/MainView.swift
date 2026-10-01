@@ -81,7 +81,9 @@ struct MainView: View {
         case .recording, .finishingRecording:
             RecordingPanel()
         case .importing(let fraction):
-            ProgressSection(fraction: fraction)
+            ProgressSection(titleKey: "progress.analyzing", fraction: fraction)
+        case .rendering(let fraction):
+            ProgressSection(titleKey: "progress.tuning", fraction: fraction) { model.cancelRendering() }
         case .idle:
             if model.hasAudio {
                 audioSections
@@ -108,6 +110,7 @@ struct MainView: View {
         MaqamSummaryView { showingMaqam = true }
         if model.analysis != nil {
             IntonationSummaryView { showingNotes = true }
+            TuningSection { showingMaqam = true }
         }
         if let analysis = model.analysis, let original = model.document?.original {
             AnalysisSummaryView(levels: analysis.levels, original: original)
@@ -241,15 +244,23 @@ struct RecoveryBanner: View {
 
 struct ProgressSection: View {
     @EnvironmentObject private var l10n: L10n
+    let titleKey: String
     let fraction: Double
+    var cancel: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(l10n("progress.analyzing")).font(.headline).accessibilityAddTraits(.isHeader)
+            Text(l10n(titleKey)).font(.headline).accessibilityAddTraits(.isHeader)
             ProgressView(value: fraction)
-                .accessibilityLabel(l10n("progress.analyzing"))
+                .accessibilityLabel(l10n(titleKey))
                 .accessibilityValue(l10n.percent(fraction))
             Text(l10n.percent(fraction)).font(.title3.monospacedDigit()).accessibilityHidden(true)
+            if let cancel {
+                Button(role: .cancel, action: cancel) {
+                    Label(l10n("action.cancel"), systemImage: "xmark.circle").frame(maxWidth: .infinity, minHeight: 48)
+                }
+                .buttonStyle(.bordered)
+            }
         }
     }
 }

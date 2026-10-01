@@ -12,7 +12,7 @@ VoiceOver.
 | 1 | Project structure, import, playback, recording, waveform, save/open | **Implemented** |
 | 2 | Pitch track, note segmentation, intonation against the maqam, pitch curve, note list, live tuner | **Implemented** |
 | 3 | Maqam engine UI: per-degree tuning, A4 reference, tuning tables, custom maqam editor, library import/export | **Implemented** |
-| 4 | Pitch correction (offline, then live) | Not started |
+| 4 | Pitch correction: Natural/Strong/Robotic and every control, formant preservation and shift, manual note pinning, A/B with measured before/after | **Implemented (offline)**; live correction comes with the live mode |
 | 5 | Maqam and tonic detection with confidence | Not started. The app says so and asks for a manual choice |
 | 6 | Auto Studio chain and genre profiles | Not started |
 | 7 | Export, stem separation interface | Not started |
@@ -96,6 +96,26 @@ degrees and 2 alternates each. A project using a custom maqam stores a copy
 of it, so editing or deleting it in the library, or opening the project on
 another device, never breaks the project. The library exports to a file and
 imports without replacing anything.
+
+## Pitch correction
+
+`computeCorrection` turns the notes into a per-frame shift in cents towards
+each note's maqam target (quarter tones and the user's degree tuning
+included). Vibrato is the residue around the note's centre, averaged over
+exactly one of its cycles, and is kept, scaled or re-paced; the slide into a
+note survives because correction ramps in over the retune time; slides and
+ornaments between notes are moved with their neighbours, not snapped, unless
+transition sensitivity says otherwise. Natural, Strong and Robotic are presets
+of the same controls; any note can be left as sung or pinned to a degree by
+hand.
+
+The shift is applied by TD-PSOLA: one grain per period, so formants stay put
+(or move on purpose with formant shift). Marks are found while streaming,
+grains are planned from the shift curve, and the output is rendered block by
+block from just the input each block needs — sample-identical to rendering the
+whole file. With no shift the output equals the input exactly. The corrected
+audio is written to `renders/tuned.caf` beside the untouched original, then
+analysed again so the reported "after" accuracy is measured, not assumed.
 
 ## Projects
 

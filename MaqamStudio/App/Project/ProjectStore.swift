@@ -21,6 +21,8 @@ final class ProjectStore {
     static let analysisName = "analysis.json"
     static let lockName = "session.lock"
     static let audioFolder = "audio"
+    static let rendersFolder = "renders"
+    static let renderInfoName = "tuned.json"
 
     let root: URL
     private let fileManager: FileManager
@@ -154,6 +156,31 @@ final class ProjectStore {
         guard let original = document.original, let url = originalURL(for: document),
               let digest = try? Self.sha256(of: url) else { return false }
         return digest == original.sha256
+    }
+
+    // MARK: Renders (derived audio, never the original)
+
+    func renderURL(for id: UUID, fileName: String) -> URL {
+        folder(for: id).appendingPathComponent(Self.rendersFolder, isDirectory: true).appendingPathComponent(fileName)
+    }
+
+    func prepareRendersFolder(for id: UUID) throws {
+        try fileManager.createDirectory(at: folder(for: id).appendingPathComponent(Self.rendersFolder, isDirectory: true),
+                                        withIntermediateDirectories: true)
+    }
+
+    func saveRenderInfo(_ info: TuningRenderInfo, for id: UUID) throws {
+        try prepareRendersFolder(for: id)
+        try Self.encoder.encode(info).write(to: renderURL(for: id, fileName: Self.renderInfoName), options: [.atomic])
+    }
+
+    /// The last tuning render, if its audio is still there.
+    func loadRenderInfo(for document: ProjectDocument) -> TuningRenderInfo? {
+        guard let data = try? Data(contentsOf: renderURL(for: document.id, fileName: Self.renderInfoName)),
+              let info = try? Self.decoder.decode(TuningRenderInfo.self, from: data),
+              info.sourceSHA256 == document.original?.sha256,
+              fileManager.fileExists(atPath: renderURL(for: document.id, fileName: info.fileName).path) else { return nil }
+        return info
     }
 
     // MARK: Analysis cache

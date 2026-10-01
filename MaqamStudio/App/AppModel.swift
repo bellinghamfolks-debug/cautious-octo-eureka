@@ -16,6 +16,7 @@ final class AppModel: ObservableObject {
         case importing(fraction: Double)
         case recording
         case finishingRecording
+        case rendering(fraction: Double)
     }
 
     // MARK: Published state
@@ -34,6 +35,10 @@ final class AppModel: ObservableObject {
     /// The microphone's pitch while recording or while the tuner is open.
     @Published private(set) var livePitch: LivePitch?
     @Published private(set) var tunerActive = false
+    /// The last tuning render of this project, if any.
+    @Published private(set) var tuningRender: TuningRenderInfo?
+    /// Whether playback uses the tuned render rather than the original.
+    @Published private(set) var listeningToTuned = false
     /// Whether the tuner speaks each newly held note (useful with VoiceOver).
     @Published var tunerSpeaksNotes: Bool = UserDefaults.standard.bool(forKey: AppModel.tunerSpeechKey) {
         didSet { UserDefaults.standard.set(tunerSpeaksNotes, forKey: Self.tunerSpeechKey) }
@@ -186,6 +191,8 @@ final class AppModel: ObservableObject {
         store?.unlock(id: current.id)
         document = nil
         analysis = nil
+        tuningRender = nil
+        listeningToTuned = false
         history.clear()
         updateUndoState()
         playbackState = .idle
@@ -218,6 +225,8 @@ final class AppModel: ObservableObject {
         store?.lock(id: opened.id)
         UserDefaults.standard.set(opened.id.uuidString, forKey: Self.lastProjectKey)
         analysis = store?.loadAnalysis(for: opened)
+        tuningRender = store?.loadRenderInfo(for: opened)
+        listeningToTuned = false
         position = opened.playback.positionSeconds
         if opened.original != nil {
             loadPlayback()
@@ -248,6 +257,7 @@ final class AppModel: ObservableObject {
         document = current
         updateUndoState()
         scheduleSave()
+        documentChanged()
     }
 
     func undo() {
@@ -257,6 +267,7 @@ final class AppModel: ObservableObject {
         document = current
         updateUndoState()
         scheduleSave()
+        documentChanged()
         announcer.announce(l10n("announce.undone", l10n(entry.actionKey)))
     }
 
@@ -267,6 +278,7 @@ final class AppModel: ObservableObject {
         document = current
         updateUndoState()
         scheduleSave()
+        documentChanged()
         announcer.announce(l10n("announce.redone", l10n(entry.actionKey)))
     }
 
@@ -495,7 +507,10 @@ final class AppModel: ObservableObject {
     var duration: Double { document?.original?.duration ?? 0 }
 
     private func loadPlayback() {
-        guard let store, let current = document, let url = store.originalURL(for: current) else { return }
+        guard let store, let current = document, var url = store.originalURL(for: current) else { return }
+        if listeningToTuned, tuningIsFresh, let render = tuningRender {
+            url = store.renderURL(for: current.id, fileName: render.fileName)
+        }
         do {
             try engine.load(url: url)
             try engine.seek(to: position)
@@ -644,6 +659,177 @@ final class AppModel: ObservableObject {
             }
         } else {
             heldStep = (named.step, named.octave, now)
+        }
+    }
+
+    // MARK: Pitch correction (phase 4)
+
+    /// The project's tuning settings, or the Natural preset before the first change.
+    var tuningSettings: PitchCorrectionSettings {
+        document?.processing.tuning ?? .preset(.natural)
+    }
+
+    /// What the tuned audio would depend on now; nil until maqam and tonic are chosen.
+    var currentTuningFingerprint: String? {
+        guard let maqam = effectiveMaqam, let tonic = document?.maqam.tonicHz,
+              let sha = document?.original?.sha256 else { return nil }
+        return TuningRenderer.fingerprint(settings: tuningSettings, maqam: maqam, tonicHz: tonic, sourceSHA256: sha)
+    }
+
+    /// Whether the tuned file matches the current settings, maqam and tonic.
+    var tuningIsFresh: Bool {
+        guard let render = tuningRender, let current = currentTuningFingerprint else { return false }
+        return render.fingerprint == current
+    }
+
+    var canTune: Bool {
+        hasAudio && !(pitch?.notes.isEmpty ?? true) && effectiveMaqam != nil && document?.maqam.tonicHz != nil
+    }
+
+    func chooseTuningPreset(_ preset: PitchCorrectionSettings.Preset) {
+        updateTuning(actionKey: "action.tuningpreset") { $0 = $0.applying(preset) }
+    }
+
+    func setTuning<Value>(_ keyPath: WritableKeyPath<PitchCorrectionSettings, Value>, to value: Value) {
+        updateTuning(actionKey: "action.tuningsetting") { settings in
+            settings[keyPath: keyPath] = value
+            settings.preset = .custom
+        }
+    }
+
+    /// Pins a note, leaves it alone, or (nil) returns it to automatic tuning.
+    func setNoteOverride(_ noteId: Int, _ override: PitchCorrectionSettings.NoteOverride?) {
+        updateTuning(actionKey: "action.noteoverride") { $0.noteOverrides[noteId] = override }
+    }
+
+    private func updateTuning(actionKey: String, _ change: (inout PitchCorrectionSettings) -> Void) {
+        let current = tuningSettings
+        edit(actionKey: actionKey) { editable in
+            var settings = editable.processing.tuning ?? current
+            change(&settings)
+            editable.processing.tuning = settings
+        }
+    }
+
+    /// After any edit: a tuned render that no longer matches is not played.
+    private func documentChanged() {
+        if listeningToTuned, !tuningIsFresh {
+            listeningToTuned = false
+            reloadKeepingPosition()
+            announcer.announce(l10n("announce.tunedstale"))
+        }
+    }
+
+    /// Renders the tuned version in the background, then measures it.
+    func renderTuning() {
+        guard activity == .idle, canTune, let store, let current = document, let original = current.original,
+              let source = store.originalURL(for: current), let pitch, let maqam = effectiveMaqam,
+              let tonic = current.maqam.tonicHz, let fingerprint = currentTuningFingerprint else { return }
+        let settings = tuningSettings
+        do {
+            try store.prepareRendersFolder(for: current.id)
+            try store.ensureSpace(forBytes: Int64(original.frames) * Int64(max(1, original.channels)) * 4)
+        } catch {
+            present(error) { .projectSaveFailed(detail: $0) }
+            return
+        }
+        stopTuner()
+        if listeningToTuned {
+            listeningToTuned = false
+            reloadKeepingPosition()
+        }
+        let projectId = current.id
+        let temporary = store.renderURL(for: projectId, fileName: "rendering-\(UUID().uuidString).caf")
+        let destination = store.renderURL(for: projectId, fileName: TuningRenderer.fileName)
+        activity = .rendering(fraction: 0)
+        announcer.reset(task: "tuning")
+        announcer.announce(l10n("announce.tuning"))
+        let reportProgress: @Sendable (Double) -> Void = { [weak self] fraction in
+            Task { @MainActor in self?.renderProgress(fraction) }
+        }
+        importTask = Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<TuningRenderInfo.Measured?, Error> in
+                Result {
+                    try TuningRenderer.render(source: source, destination: temporary, pitch: pitch, maqam: maqam,
+                                              tonicHz: tonic, settings: settings, progress: reportProgress)
+                    // Measure the result itself rather than assume the correction worked.
+                    let check = try AudioFileReader.analyzeFully(temporary, buckets: 64) { reportProgress(0.9 + 0.1 * $0) }
+                    guard let notes = check.pitch?.notes,
+                          let measured = Intonation.evaluate(notes, maqam: maqam, tonicHz: tonic) else { return nil }
+                    return TuningRenderInfo.Measured(noteCount: notes.count, inTuneFraction: measured.inTuneFraction,
+                                                     meanAbsoluteDeviationCents: measured.meanAbsoluteDeviationCents)
+                }
+            }.value
+            guard let self else { return }
+            self.activity = .idle
+            guard self.document?.id == projectId else { try? FileManager.default.removeItem(at: temporary); return }
+            switch result {
+            case .success(let measured):
+                do {
+                    if FileManager.default.fileExists(atPath: destination.path) {
+                        _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
+                    } else {
+                        try FileManager.default.moveItem(at: temporary, to: destination)
+                    }
+                    let info = TuningRenderInfo(fileName: TuningRenderer.fileName, sourceSHA256: original.sha256,
+                                                fingerprint: fingerprint, renderedAt: Date(), after: measured)
+                    try store.saveRenderInfo(info, for: projectId)
+                    self.tuningRender = info
+                    self.listeningToTuned = true
+                    self.reloadKeepingPosition()
+                    self.announcer.announce(self.tuningResultText, important: true)
+                } catch {
+                    self.present(error) { .projectSaveFailed(detail: $0) }
+                }
+            case .failure(let failure):
+                try? FileManager.default.removeItem(at: temporary)
+                if failure is CancellationError { return }
+                self.present(failure) { .projectSaveFailed(detail: $0) }
+            }
+        }
+    }
+
+    /// "Accuracy before 62%, after 97%", for the screen and VoiceOver.
+    var tuningResultText: String {
+        guard let after = tuningRender?.after else { return l10n("tuning.done") }
+        let before = intonation.map { l10n.percent($0.inTuneFraction) } ?? "–"
+        return l10n("tuning.result", before, l10n.percent(after.inTuneFraction),
+                    l10n.number(after.meanAbsoluteDeviationCents.rounded()))
+    }
+
+    private func renderProgress(_ fraction: Double) {
+        guard case .rendering = activity else { return }
+        activity = .rendering(fraction: fraction)
+        announcer.progress(task: "tuning", fraction: fraction) { [l10n] reached in
+            l10n("announce.tuningprogress", l10n.percent(reached))
+        }
+    }
+
+    func cancelRendering() {
+        guard case .rendering = activity else { return }
+        importTask?.cancel()
+        activity = .idle
+        announcer.announce(l10n("announce.tuningcancelled"))
+    }
+
+    /// Switches between the original and the tuned render at the same moment.
+    func setListening(tuned: Bool) {
+        guard tuned != listeningToTuned else { return }
+        if tuned, !tuningIsFresh { return }
+        listeningToTuned = tuned
+        reloadKeepingPosition()
+        announcer.announce(l10n(tuned ? "announce.listeningtuned" : "announce.listeningoriginal"))
+    }
+
+    private func reloadKeepingPosition() {
+        let wasPlaying = engine.state == .playing
+        let at = wasPlaying ? engine.position : position
+        loadPlayback()
+        position = at
+        try? engine.seek(to: at)
+        if wasPlaying {
+            try? engine.play()
+            playbackState = engine.state
         }
     }
 
