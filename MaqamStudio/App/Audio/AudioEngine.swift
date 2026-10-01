@@ -33,7 +33,7 @@ final class AudioEngine {
     var onPlaybackFinished: (() -> Void)?
 
     // Recording
-    private var recordingFile: AVAudioFile?
+    private var recordingFile: AudioFileWriter?
     private var recordingURL: URL?
     private var recordedFrames: AVAudioFramePosition = 0
     private var recordingError: Error?
@@ -160,17 +160,9 @@ final class AudioEngine {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw AppError.noInputDevice }
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: format.sampleRate,
-            AVNumberOfChannelsKey: format.channelCount,
-            AVLinearPCMBitDepthKey: 32,
-            AVLinearPCMIsFloatKey: true,
-            AVLinearPCMIsNonInterleaved: false,
-        ]
-        let file: AVAudioFile
+        let file: AudioFileWriter
         do {
-            file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+            file = try AudioFileWriter(url: url, format: format)
         } catch {
             throw AppError.recordingFailed(detail: (error as NSError).localizedDescription)
         }
@@ -228,11 +220,11 @@ final class AudioEngine {
         guard state == .recording, let url = recordingURL else { throw AppError.recordingFailed(detail: "not recording") }
         engine.inputNode.removeTap(onBus: 0)
         state = .idle
-        // Wait for every queued chunk to reach the file before closing it.
-        writerQueue.sync {}
+        // Wait for every queued chunk to reach the file, then complete it.
+        writerQueue.sync { recordingFile?.close() }
         let frames = recordedFrames
         let error = recordingError
-        recordingFile = nil  // releasing the AVAudioFile finalises the CAF header
+        recordingFile = nil
         recordingURL = nil
         if let error { throw AppError.recordingFailed(detail: (error as NSError).localizedDescription) }
         return (url, frames)
@@ -240,7 +232,7 @@ final class AudioEngine {
 
     var recordedSeconds: Double {
         guard let file = recordingFile else { return 0 }
-        return Double(recordedFrames) / file.processingFormat.sampleRate
+        return Double(recordedFrames) / file.format.sampleRate
     }
 
     private func captured(_ buffer: AVAudioPCMBuffer, analyzer: LivePitchAnalyzer?) {
@@ -261,7 +253,7 @@ final class AudioEngine {
         writerQueue.async { [weak self] in
             guard let self, let file = self.recordingFile else { return }
             do {
-                try file.write(from: copy)
+                try file.write(copy)
                 self.recordedFrames += AVAudioFramePosition(copy.frameLength)
             } catch {
                 self.recordingError = error

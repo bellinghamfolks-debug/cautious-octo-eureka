@@ -48,9 +48,11 @@ final class TuningTests: XCTestCase {
         settings.strength = 0
         let output = try render(source, settings: settings, maqam: bayati(), tonic: d4)
         addTeardownBlock { try? FileManager.default.removeItem(at: output) }
+        XCTAssertEqual(try AVAudioFile(forReading: output).length, try AVAudioFile(forReading: source).length,
+                       "length stored in the file")
         let original = try TestSupport.monoSamples(of: source).samples
         let tuned = try TestSupport.monoSamples(of: output).samples
-        XCTAssertEqual(original.count, tuned.count)
+        XCTAssertEqual(original.count, tuned.count, "frames read back")
         let worst = zip(original, tuned).map { abs($0 - $1) }.max() ?? 1
         XCTAssertLessThan(worst, 1e-4)
     }

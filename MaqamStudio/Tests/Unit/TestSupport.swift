@@ -56,16 +56,23 @@ struct AVAudioFileBox {
     init(url: URL) throws {
         let file = try AVAudioFile(forReading: url)
         let format = file.processingFormat
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(file.length)) else {
+        let chunk: AVAudioFrameCount = 4096
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: chunk) else {
             throw CocoaError(.fileReadUnknown)
         }
-        try file.read(into: buffer)
         let channels = Int(format.channelCount)
-        let frames = Int(buffer.frameLength)
-        var mono = [Float](repeating: 0, count: frames)
-        if let data = buffer.floatChannelData {
-            for channel in 0..<channels {
-                for frame in 0..<frames { mono[frame] += data[channel][frame] / Float(channels) }
+        var mono: [Float] = []
+        mono.reserveCapacity(Int(file.length))
+        // One read may return fewer frames than asked; read until the end.
+        while file.framePosition < file.length {
+            try file.read(into: buffer, frameCount: chunk)
+            let frames = Int(buffer.frameLength)
+            if frames == 0 { break }
+            guard let data = buffer.floatChannelData else { break }
+            for frame in 0..<frames {
+                var sum: Float = 0
+                for channel in 0..<channels { sum += data[channel][frame] }
+                mono.append(sum / Float(channels))
             }
         }
         self.mono = mono

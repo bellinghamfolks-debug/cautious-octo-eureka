@@ -178,14 +178,10 @@ enum TuningRenderer {
         }) else { throw AppError.coreFailure(code: Int32(MQ_ERROR_OUT_OF_MEMORY.rawValue)) }
         defer { mq_grain_plan_destroy(plan) }
 
-        // 3. Output, block by block, each from just the input it needs. The
-        // writer must be gone before this returns: AVAudioFile finishes the file
-        // only when it is released, and an autoreleased writer would leave a
-        // short file behind for whoever reads it next.
-        try autoreleasepool {
-            try writeOutput(plan: plan, input: input, format: format, total: total, block: block,
-                            destination: destination, settings: settings, progress: progress)
-        }
+        // 3. Output, block by block, each from just the input it needs; the file
+        // is complete when this returns.
+        try writeOutput(plan: plan, input: input, format: format, total: total, block: block,
+                        destination: destination, settings: settings, progress: progress)
     }
 
     private static func writeOutput(plan: OpaquePointer, input: AVAudioFile, format: AVAudioFormat,
@@ -193,19 +189,14 @@ enum TuningRenderer {
                                     settings: PitchCorrectionSettings,
                                     progress: @escaping @Sendable (Double) -> Void) throws {
         let channels = Int(format.channelCount)
-        let outputSettings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: format.sampleRate,
-            AVNumberOfChannelsKey: channels, AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true,
-            AVLinearPCMIsNonInterleaved: false,
-        ]
         try? FileManager.default.removeItem(at: destination)
-        let output: AVAudioFile
+        let output: AudioFileWriter
         do {
-            output = try AVAudioFile(forWriting: destination, settings: outputSettings, commonFormat: .pcmFormatFloat32,
-                                     interleaved: false)
+            output = try AudioFileWriter(url: destination, format: format)
         } catch {
             throw AppError.from(error) { .projectSaveFailed(detail: $0) }
         }
+        defer { output.close() }
         guard let written = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: block) else {
             throw AppError.audioEngineFailed(detail: "buffer")
         }
@@ -242,7 +233,7 @@ enum TuningRenderer {
             }
             guard status == MQ_OK else { throw AppError.coreFailure(code: Int32(status.rawValue)) }
             written.frameLength = AVAudioFrameCount(frames)
-            do { try output.write(from: written) } catch { throw AppError.from(error) { .projectSaveFailed(detail: $0) } }
+            do { try output.write(written) } catch { throw AppError.from(error) { .projectSaveFailed(detail: $0) } }
             start += AVAudioFramePosition(frames)
             progress(0.3 + 0.6 * Double(start) / Double(total))
         }
