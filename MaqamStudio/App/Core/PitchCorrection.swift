@@ -178,7 +178,21 @@ enum TuningRenderer {
         }) else { throw AppError.coreFailure(code: Int32(MQ_ERROR_OUT_OF_MEMORY.rawValue)) }
         defer { mq_grain_plan_destroy(plan) }
 
-        // 3. Output, block by block, each from just the input it needs.
+        // 3. Output, block by block, each from just the input it needs. The
+        // writer must be gone before this returns: AVAudioFile finishes the file
+        // only when it is released, and an autoreleased writer would leave a
+        // short file behind for whoever reads it next.
+        try autoreleasepool {
+            try writeOutput(plan: plan, input: input, format: format, total: total, block: block,
+                            destination: destination, settings: settings, progress: progress)
+        }
+    }
+
+    private static func writeOutput(plan: OpaquePointer, input: AVAudioFile, format: AVAudioFormat,
+                                    total: AVAudioFramePosition, block: AVAudioFrameCount, destination: URL,
+                                    settings: PitchCorrectionSettings,
+                                    progress: @escaping @Sendable (Double) -> Void) throws {
+        let channels = Int(format.channelCount)
         let outputSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: format.sampleRate,
             AVNumberOfChannelsKey: channels, AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true,
