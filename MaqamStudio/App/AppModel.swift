@@ -31,6 +31,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var canUndo = false
     @Published private(set) var canRedo = false
     @Published var error: AppError?
+    /// The microphone's pitch while recording or while the tuner is open.
+    @Published private(set) var livePitch: LivePitch?
+    @Published private(set) var tunerActive = false
+    /// Whether the tuner speaks each newly held note (useful with VoiceOver).
+    @Published var tunerSpeaksNotes: Bool = UserDefaults.standard.bool(forKey: AppModel.tunerSpeechKey) {
+        didSet { UserDefaults.standard.set(tunerSpeaksNotes, forKey: Self.tunerSpeechKey) }
+    }
     /// Set when the last session ended without closing this project.
     @Published var recoveryNotice: String?
 
@@ -46,8 +53,11 @@ final class AppModel: ObservableObject {
     private var positionTimer: Timer?
     private var recordingStartedAt: Date?
     private var observers: [NSObjectProtocol] = []
+    private var heldStep: (step: Int, octave: Int, since: Date)?
+    private var announcedStep: (step: Int, octave: Int)?
 
     static let lastProjectKey = "maqamstudio.lastProject"
+    static let tunerSpeechKey = "maqamstudio.tuner.speak"
     /// How long after an edit the project is written to disk.
     static let autosaveDelay: Duration = .milliseconds(800)
 
@@ -61,6 +71,7 @@ final class AppModel: ObservableObject {
         }
         engine.onPlaybackFinished = { [weak self] in self?.playbackFinished() }
         engine.onInputLevel = { [weak self] level in self?.inputLevel = level }
+        engine.onLivePitch = { [weak self] pitch in self?.receivedLivePitch(pitch) }
         observeSystemEvents()
     }
 
@@ -162,6 +173,7 @@ final class AppModel: ObservableObject {
 
     func closeCurrentProject() {
         guard let current = document else { return }
+        stopTuner()
         importTask?.cancel()
         if activity == .recording { stopRecording() }
         engine.unload()
@@ -183,6 +195,8 @@ final class AppModel: ObservableObject {
 
     private func enteredBackground() {
         flush()
+        // The tuner listens only while it is on screen.
+        stopTuner()
         // Recording and playback keep running in the background (audio
         // background mode), so their project stays open and locked.
         if activity == .recording || playbackState == .playing { return }
@@ -352,15 +366,15 @@ final class AppModel: ObservableObject {
             Task { @MainActor in self?.analysisProgress(fraction) }
         }
         importTask = Task { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) { () -> Result<(LevelSummary, WaveformSummary), Error> in
-                Result { try AudioFileReader.analyze(url, progress: reportProgress) }
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<AudioFileReader.FullAnalysis, Error> in
+                Result { try AudioFileReader.analyzeFully(url, progress: reportProgress) }
             }.value
             guard let self, self.document?.id == projectId else { return }
             self.activity = .idle
             switch result {
-            case .success(let (levels, waveform)):
-                let analysis = AudioAnalysis(levels: levels, waveform: waveform, analyzedAt: Date(),
-                                             sourceSHA256: original.sha256)
+            case .success(let full):
+                let analysis = AudioAnalysis(levels: full.levels, waveform: full.waveform, analyzedAt: Date(),
+                                             sourceSHA256: original.sha256, pitch: full.pitch)
                 self.analysis = analysis
                 try? store.saveAnalysis(analysis, for: projectId)
                 self.announcer.announce(self.l10n("announce.analyzed"), important: true)
@@ -386,20 +400,27 @@ final class AppModel: ObservableObject {
         Task { await beginRecording() }
     }
 
-    private func beginRecording() async {
+    /// Asks for the microphone if needed; reports why it cannot be used if not.
+    private func microphoneReady() async -> Bool {
         switch session.recordPermission {
         case .denied:
             error = .microphonePermissionDenied
-            return
+            return false
         case .undetermined:
             guard await session.requestRecordPermission() else {
                 error = .microphonePermissionDenied
-                return
+                return false
             }
         case .granted:
             break
         }
-        guard session.hasInput else { error = .noInputDevice; return }
+        guard session.hasInput else { error = .noInputDevice; return false }
+        return true
+    }
+
+    private func beginRecording() async {
+        guard await microphoneReady() else { return }
+        stopTuner()
         do {
             try store?.ensureSpace(forBytes: 300 * 1024 * 1024)
             try session.configure()
@@ -425,6 +446,7 @@ final class AppModel: ObservableObject {
     func stopRecording() {
         guard activity == .recording else { return }
         activity = .finishingRecording
+        livePitch = nil
         stopPositionTimer()
         let take: (url: URL, frames: AVAudioFramePosition)
         do {
@@ -484,6 +506,7 @@ final class AppModel: ObservableObject {
 
     func play() {
         guard hasAudio, activity == .idle else { return }
+        stopTuner()
         do {
             if position >= duration - 0.05 { try engine.seek(to: 0) }
             try engine.play()
@@ -552,6 +575,74 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Plays from the start of a note, as from the notes list.
+    func play(from seconds: Double) {
+        seek(to: seconds)
+        if engine.state != .playing { play() }
+    }
+
+    // MARK: Pitch and intonation
+
+    var pitch: PitchAnalysis? { analysis?.pitch }
+
+    /// The maqam as the user has tuned it (built-in degrees plus their offsets).
+    var effectiveMaqam: MaqamDefinition? {
+        guard let maqam = currentMaqam else { return nil }
+        return maqam.applying(offsets: document?.maqam.degreeOffsets ?? [:])
+    }
+
+    /// The notes judged against the chosen maqam and tonic; nil until both are chosen.
+    var intonation: Intonation? {
+        guard let notes = pitch?.notes, let maqam = effectiveMaqam, let tonic = document?.maqam.tonicHz else { return nil }
+        return Intonation.evaluate(notes, maqam: maqam, tonicHz: tonic)
+    }
+
+    // MARK: Live tuner
+
+    func startTuner() {
+        guard activity == .idle, !tunerActive else { return }
+        Task {
+            guard await microphoneReady() else { return }
+            do {
+                stopPlayback()
+                try session.configure()
+                try engine.startMonitoring()
+                tunerActive = true
+                heldStep = nil
+                announcedStep = nil
+                announcer.announce(l10n("announce.tunerstarted"))
+            } catch {
+                present(error) { .audioEngineFailed(detail: $0) }
+            }
+        }
+    }
+
+    func stopTuner() {
+        guard tunerActive else { return }
+        engine.stopMonitoring()
+        tunerActive = false
+        livePitch = nil
+    }
+
+    private func receivedLivePitch(_ pitch: LivePitch) {
+        guard tunerActive || activity == .recording else { return }
+        livePitch = pitch
+        guard tunerActive, tunerSpeaksNotes else { return }
+        guard pitch.voiced else { heldStep = nil; return }
+        let named = PitchNaming.name(hz: pitch.hz, a4Hz: document?.maqam.a4Hz ?? 440)
+        let now = Date()
+        if let held = heldStep, held.step == named.step, held.octave == named.octave {
+            // Spoken once the note has been held half a second, and only when it changes.
+            if now.timeIntervalSince(held.since) >= 0.5,
+               announcedStep.map({ $0.step != named.step || $0.octave != named.octave }) ?? true {
+                announcedStep = (named.step, named.octave)
+                announcer.announce(TunerText.spoken(pitch, model: self, l10n: l10n))
+            }
+        } else {
+            heldStep = (named.step, named.octave, now)
+        }
+    }
+
     // MARK: Maqam (manual choice; detection arrives with phase 5)
 
     func chooseMaqam(id: String?) {
@@ -595,6 +686,7 @@ final class AppModel: ObservableObject {
 
     private func interrupted() {
         if activity == .recording { stopRecording() }
+        if tunerActive { tunerActive = false; livePitch = nil }
         engine.interrupt()
         playbackState = engine.state
         stopPositionTimer()

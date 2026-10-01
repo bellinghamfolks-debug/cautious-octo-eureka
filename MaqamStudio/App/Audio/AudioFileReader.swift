@@ -46,10 +46,24 @@ enum AudioFileReader {
             formatDescription: describe(file.fileFormat, fileExtension: fileExtension))
     }
 
-    /// Analyses levels and builds the waveform summary, reporting progress in [0, 1].
-    /// Throws `CancellationError` when the surrounding task is cancelled.
+    /// Levels and the waveform summary only, without pitch.
     static func analyze(_ url: URL, buckets: Int = 1200,
                         progress: @escaping @Sendable (Double) -> Void) throws -> (LevelSummary, WaveformSummary) {
+        let result = try analyzeFully(url, buckets: buckets, includePitch: false, progress: progress)
+        return (result.levels, result.waveform)
+    }
+
+    struct FullAnalysis {
+        var levels: LevelSummary
+        var waveform: WaveformSummary
+        var pitch: PitchAnalysis?
+    }
+
+    /// Levels, waveform and (optionally) the pitch track and its notes, all in
+    /// one decoding pass, reporting progress in [0, 1]. Throws
+    /// `CancellationError` when the surrounding task is cancelled.
+    static func analyzeFully(_ url: URL, buckets: Int = 1200, includePitch: Bool = true,
+                             progress: @escaping @Sendable (Double) -> Void) throws -> FullAnalysis {
         let file: AVAudioFile
         do {
             file = try AVAudioFile(forReading: url)
@@ -68,6 +82,8 @@ enum AudioFileReader {
             throw AppError.audioEngineFailed(detail: "buffer")
         }
         var interleaved = [Float](repeating: 0, count: Int(chunkFrames) * channels)
+        var mono = [Float](repeating: 0, count: Int(chunkFrames))
+        let pitch: StreamingPitchAnalyzer? = try includePitch ? StreamingPitchAnalyzer(sampleRate: format.sampleRate) : nil
         var processed: UInt64 = 0
 
         while processed < total {
@@ -81,18 +97,30 @@ enum AudioFileReader {
             let frames = Int(buffer.frameLength)
             if frames == 0 { break }
             guard let channelData = buffer.floatChannelData else { throw AppError.corruptedAudio }
+            let scale = 1 / Float(channels)
             for frame in 0..<frames {
+                var sum: Float = 0
                 for channel in 0..<channels {
-                    interleaved[frame * channels + channel] = channelData[channel][frame]
+                    let sample = channelData[channel][frame]
+                    interleaved[frame * channels + channel] = sample
+                    sum += sample
                 }
+                mono[frame] = sum * scale
             }
             interleaved.withUnsafeBufferPointer { pointer in
                 if let base = pointer.baseAddress { analyzer.push(interleaved: base, frames: frames) }
             }
+            if let pitch {
+                mono.withUnsafeBufferPointer { pointer in
+                    if let base = pointer.baseAddress { pitch.push(mono: base, frames: frames) }
+                }
+            }
             processed += UInt64(frames)
             progress(min(1, Double(processed) / Double(total)))
         }
-        return try analyzer.finish()
+        let (levels, waveform) = try analyzer.finish()
+        try Task.checkCancellation()
+        return FullAnalysis(levels: levels, waveform: waveform, pitch: try pitch?.finish())
     }
 
     private static func describe(_ format: AVAudioFormat, fileExtension: String) -> String {

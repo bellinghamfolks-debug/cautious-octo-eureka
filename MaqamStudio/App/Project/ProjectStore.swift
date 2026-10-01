@@ -167,7 +167,8 @@ final class ProjectStore {
         let url = folder(for: document.id).appendingPathComponent(Self.analysisName)
         guard let data = try? Data(contentsOf: url),
               let analysis = try? Self.decoder.decode(AudioAnalysis.self, from: data),
-              analysis.sourceSHA256 == document.original?.sha256 else { return nil }
+              analysis.sourceSHA256 == document.original?.sha256,
+              analysis.pitch?.version == PitchAnalysis.currentVersion else { return nil }
         return analysis
     }
 

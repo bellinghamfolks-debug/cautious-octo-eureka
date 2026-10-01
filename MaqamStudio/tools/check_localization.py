@@ -57,12 +57,25 @@ def placeholders(value: str) -> list[str]:
     return [f"{index + 1}{kind}" for index, (_, kind) in enumerate(found)]
 
 
-def used_keys() -> set[str]:
+LITERAL = re.compile(r'"([a-z]+(?:\.[a-z0-9_]+)+)"')
+NOT_KEYS = re.compile(r"\.(json|bak|lock|tmp|wav|caf)$")
+SYMBOLS = re.compile(r"(systemName|systemImage):.*$", re.M)
+
+
+def used_keys(prefixes: set[str] | None = None) -> set[str]:
     keys: set[str] = set()
     for swift in APP.rglob("*.swift"):
         source = swift.read_text(encoding="utf-8")
         for pattern in USES:
             keys.update(pattern.findall(source))
+        # Keys chosen by a condition (l10n(flag ? "a.b" : "a.c")) are plain
+        # literals; any literal under a prefix the tables use counts as a key.
+        if prefixes:
+            # SF Symbol names ("waveform.circle") look like keys; drop them.
+            symbols_removed = SYMBOLS.sub("", source)
+            for literal in LITERAL.findall(symbols_removed):
+                if literal.split(".")[0] in prefixes and not NOT_KEYS.search(literal):
+                    keys.add(literal)
     core = (ROOT / "Core" / "src" / "maqam.cpp").read_text(encoding="utf-8")
     for jins in set(JINS.findall(core)):
         keys.add("jins." + jins.removeprefix("jins ").replace(" ", "_"))
@@ -88,14 +101,16 @@ def main() -> int:
     for key in sorted(set(ar) & set(en)):
         if placeholders(ar[key]) != placeholders(en[key]):
             problems.append(f"placeholders differ for {key}: ar={ar[key]!r} en={en[key]!r}")
-    for key in sorted(used_keys()):
+    prefixes = {key.split(".")[0] for key in en} - {"maqamstudio"}
+    used = used_keys(prefixes)
+    for key in sorted(used):
         for lang, entries in tables.items():
             if key not in entries:
                 problems.append(f"{lang}: key used in code but not defined: {key}")
     if problems:
         print("\n".join(problems))
         return 1
-    print(f"Localization OK: {len(ar)} keys in each language, {len(used_keys())} referenced from code.")
+    print(f"Localization OK: {len(ar)} keys in each language, {len(used)} referenced from code.")
     return 0
 
 

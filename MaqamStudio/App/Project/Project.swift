@@ -94,6 +94,9 @@ struct AudioAnalysis: Codable, Equatable {
     var analyzedAt: Date
     /// The original's checksum at the time of analysis, to detect staleness.
     var sourceSHA256: String
+    /// Absent in analyses saved before pitch tracking existed; such a cache is
+    /// treated as stale and redone.
+    var pitch: PitchAnalysis?
 }
 
 /// A row in the projects list, read without loading the whole project.

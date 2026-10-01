@@ -11,7 +11,7 @@ import Foundation
 ///   the file write, so a slow disk can never stall capture.
 /// - Public methods are called from the main actor.
 final class AudioEngine {
-    enum State: Equatable { case idle, playing, paused, recording }
+    enum State: Equatable { case idle, playing, paused, recording, monitoring }
 
     struct InputLevel: Equatable {
         var peakDbfs: Double
@@ -21,6 +21,8 @@ final class AudioEngine {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private let writerQueue = DispatchQueue(label: "maqamstudio.recording-writer", qos: .userInitiated)
+    /// Live pitch detection runs here, fed copies of the input; never on the render thread.
+    private let analysisQueue = DispatchQueue(label: "maqamstudio.live-pitch", qos: .userInitiated)
 
     private(set) var state: State = .idle
 
@@ -37,6 +39,9 @@ final class AudioEngine {
     private var recordingError: Error?
     private var lastLevelReport = Date.distantPast
     var onInputLevel: ((InputLevel) -> Void)?
+    /// Pitch of the input while recording or monitoring, on the main queue.
+    var onLivePitch: ((LivePitch) -> Void)?
+    private var lastPitchReport = Date.distantPast
 
     init() {
         engine.attach(player)
@@ -151,6 +156,7 @@ final class AudioEngine {
     /// Starts writing the input to a new 32-bit float CAF at `url`.
     func startRecording(to url: URL) throws {
         stopPlayback()
+        stopMonitoring()
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw AppError.noInputDevice }
@@ -173,18 +179,48 @@ final class AudioEngine {
         recordedFrames = 0
         recordingError = nil
 
+        // Set before the tap exists, so its first buffer is already written.
+        state = .recording
+        do {
+            try installInputTap(format: format)
+        } catch {
+            state = .idle
+            recordingFile = nil
+            throw error
+        }
+    }
+
+    /// Listens to the input for live pitch without recording it.
+    func startMonitoring() throws {
+        guard state != .recording, state != .monitoring else { return }
+        stopPlayback()
+        let format = engine.inputNode.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else { throw AppError.noInputDevice }
+        try installInputTap(format: format)
+        state = .monitoring
+    }
+
+    func stopMonitoring() {
+        guard state == .monitoring else { return }
+        engine.inputNode.removeTap(onBus: 0)
+        analysisQueue.sync {}
+        state = .idle
+    }
+
+    private func installInputTap(format: AVAudioFormat) throws {
+        let input = engine.inputNode
         input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-            self?.captured(buffer)
+        // One analyzer per tap, captured by the tap's closure and used only on analysisQueue.
+        let analyzer = LivePitchAnalyzer(sampleRate: format.sampleRate)
+        input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
+            self?.captured(buffer, analyzer: analyzer)
         }
         do {
             try startEngineIfNeeded()
         } catch {
             input.removeTap(onBus: 0)
-            recordingFile = nil
             throw error
         }
-        state = .recording
     }
 
     /// Stops recording and returns the file and how many frames reached it.
@@ -207,8 +243,8 @@ final class AudioEngine {
         return Double(recordedFrames) / file.processingFormat.sampleRate
     }
 
-    private func captured(_ buffer: AVAudioPCMBuffer) {
-        // Tap thread: copy, measure, hand off. No file access here.
+    private func captured(_ buffer: AVAudioPCMBuffer, analyzer: LivePitchAnalyzer?) {
+        // Tap thread: copy, measure, hand off. No file access or pitch detection here.
         guard let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength),
               let source = buffer.floatChannelData, let target = copy.floatChannelData else { return }
         copy.frameLength = buffer.frameLength
@@ -218,6 +254,10 @@ final class AudioEngine {
             target[channel].update(from: source[channel], count: frames)
             for index in 0..<frames { peak = max(peak, abs(source[channel][index])) }
         }
+        if let analyzer, onLivePitch != nil {
+            analysisQueue.async { [weak self] in self?.analyzePitch(copy, with: analyzer) }
+        }
+        guard state == .recording else { return reportLevel(peak) }
         writerQueue.async { [weak self] in
             guard let self, let file = self.recordingFile else { return }
             do {
@@ -227,12 +267,32 @@ final class AudioEngine {
                 self.recordingError = error
             }
         }
+        reportLevel(peak)
+    }
+
+    private func reportLevel(_ peak: Float) {
         let now = Date()
         if now.timeIntervalSince(lastLevelReport) > 0.1 {
             lastLevelReport = now
             let level = InputLevel(peakDbfs: peak > 0 ? max(-160, 20 * log10(Double(peak))) : -160, clipped: peak >= 0.999)
             DispatchQueue.main.async { [weak self] in self?.onInputLevel?(level) }
         }
+    }
+
+    /// Analysis queue: mix to mono, detect, and publish at most 20 times a second.
+    private func analyzePitch(_ buffer: AVAudioPCMBuffer, with analyzer: LivePitchAnalyzer) {
+        guard let data = buffer.floatChannelData else { return }
+        let frames = Int(buffer.frameLength)
+        let channels = Int(buffer.format.channelCount)
+        var mono = [Float](repeating: 0, count: frames)
+        for channel in 0..<channels {
+            for index in 0..<frames { mono[index] += data[channel][index] / Float(channels) }
+        }
+        guard let reading = mono.withUnsafeBufferPointer({ analyzer.push($0) }) else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastPitchReport) >= 0.05 else { return }
+        lastPitchReport = now
+        DispatchQueue.main.async { [weak self] in self?.onLivePitch?(reading) }
     }
 
     // MARK: Engine lifecycle
@@ -265,6 +325,7 @@ final class AudioEngine {
     /// first, so the take is kept rather than lost.
     func interrupt() {
         if state == .playing { pause() }
+        stopMonitoring()
         engine.pause()
     }
 }

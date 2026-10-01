@@ -192,3 +192,56 @@
 "jins.sikah" = "Sikah";
 "jins.saba_zamzam" = "Saba Zamzam";
 "jins.nawa_athar" = "Nawa Athar";
+
+/* Phase 2: pitch and intonation */
+"units.cents" = "%@ cents";
+"pitch.centred" = "in the centre";
+"pitch.sharp" = "%@ cents sharp";
+"pitch.flat" = "%@ cents flat";
+"pitch.vibrato" = "vibrato %1$@ Hz, %2$@ cents wide";
+"degree.tonic" = "the tonic";
+"degree.number" = "degree %@";
+
+"curve.label" = "Pitch curve";
+"curve.value" = "Note %1$@ of %2$@: %3$@, at %4$@";
+"curve.nonotes" = "No notes after this point";
+"curve.hint" = "Swipe up or down to move to the next or previous note. The notes can be heard as a chart from the rotor.";
+"chart.notes" = "Notes";
+"chart.cents.tonic" = "Cents from the tonic";
+"chart.cents.c4" = "Cents from middle C";
+
+"intonation.title" = "Intonation";
+"intonation.notes" = "Notes found: %1$@, %2$@ of them with vibrato.";
+"intonation.range" = "Range from %1$@ to %2$@, %3$@ cents.";
+"intonation.accuracy" = "%1$@ of the sung time within %2$@ cents of the maqam's degrees.";
+"intonation.meandeviation" = "Average distance from the degree: %@ cents.";
+"intonation.bydegree" = "How each degree was sung";
+"intonation.needsmaqam" = "Choose the maqam and tonic to measure intonation against their degrees.";
+"intonation.nonotes" = "No sung notes were found in this recording.";
+"tendency.row" = "%1$@ (%2$@): %3$@, in %4$@ notes.";
+"tendency.centred" = "in the centre";
+"tendency.sharp" = "%@ cents sharp on average";
+"tendency.flat" = "%@ cents flat on average";
+
+"notes.title" = "Notes";
+"notes.filter" = "Show";
+"notes.filter.all" = "All";
+"notes.filter.outoftune" = "Off the degree";
+"notes.allintune" = "Every note is on its degree.";
+"notes.row" = "Note %1$@, at %2$@: %3$@";
+"notes.row.hint" = "Double-tap to play from this note.";
+"action.shownotes" = "Show all notes";
+
+"tuner.title" = "Live tuner";
+"tuner.intro" = "Sing or play a note to see its name in quarter tones and its distance from the maqam's degree. Nothing is recorded.";
+"tuner.reading" = "Current note";
+"tuner.silent" = "No note heard";
+"tuner.speak" = "Speak notes";
+"tuner.speak.hint" = "Speaks each new note once it has been held for half a second.";
+"tuner.nomaqam" = "No maqam chosen, so distance is from the nearest quarter tone.";
+"tuner.withmaqam" = "Distance is measured from the degrees of %@ on the chosen tonic.";
+"action.tuner" = "Live tuner";
+"action.starttuner" = "Start listening";
+"action.stoptuner" = "Stop listening";
+"hint.tuner" = "Listens to the microphone and shows the note without recording.";
+"announce.tunerstarted" = "Tuner listening";

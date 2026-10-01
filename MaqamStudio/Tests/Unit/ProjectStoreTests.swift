@@ -99,17 +99,24 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertTrue(store.verifyOriginal(of: document))
     }
 
-    func testAnalysisCacheIsIgnoredWhenOriginalChanges() throws {
+    func testAnalysisCacheIsIgnoredWhenOriginalChangesOrPitchIsMissing() throws {
         let store = try makeStore()
         let source = try TestSupport.fixture("bayati_phrase_48k.wav")
         var document = try store.create(name: "a", now: TestSupport.fixedDate)
         try store.importOriginal(from: source, into: &document, metadata: metadata(for: source), recorded: false)
-        let (levels, waveform) = try AudioFileReader.analyze(source, buckets: 64) { _ in }
-        let analysis = AudioAnalysis(levels: levels, waveform: waveform, analyzedAt: TestSupport.fixedDate,
-                                     sourceSHA256: try XCTUnwrap(document.original?.sha256))
+        let full = try AudioFileReader.analyzeFully(source, buckets: 64) { _ in }
+        var analysis = AudioAnalysis(levels: full.levels, waveform: full.waveform, analyzedAt: TestSupport.fixedDate,
+                                     sourceSHA256: try XCTUnwrap(document.original?.sha256), pitch: full.pitch)
         try store.saveAnalysis(analysis, for: document.id)
         XCTAssertEqual(store.loadAnalysis(for: document), analysis)
 
+        // A cache from before pitch tracking is redone, not shown without notes.
+        analysis.pitch = nil
+        try store.saveAnalysis(analysis, for: document.id)
+        XCTAssertNil(store.loadAnalysis(for: document))
+
+        analysis.pitch = full.pitch
+        try store.saveAnalysis(analysis, for: document.id)
         document.original?.sha256 = "different"
         XCTAssertNil(store.loadAnalysis(for: document))
     }

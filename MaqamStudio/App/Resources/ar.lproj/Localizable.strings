@@ -192,3 +192,56 @@
 "jins.sikah" = "سيكاه";
 "jins.saba_zamzam" = "صبا زمزم";
 "jins.nawa_athar" = "نوى أثر";
+
+/* المرحلة الثانية: النغمة والتنغيم */
+"units.cents" = "%@ سنت";
+"pitch.centred" = "في المركز";
+"pitch.sharp" = "أعلى بـ %@ سنت";
+"pitch.flat" = "أخفض بـ %@ سنت";
+"pitch.vibrato" = "اهتزاز %1$@ هرتز بعرض %2$@ سنت";
+"degree.tonic" = "القرار";
+"degree.number" = "الدرجة %@";
+
+"curve.label" = "منحنى النغمة";
+"curve.value" = "النغمة %1$@ من %2$@: %3$@، عند %4$@";
+"curve.nonotes" = "لا نغمات بعد هذا الموضع";
+"curve.hint" = "اسحب لأعلى أو لأسفل للانتقال إلى النغمة التالية أو السابقة. يمكن سماع النغمات رسماً بيانياً من قائمة الدوّار.";
+"chart.notes" = "النغمات";
+"chart.cents.tonic" = "السنت من القرار";
+"chart.cents.c4" = "السنت من دو الوسطى";
+
+"intonation.title" = "التنغيم";
+"intonation.notes" = "النغمات المكتشفة: %1$@، منها %2$@ باهتزاز.";
+"intonation.range" = "المدى من %1$@ إلى %2$@، أي %3$@ سنت.";
+"intonation.accuracy" = "%1$@ من زمن الغناء ضمن %2$@ سنت من درجات المقام.";
+"intonation.meandeviation" = "متوسط الابتعاد عن الدرجة %@ سنت.";
+"intonation.bydegree" = "كل درجة كيف غُنّيت";
+"intonation.needsmaqam" = "اختر المقام والقرار ليُقاس التنغيم على درجاتهما.";
+"intonation.nonotes" = "لم تُكتشف نغمات غنائية في هذا التسجيل.";
+"tendency.row" = "%1$@ (%2$@): %3$@، في %4$@ نغمة.";
+"tendency.centred" = "في المركز";
+"tendency.sharp" = "أعلى بـ %@ سنت في المتوسط";
+"tendency.flat" = "أخفض بـ %@ سنت في المتوسط";
+
+"notes.title" = "النغمات";
+"notes.filter" = "عرض";
+"notes.filter.all" = "الكل";
+"notes.filter.outoftune" = "خارج الدرجة";
+"notes.allintune" = "كل النغمات ضمن الدرجة.";
+"notes.row" = "النغمة %1$@، عند %2$@: %3$@";
+"notes.row.hint" = "انقر مرتين للتشغيل من هذه النغمة.";
+"action.shownotes" = "عرض كل النغمات";
+
+"tuner.title" = "المضبط المباشر";
+"tuner.intro" = "غنِّ أو اعزف نغمة، فيُعرض اسمها بأرباع التون وبُعدها عن درجة المقام. لا يُسجَّل شيء.";
+"tuner.reading" = "النغمة الآن";
+"tuner.silent" = "لا نغمة مسموعة";
+"tuner.speak" = "نطق النغمات";
+"tuner.speak.hint" = "ينطق كل نغمة جديدة بعد ثباتها نصف ثانية.";
+"tuner.nomaqam" = "لم يُختر مقام، فيُقاس البعد عن أقرب ربع تون.";
+"tuner.withmaqam" = "يُقاس البعد عن درجات مقام %@ على القرار المختار.";
+"action.tuner" = "المضبط المباشر";
+"action.starttuner" = "ابدأ الاستماع";
+"action.stoptuner" = "أوقف الاستماع";
+"hint.tuner" = "يستمع إلى الميكروفون ويعرض النغمة دون تسجيل.";
+"announce.tunerstarted" = "المضبط يستمع";

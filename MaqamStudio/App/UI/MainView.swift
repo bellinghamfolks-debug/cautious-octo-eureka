@@ -11,6 +11,8 @@ struct MainView: View {
     @State private var showingProjects = false
     @State private var showingMaqam = false
     @State private var showingRename = false
+    @State private var showingNotes = false
+    @State private var showingTuner = false
     @State private var pendingName = ""
 
     static let importTypes: [UTType] = [.wav, .mp3, .mpeg4Audio, .aiff, .audio]
@@ -45,6 +47,8 @@ struct MainView: View {
             }
             .sheet(isPresented: $showingProjects) { ProjectsView() }
             .sheet(isPresented: $showingMaqam) { MaqamPickerView() }
+            .sheet(isPresented: $showingNotes) { NotesView() }
+            .sheet(isPresented: $showingTuner) { LiveTunerView() }
             .alert(l10n("rename.title"), isPresented: $showingRename) {
                 TextField(l10n("rename.field"), text: $pendingName)
                 Button(l10n("action.save")) { model.rename(to: pendingName) }
@@ -96,10 +100,18 @@ struct MainView: View {
                          position: model.position) { model.seek(to: $0) }
         }
         TransportView()
+        if let pitch = model.pitch, !pitch.notes.isEmpty {
+            PitchCurveView(pitch: pitch, intonation: model.intonation, maqam: model.effectiveMaqam,
+                           tonicHz: model.document?.maqam.tonicHz, duration: model.duration,
+                           position: model.position) { model.seek(to: $0) }
+        }
+        MaqamSummaryView { showingMaqam = true }
+        if model.analysis != nil {
+            IntonationSummaryView { showingNotes = true }
+        }
         if let analysis = model.analysis, let original = model.document?.original {
             AnalysisSummaryView(levels: analysis.levels, original: original)
         }
-        MaqamSummaryView { showingMaqam = true }
         VStack(alignment: .leading, spacing: 10) {
             Text(l10n("newtake.title")).font(.headline).accessibilityAddTraits(.isHeader)
             Text(l10n("newtake.body")).font(.footnote).foregroundStyle(.secondary)
@@ -108,6 +120,21 @@ struct MainView: View {
     }
 
     private var captureButtons: some View {
+        VStack(spacing: 10) {
+            recordAndImport
+            Button {
+                showingTuner = true
+            } label: {
+                Label(l10n("action.tuner"), systemImage: "tuningfork")
+                    .frame(maxWidth: .infinity, minHeight: 48)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityHint(l10n("hint.tuner"))
+            .disabled(model.activity != .idle)
+        }
+    }
+
+    private var recordAndImport: some View {
         HStack(spacing: 12) {
             Button {
                 model.startRecording()
@@ -239,6 +266,7 @@ struct RecordingPanel: View {
                 .accessibilityLabel(l10n("recording.elapsed"))
                 .accessibilityValue(l10n.spokenDuration(model.recordingSeconds))
             LevelMeter(level: model.inputLevel)
+            LiveNoteLine()
             Button {
                 model.stopRecording()
             } label: {
@@ -250,6 +278,23 @@ struct RecordingPanel: View {
             .disabled(model.activity == .finishingRecording)
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// The note being sung while recording, in words. Not announced automatically,
+/// so VoiceOver does not talk over the singer; it can be read at any moment.
+struct LiveNoteLine: View {
+    @EnvironmentObject private var l10n: L10n
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        let text = model.livePitch.map { TunerText.spoken($0, model: model, l10n: l10n) } ?? l10n("tuner.silent")
+        Text(text)
+            .font(.title3)
+            .multilineTextAlignment(.center)
+            .accessibilityLabel(l10n("tuner.reading"))
+            .accessibilityValue(text)
+            .accessibilityAddTraits(.updatesFrequently)
     }
 }
 

@@ -9,9 +9,9 @@ VoiceOver.
 
 | Phase | Scope | State |
 |---|---|---|
-| 1 | Project structure, import, playback, recording, waveform, save/open | **Implemented** — this folder |
-| 2 | Pitch track, pitch curve, note list | Core detector done and tested; UI not started |
-| 3 | Maqam engine UI: custom maqamat, tuning tables, per-degree offsets | Built-in catalog and matcher done; manual choice of maqam and tonic in the app |
+| 1 | Project structure, import, playback, recording, waveform, save/open | **Implemented** |
+| 2 | Pitch track, note segmentation, intonation against the maqam, pitch curve, note list, live tuner | **Implemented** |
+| 3 | Maqam engine UI: custom maqamat, tuning tables, per-degree offset editor | Built-in catalog, matcher and offsets in the model; editor not started |
 | 4 | Pitch correction (offline, then live) | Not started |
 | 5 | Maqam and tonic detection with confidence | Not started. The app says so and asks for a manual choice |
 | 6 | Auto Studio chain and genre profiles | Not started |
@@ -25,10 +25,10 @@ work behind it exists.
 ```
 MaqamStudio/
   Core/                 C++17 DSP core, no platform dependencies
-    include/maqam/      fft, levels, tuning, maqam, pitch_detector
+    include/maqam/      fft, levels, tuning, maqam, pitch_detector, notes
     src/                implementations
     capi/maqam_core.h   the C interface Swift calls (plain C types only)
-    tests/              34 cases: quarter tones, maqam phrases, vibrato, noise
+    tests/              48 cases: quarter tones, maqam phrases, vibrato, melisma, noise
   App/
     Core/               Swift wrappers over the C API, AppError
     Audio/              AudioEngine (play + record), session, file reader
@@ -63,6 +63,23 @@ MaqamStudio/
   Audio Graph, an adjustable control, and a spoken description of where the
   singing, the pauses and the loudest moment are. Every control has a label,
   progress and state changes are announced, and scales are read as note names.
+
+## Notes and intonation
+
+The original is decoded once; levels, waveform and a 10 ms pitch track come
+out of the same pass. Notes are segmented on the *centre* of the pitch: where
+the voice is locally flat that is the pitch itself (so fast melisma keeps its
+short notes), and where it keeps moving it is the mean over one vibrato cycle
+(so a wide or slow vibrato stays one note). A note ends at a gap of more than
+60 ms or a sustained move; quarter-tone steps are found from window means;
+slides into a note are trimmed rather than averaged in. Vibrato rate and
+extent are measured on the raw pitch.
+
+Each note is matched to the nearest target of the chosen maqam on the chosen
+tonic, with the user's per-degree offsets applied, and counted in tune within
+±15 cents. The summary says, per degree, how far sharp or flat it was sung on
+average, in words. The live tuner runs the same detector on copies of the
+microphone input on its own queue, never on the render thread.
 
 ## Projects
 
