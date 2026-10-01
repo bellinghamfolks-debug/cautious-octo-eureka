@@ -4,7 +4,7 @@
 using namespace maqam;
 
 TEST_CASE("a half-scale sine peaks at -6 dBFS and has -9 dBFS RMS") {
-    const auto sine = signal::tone(1000.0, 1.0, 48000.0, 0.5);
+    const auto sine = synth::tone(1000.0, 1.0, 48000.0, 0.5);
     const LevelReport report = analyzeLevels(sine.data(), sine.size(), 1, 48000.0);
     CHECK_NEAR(report.peakDbfs, -6.0206, 0.01);
     CHECK_NEAR(report.rmsDbfs, -9.0309, 0.01);
@@ -14,7 +14,7 @@ TEST_CASE("a half-scale sine peaks at -6 dBFS and has -9 dBFS RMS") {
 }
 
 TEST_CASE("clipped samples are counted") {
-    auto sine = signal::tone(200.0, 0.5, 44100.0, 1.4);
+    auto sine = synth::tone(200.0, 0.5, 44100.0, 1.4);
     for (float& x : sine) x = std::fmax(-1.0f, std::fmin(1.0f, x));
     const LevelReport report = analyzeLevels(sine.data(), sine.size(), 1, 44100.0);
     CHECK(report.clippedSamples > 1000);
@@ -30,8 +30,8 @@ TEST_CASE("silence reports the floor rather than infinities") {
 }
 
 TEST_CASE("noise floor comes from the quiet part and dynamic range spans both") {
-    auto quiet = signal::noise(48000, 0.001);   // about -65 dBFS RMS
-    auto loud = signal::tone(300.0, 2.0, 48000.0, 0.5);
+    auto quiet = synth::noise(48000, 0.001);   // about -65 dBFS RMS
+    auto loud = synth::tone(300.0, 2.0, 48000.0, 0.5);
     std::vector<float> take(quiet);
     take.insert(take.end(), loud.begin(), loud.end());
     const LevelReport report = analyzeLevels(take.data(), take.size(), 1, 48000.0);
@@ -69,8 +69,8 @@ TEST_CASE("waveform handles more buckets than frames") {
 }
 
 TEST_CASE("streaming level analysis in odd-sized chunks equals one pass") {
-    auto quiet = signal::noise(30000, 0.002, 7);
-    auto loud = signal::tone(220.0, 1.5, 44100.0, 0.6, 4);
+    auto quiet = synth::noise(30000, 0.002, 7);
+    auto loud = synth::tone(220.0, 1.5, 44100.0, 0.6, 4);
     std::vector<float> take(quiet);
     take.insert(take.end(), loud.begin(), loud.end());
     const LevelReport whole = analyzeLevels(take.data(), take.size(), 1, 44100.0);
@@ -87,7 +87,7 @@ TEST_CASE("streaming level analysis in odd-sized chunks equals one pass") {
 }
 
 TEST_CASE("streaming waveform in chunks equals the one-pass summary") {
-    const auto tone = signal::tone(110.0, 2.0, 48000.0, 0.7, 3);
+    const auto tone = synth::tone(110.0, 2.0, 48000.0, 0.7, 3);
     const std::size_t buckets = 300;
     std::vector<float> low(buckets), high(buckets), rms(buckets);
     waveformPeaks(tone.data(), tone.size(), 1, buckets, low.data(), high.data());
@@ -106,7 +106,7 @@ TEST_CASE("streaming waveform in chunks equals the one-pass summary") {
 }
 
 TEST_CASE("a waveform fed more frames than the header promised stays in bounds") {
-    const auto tone = signal::tone(300.0, 0.2, 48000.0, 0.5);
+    const auto tone = synth::tone(300.0, 0.2, 48000.0, 0.5);
     WaveformAccumulator streaming(tone.size() / 2, 1, 50);
     streaming.push(tone.data(), tone.size());
     CHECK(streaming.buckets() == 50);

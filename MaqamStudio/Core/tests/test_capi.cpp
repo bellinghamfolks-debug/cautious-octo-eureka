@@ -28,7 +28,7 @@ TEST_CASE("the C interface lists every built-in maqam with its Arabic name") {
 }
 
 TEST_CASE("the C pitch tracker reports its size and then fills it") {
-    const auto tone = signal::tone(196.0, 1.0, 48000.0, 0.4, 4);
+    const auto tone = synth::tone(196.0, 1.0, 48000.0, 0.4, 4);
     MQPitchConfig config = mq_pitch_default_config(48000.0);
     size_t needed = 0;
     CHECK(mq_pitch_track(tone.data(), tone.size(), &config, 512, nullptr, nullptr, 0, &needed) == MQ_OK);
@@ -57,7 +57,7 @@ TEST_CASE("a detector created through the C interface runs frame by frame") {
     MQPitchConfig config = mq_pitch_default_config(44100.0);
     MQPitchDetector* detector = mq_pitch_create(&config);
     CHECK(detector != nullptr);
-    const auto tone = signal::tone(329.63, 0.3, 44100.0, 0.4, 3);
+    const auto tone = synth::tone(329.63, 0.3, 44100.0, 0.4, 3);
     MQPitchEstimate estimate;
     CHECK(mq_pitch_detect(detector, tone.data() + 2000, &estimate) == MQ_OK);
     CHECK(estimate.voiced == 1);
@@ -66,7 +66,7 @@ TEST_CASE("a detector created through the C interface runs frame by frame") {
 }
 
 TEST_CASE("the streaming C accumulators agree with the one-shot calls") {
-    const auto tone = signal::tone(261.63, 1.0, 48000.0, 0.5, 2);
+    const auto tone = synth::tone(261.63, 1.0, 48000.0, 0.5, 2);
     MQLevelReport whole;
     CHECK(mq_analyze_levels(tone.data(), tone.size(), 1, 48000.0, &whole) == MQ_OK);
     MQLevelAccumulator* levels = mq_level_accumulator_create(1, 48000.0);

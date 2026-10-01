@@ -44,6 +44,8 @@ jobs:
           cmake --build build/core -j
           ./build/core/maqam_core_tests
       - name: Build, test, archive
+        # Runs even when the core step fails, so one push reports both.
+        if: success() || failure()
         run: ./scripts/ci-ios.sh
       - name: Upload unsigned IPA and logs
         if: always()

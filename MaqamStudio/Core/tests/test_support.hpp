@@ -54,7 +54,7 @@ void fail(const char* file, int line, const std::string& message);
 
 // ------------------------------------------------------------------ signals
 
-namespace signal {
+namespace synth {
 
 constexpr double kPi = 3.14159265358979323846;
 
@@ -107,4 +107,4 @@ inline std::vector<float> noise(std::size_t count, double amplitude, std::uint32
     return out;
 }
 
-}  // namespace signal
+}  // namespace synth

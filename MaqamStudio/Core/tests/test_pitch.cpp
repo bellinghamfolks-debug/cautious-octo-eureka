@@ -39,7 +39,7 @@ double medianCents(const std::vector<PitchFrame>& track, double referenceHz, dou
 TEST_CASE("pure tones across the singing range are detected within 3 cents") {
     for (double sampleRate : {44100.0, 48000.0}) {
         for (double hz : {82.41, 110.0, 196.0, 261.63, 440.0, 659.25, 987.77}) {
-            const auto tone = signal::tone(hz, 0.5, sampleRate, 0.4, 1);
+            const auto tone = synth::tone(hz, 0.5, sampleRate, 0.4, 1);
             const PitchEstimate estimate = detectMiddle(tone, configFor(sampleRate));
             CHECK(estimate.voiced);
             CHECK_NEAR(hzToCents(estimate.frequencyHz, hz), 0.0, 3.0);
@@ -50,7 +50,7 @@ TEST_CASE("pure tones across the singing range are detected within 3 cents") {
 
 TEST_CASE("harmonic-rich voice-like tones do not jump an octave") {
     for (double hz : {98.0, 146.83, 220.0, 392.0}) {
-        const auto tone = signal::tone(hz, 0.5, 48000.0, 0.4, 8);
+        const auto tone = synth::tone(hz, 0.5, 48000.0, 0.4, 8);
         const PitchEstimate estimate = detectMiddle(tone, configFor(48000.0));
         CHECK(estimate.voiced);
         CHECK_NEAR(hzToCents(estimate.frequencyHz, hz), 0.0, 5.0);
@@ -60,15 +60,15 @@ TEST_CASE("harmonic-rich voice-like tones do not jump an octave") {
 TEST_CASE("a quarter tone is resolved: E half-flat is neither E nor E-flat") {
     const double cFour = 261.6255653;
     for (double cents : {300.0, 350.0, 400.0}) {
-        const auto tone = signal::tone(centsToHz(cents, cFour), 0.5, 44100.0, 0.4, 5);
+        const auto tone = synth::tone(centsToHz(cents, cFour), 0.5, 44100.0, 0.4, 5);
         const PitchEstimate estimate = detectMiddle(tone, configFor(44100.0));
         CHECK_NEAR(hzToCents(estimate.frequencyHz, cFour), cents, 4.0);
     }
 }
 
 TEST_CASE("pitch survives moderate noise (20 dB SNR)") {
-    auto tone = signal::tone(233.08, 0.5, 48000.0, 0.3, 4);
-    const auto hiss = signal::noise(tone.size(), 0.03);
+    auto tone = synth::tone(233.08, 0.5, 48000.0, 0.3, 4);
+    const auto hiss = synth::noise(tone.size(), 0.03);
     for (std::size_t i = 0; i < tone.size(); ++i) tone[i] += hiss[i];
     const PitchEstimate estimate = detectMiddle(tone, configFor(48000.0));
     CHECK(estimate.voiced);
@@ -78,7 +78,7 @@ TEST_CASE("pitch survives moderate noise (20 dB SNR)") {
 TEST_CASE("silence and white noise are not reported as notes") {
     std::vector<float> silence(48000, 0.0f);
     CHECK(!detectMiddle(silence, configFor(48000.0)).voiced);
-    const auto hiss = signal::noise(48000, 0.3, 99);
+    const auto hiss = synth::noise(48000, 0.3, 99);
     PitchDetector detector(configFor(48000.0));
     int voiced = 0;
     for (std::size_t start = 0; start + 2048 <= hiss.size(); start += 2048) voiced += detector.detect(hiss.data() + start).voiced;
@@ -87,13 +87,13 @@ TEST_CASE("silence and white noise are not reported as notes") {
 
 TEST_CASE("vibrato is tracked, not flattened: the contour follows +/- 40 cents") {
     const double base = 220.0;
-    const auto audio = signal::contour(base, 2.0, 48000.0, [](double t) { return 40.0 * std::sin(2.0 * signal::kPi * 5.5 * t); });
+    const auto audio = synth::contour(base, 2.0, 48000.0, [](double t) { return 40.0 * std::sin(2.0 * synth::kPi * 5.5 * t); });
     const auto track = trackPitch(audio.data(), audio.size(), configFor(48000.0), 256);
     double low = 1e9, high = -1e9, worst = 0.0;
     for (const PitchFrame& frame : track) {
         if (!frame.estimate.voiced || frame.timeSeconds < 0.1 || frame.timeSeconds > 1.9) continue;
         const double cents = hzToCents(frame.estimate.frequencyHz, base);
-        const double expected = 40.0 * std::sin(2.0 * signal::kPi * 5.5 * frame.timeSeconds);
+        const double expected = 40.0 * std::sin(2.0 * synth::kPi * 5.5 * frame.timeSeconds);
         low = std::min(low, cents);
         high = std::max(high, cents);
         worst = std::max(worst, std::fabs(cents - expected));
@@ -109,7 +109,7 @@ TEST_CASE("a sung Bayati phrase maps every note to its own degree, quarter tones
     const double tonic = 293.6647679;
     const std::vector<double> notes = {0, 150, 300, 500, 300, 150, 0};
     const double noteSeconds = 0.4, glide = 0.06;
-    const auto audio = signal::contour(tonic, notes.size() * noteSeconds, 44100.0, [&](double t) {
+    const auto audio = synth::contour(tonic, notes.size() * noteSeconds, 44100.0, [&](double t) {
         const std::size_t index = std::min(notes.size() - 1, static_cast<std::size_t>(t / noteSeconds));
         const double into = t - index * noteSeconds;
         if (index > 0 && into < glide) {
