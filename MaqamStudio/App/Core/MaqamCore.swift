@@ -104,7 +104,11 @@ struct MaqamDefinition: Codable, Equatable, Identifiable {
     var degrees: [MaqamDegree]
     var octaveEquivalent: Bool
 
-    func name(_ l10n: L10n) -> String { l10n.language == .arabic ? arabicName : englishName }
+    /// The name in the interface language, or the other one if a custom maqam has only one.
+    func name(_ l10n: L10n) -> String {
+        let preferred = l10n.language == .arabic ? arabicName : englishName
+        return preferred.isEmpty ? (l10n.language == .arabic ? englishName : arabicName) : preferred
+    }
 
     /// The C representation, for target matching and (later) correction.
     var cScale: MQScale {

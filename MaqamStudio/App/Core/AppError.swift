@@ -18,6 +18,9 @@ enum AppError: Error, Equatable {
     case projectSaveFailed(detail: String)
     case projectNotFound
     case coreFailure(code: Int32)
+    case maqamInvalid(name: String)
+    case libraryUnreadable
+    case libraryTooNew
 
     /// Short title for alerts.
     var titleKey: String {
@@ -33,6 +36,7 @@ enum AppError: Error, Equatable {
         case .playbackFailed: return "error.playback.title"
         case .projectCorrupted, .projectNotFound: return "error.project.title"
         case .projectSaveFailed: return "error.save.title"
+        case .maqamInvalid, .libraryUnreadable, .libraryTooNew: return "error.library.title"
         }
     }
 
@@ -54,6 +58,9 @@ enum AppError: Error, Equatable {
         case .projectSaveFailed(let detail): return l10n("error.save.message", detail)
         case .projectNotFound: return l10n("error.notfound.message")
         case .coreFailure(let code): return l10n("error.core.message", String(code))
+        case .maqamInvalid(let name): return l10n("error.maqaminvalid.message", name)
+        case .libraryUnreadable: return l10n("error.library.message")
+        case .libraryTooNew: return l10n("error.librarynew.message")
         }
     }
 

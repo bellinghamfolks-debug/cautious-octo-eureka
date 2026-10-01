@@ -43,6 +43,8 @@ final class AppModel: ObservableObject {
 
     let l10n: L10n
     let announcer = Announcer()
+    /// The user's own maqamat and tuning tables, shared by all projects.
+    let library: MaqamLibrary
 
     private let engine: AudioEngine
     private let session = AudioSessionController()
@@ -61,9 +63,11 @@ final class AppModel: ObservableObject {
     /// How long after an edit the project is written to disk.
     static let autosaveDelay: Duration = .milliseconds(800)
 
-    init(l10n: L10n, engine: AudioEngine = AudioEngine(), storeRoot: URL? = nil) {
+    init(l10n: L10n, engine: AudioEngine = AudioEngine(), storeRoot: URL? = nil, libraryURL: URL? = nil) {
         self.l10n = l10n
         self.engine = engine
+        let fallbackLibrary = FileManager.default.temporaryDirectory.appendingPathComponent("maqam-library.json")
+        self.library = MaqamLibrary(fileURL: libraryURL ?? (try? MaqamLibrary.defaultURL()) ?? fallbackLibrary)
         do {
             store = try ProjectStore(root: storeRoot ?? ProjectStore.defaultRoot())
         } catch {
@@ -646,11 +650,13 @@ final class AppModel: ObservableObject {
     // MARK: Maqam (manual choice; detection arrives with phase 5)
 
     func chooseMaqam(id: String?) {
+        let definition = id.flatMap(library.definition(id:))
         edit(actionKey: "action.maqam") { editable in
             editable.maqam.maqamId = id
             editable.maqam.manuallyChosen = id != nil
             editable.maqam.degreeOffsets = [:]
-            if editable.maqam.tonicHz == nil, let id, let definition = MaqamCatalog.definition(id: id) {
+            editable.maqam.customDefinition = definition?.isCustom == true ? definition : nil
+            if editable.maqam.tonicHz == nil, let definition {
                 editable.maqam.tonicHz = definition.typicalTonicHz
             }
         }
@@ -660,8 +666,118 @@ final class AppModel: ObservableObject {
         edit(actionKey: "action.tonic") { $0.maqam.tonicHz = hz }
     }
 
+    /// The chosen maqam as defined (offsets not applied). A custom maqam comes
+    /// from the library when it is still there, else from the project's copy.
     var currentMaqam: MaqamDefinition? {
-        document?.maqam.maqamId.flatMap(MaqamCatalog.definition(id:))
+        guard let settings = document?.maqam, let id = settings.maqamId else { return nil }
+        if let found = library.definition(id: id) { return found }
+        return settings.customDefinition?.id == id ? settings.customDefinition : nil
+    }
+
+    // MARK: Tuning the degrees (phase 3)
+
+    /// Range offered for adjusting one degree, either side of its definition.
+    static let degreeOffsetRange: ClosedRange<Double> = -100...100
+
+    func setDegreeOffset(_ index: Int, to cents: Double) {
+        let clamped = min(max(cents, Self.degreeOffsetRange.lowerBound), Self.degreeOffsetRange.upperBound)
+        edit(actionKey: "action.degreeoffset") { editable in
+            editable.maqam.degreeOffsets[index] = clamped == 0 ? nil : clamped
+        }
+    }
+
+    func resetDegreeOffsets() {
+        edit(actionKey: "action.resetoffsets") { $0.maqam.degreeOffsets = [:] }
+    }
+
+    func applyTable(_ table: TuningTable) {
+        guard table.maqamId == document?.maqam.maqamId else { return }
+        edit(actionKey: "action.applytable") { $0.maqam.degreeOffsets = table.offsets }
+        announcer.announce(l10n("announce.tableapplied", table.name))
+    }
+
+    /// Saves this project's degree adjustments as a reusable tuning table.
+    func saveOffsetsAsTable(named name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let settings = document?.maqam, let id = settings.maqamId else { return }
+        do {
+            try library.saveTable(TuningTable(id: UUID(), name: trimmed, maqamId: id, offsets: settings.degreeOffsets))
+            announcer.announce(l10n("announce.tablesaved", trimmed))
+        } catch {
+            present(error) { .projectSaveFailed(detail: $0) }
+        }
+    }
+
+    func deleteTable(_ table: TuningTable) {
+        do { try library.deleteTable(id: table.id) } catch { present(error) { .projectSaveFailed(detail: $0) } }
+    }
+
+    /// Reference pitch for note names, 415–466 Hz (Baroque to bright modern).
+    static let a4Range: ClosedRange<Double> = 415...466
+
+    func setA4(_ hz: Double) {
+        let clamped = min(max(hz, Self.a4Range.lowerBound), Self.a4Range.upperBound)
+        edit(actionKey: "action.a4") { $0.maqam.a4Hz = clamped }
+    }
+
+    // MARK: The user's own maqamat (phase 3)
+
+    /// Saves a custom maqam to the library; a project using it gets the new copy.
+    @discardableResult
+    func saveCustomMaqam(_ maqam: MaqamDefinition) -> Bool {
+        do {
+            try library.save(maqam)
+        } catch {
+            self.error = .maqamInvalid(name: maqam.name(l10n))
+            return false
+        }
+        if document?.maqam.maqamId == maqam.id {
+            edit(actionKey: "action.editmaqam") { $0.maqam.customDefinition = maqam }
+        }
+        objectWillChange.send()
+        announcer.announce(l10n("announce.maqamsaved", maqam.name(l10n)))
+        return true
+    }
+
+    func deleteCustomMaqam(id: String) {
+        do {
+            try library.delete(maqamId: id)
+            objectWillChange.send()
+            announcer.announce(l10n("announce.maqamdeleted"))
+        } catch {
+            present(error) { .projectSaveFailed(detail: $0) }
+        }
+    }
+
+    /// Writes the library to a temporary file for the share sheet.
+    func exportLibraryFile() -> URL? {
+        do {
+            let data = try library.exportData()
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent(l10n("library.filename") + ".json")
+            try data.write(to: url, options: [.atomic])
+            return url
+        } catch {
+            present(error) { .projectSaveFailed(detail: $0) }
+            return nil
+        }
+    }
+
+    func importLibrary(from url: URL) {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let data = try Data(contentsOf: url)
+            let added = try library.importData(data)
+            objectWillChange.send()
+            announcer.announce(l10n("announce.imported.library", l10n.number(Double(added.maqamat)),
+                                    l10n.number(Double(added.tables))), important: true)
+        } catch MaqamLibrary.ImportError.invalidMaqam(let name) {
+            self.error = .maqamInvalid(name: name)
+        } catch MaqamLibrary.ImportError.newerVersion {
+            self.error = .libraryTooNew
+        } catch {
+            self.error = .libraryUnreadable
+        }
     }
 
     // MARK: System events and errors

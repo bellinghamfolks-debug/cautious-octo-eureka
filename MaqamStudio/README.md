@@ -11,7 +11,7 @@ VoiceOver.
 |---|---|---|
 | 1 | Project structure, import, playback, recording, waveform, save/open | **Implemented** |
 | 2 | Pitch track, note segmentation, intonation against the maqam, pitch curve, note list, live tuner | **Implemented** |
-| 3 | Maqam engine UI: custom maqamat, tuning tables, per-degree offset editor | Built-in catalog, matcher and offsets in the model; editor not started |
+| 3 | Maqam engine UI: per-degree tuning, A4 reference, tuning tables, custom maqam editor, library import/export | **Implemented** |
 | 4 | Pitch correction (offline, then live) | Not started |
 | 5 | Maqam and tonic detection with confidence | Not started. The app says so and asks for a manual choice |
 | 6 | Auto Studio chain and genre profiles | Not started |
@@ -80,6 +80,22 @@ tonic, with the user's per-degree offsets applied, and counted in tune within
 ±15 cents. The summary says, per degree, how far sharp or flat it was sung on
 average, in words. The live tuner runs the same detector on copies of the
 microphone input on its own queue, never on the render thread.
+
+## Maqamat, tuning and the library
+
+Built-in maqamat come from the C++ core and are never edited. A project can
+move any degree of its maqam by up to ±100 cents (undoable); those
+adjustments can be saved as a named tuning table and applied to other
+projects in the same maqam. The A4 reference (415–466 Hz) changes note names
+only.
+
+The user's own maqamat — new, or copied from a built-in — live in one JSON
+library in Application Support, written atomically and validated on every
+save and import: the tonic at 0, rising degrees inside the octave, at most 12
+degrees and 2 alternates each. A project using a custom maqam stores a copy
+of it, so editing or deleting it in the library, or opening the project on
+another device, never breaks the project. The library exports to a file and
+imports without replacing anything.
 
 ## Projects
 

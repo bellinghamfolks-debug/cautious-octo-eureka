@@ -16,6 +16,7 @@ struct MaqamStudioApp: App {
             RootView()
                 .environmentObject(l10n)
                 .environmentObject(model)
+                .environmentObject(model.library)
                 .task { model.start() }
         }
     }

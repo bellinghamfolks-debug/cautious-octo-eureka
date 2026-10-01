@@ -74,6 +74,10 @@ struct MaqamSettings: Codable, Equatable {
     var degreeOffsets: [Int: Double] = [:]
     /// Whether the choice came from the user rather than from detection.
     var manuallyChosen: Bool = false
+    /// A copy of the chosen maqam when it is one of the user's own, so the
+    /// project still opens the same way if it is later edited away or deleted,
+    /// or opened on another device. Absent for built-in maqamat.
+    var customDefinition: MaqamDefinition?
 }
 
 /// Processing decisions. Empty in this phase: the chain is added by later

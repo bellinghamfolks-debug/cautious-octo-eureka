@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Choose the maqam and its tonic by hand.
 ///
@@ -9,7 +10,12 @@ import SwiftUI
 struct MaqamPickerView: View {
     @EnvironmentObject private var l10n: L10n
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var library: MaqamLibrary
     @Environment(\.dismiss) private var dismiss
+    @State private var editing: MaqamDefinition?
+    @State private var pendingDeletion: MaqamDefinition?
+    @State private var showingImporter = false
+    @State private var sharing: SharedFile?
 
     /// The tonic range offered: C2 to C6, enough for any voice.
     static let tonicRange: ClosedRange<Double> = 65.41...1046.5
@@ -19,8 +25,10 @@ struct MaqamPickerView: View {
             List {
                 if let maqam = model.currentMaqam {
                     tonicSection(maqam)
-                    degreesSection(maqam)
+                    tuningSection(maqam)
+                    degreesSection(model.effectiveMaqam ?? maqam)
                 }
+                customSection
                 ForEach(Self.families, id: \.self) { family in
                     Section {
                         ForEach(MaqamCatalog.builtins.filter { $0.family == family }) { maqam in
@@ -47,6 +55,23 @@ struct MaqamPickerView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button(l10n("action.done")) { dismiss() }
                 }
+            }
+            .sheet(item: $editing) { maqam in
+                CustomMaqamEditor(original: maqam)
+            }
+            .sheet(item: $sharing) { file in
+                ActivitySheet(items: [file.url])
+            }
+            .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.json]) { result in
+                if case .success(let url) = result { model.importLibrary(from: url) }
+            }
+            .confirmationDialog(l10n("library.delete.title"),
+                                isPresented: Binding(get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }),
+                                titleVisibility: .visible, presenting: pendingDeletion) { maqam in
+                Button(l10n("action.delete"), role: .destructive) { model.deleteCustomMaqam(id: maqam.id) }
+                Button(l10n("action.cancel"), role: .cancel) {}
+            } message: { maqam in
+                Text(l10n("library.delete.message", maqam.name(l10n)))
             }
         }
         .environment(\.locale, l10n.locale)
@@ -81,6 +106,60 @@ struct MaqamPickerView: View {
         .accessibilityHint(ajnas(maqam) + ". "
                            + MaqamText.noteNames(maqam, tonicHz: maqam.typicalTonicHz, l10n: l10n))
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .modifier(MaqamRowActions(maqam: maqam, edit: { editing = $0 }, delete: { pendingDeletion = $0 }))
+    }
+
+    @ViewBuilder
+    private var customSection: some View {
+        Section {
+            ForEach(library.maqamat) { maqam in
+                row(maqam)
+            }
+            Button {
+                editing = .blankCustom(arabicName: "", englishName: "")
+            } label: {
+                Label(l10n("action.newmaqam"), systemImage: "plus.circle")
+            }
+            Button {
+                showingImporter = true
+            } label: {
+                Label(l10n("action.importlibrary"), systemImage: "square.and.arrow.down")
+            }
+            Button {
+                if let url = model.exportLibraryFile() { sharing = SharedFile(url: url) }
+            } label: {
+                Label(l10n("action.exportlibrary"), systemImage: "square.and.arrow.up")
+            }
+            .disabled(library.maqamat.isEmpty && library.tables.isEmpty)
+        } header: {
+            Text(l10n("library.title"))
+        } footer: {
+            Text(l10n(library.maqamat.isEmpty ? "library.empty" : "library.footer"))
+        }
+    }
+
+    private func tuningSection(_ maqam: MaqamDefinition) -> some View {
+        let a4 = model.document?.maqam.a4Hz ?? 440
+        let adjusted = model.document?.maqam.degreeOffsets.count ?? 0
+        return Section {
+            NavigationLink {
+                DegreeTuningView()
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(l10n("tuning.title"))
+                    Text(adjusted == 0 ? l10n("tuning.none") : l10n("tuning.some", l10n.number(Double(adjusted))))
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            Stepper(onIncrement: { model.setA4(a4 + 1) }, onDecrement: { model.setA4(a4 - 1) }) {
+                Text(l10n("a4.value", l10n.number(a4)))
+            }
+            .accessibilityLabel(l10n("a4.label"))
+            .accessibilityValue(l10n("units.hertz", l10n.number(a4)))
+            .accessibilityHint(l10n("a4.hint"))
+        } header: {
+            Text(l10n("tuning.header"))
+        }
     }
 
     private func tonicSection(_ maqam: MaqamDefinition) -> some View {
