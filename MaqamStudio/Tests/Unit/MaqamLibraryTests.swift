@@ -142,10 +142,12 @@ final class MaqamLibraryTests: XCTestCase {
     }
 
     func testOldProjectsWithoutACustomMaqamStillOpen() throws {
-        let json = #"{"maqamId":"rast","tonicHz":261.6,"a4Hz":440,"degreeOffsets":[],"manuallyChosen":true}"#
+        // Exactly as phase 1 and 2 wrote it: offsets keyed by degree, no custom copy.
+        let json = #"{"maqamId":"rast","tonicHz":261.6,"a4Hz":440,"degreeOffsets":{"2":7},"manuallyChosen":true}"#
         let settings = try JSONDecoder().decode(MaqamSettings.self, from: Data(json.utf8))
         XCTAssertNil(settings.customDefinition)
         XCTAssertEqual(settings.maqamId, "rast")
+        XCTAssertEqual(settings.degreeOffsets, [2: 7])
     }
 
     func testNameFallsBackToTheOtherLanguage() throws {
