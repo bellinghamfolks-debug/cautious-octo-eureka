@@ -150,3 +150,60 @@ TEST_CASE("the C tracker, note segmenter and intonation judge work end to end") 
     CHECK(mq_pitch_tracker_create(&config, 0) == nullptr);
     CHECK(mq_pitch_default_config(96000.0).frame_size == 4096);
 }
+
+TEST_CASE("the C correction and PSOLA path tunes a sharp quarter-tone note") {
+    const double rate = 48000.0;
+    const double d4 = 293.6648;
+    const auto audio = synth::tone(d4 * std::exp2(175.0 / 1200.0), 1.0, rate, 0.3, 5);  // Bayati's 150, sung at 175
+    MQPitchConfig config = mq_pitch_default_config(rate);
+    size_t frames = 0;
+    mq_pitch_track(audio.data(), audio.size(), &config, 480, nullptr, nullptr, 0, &frames);
+    std::vector<double> times(frames);
+    std::vector<MQPitchEstimate> estimates(frames);
+    mq_pitch_track(audio.data(), audio.size(), &config, 480, times.data(), estimates.data(), frames, &frames);
+    const MQNoteConfig noteConfig = mq_note_default_config(d4);
+    size_t noteCount = 0;
+    mq_segment_notes(times.data(), estimates.data(), frames, &noteConfig, nullptr, 0, &noteCount);
+    std::vector<MQSungNote> notes(noteCount);
+    mq_segment_notes(times.data(), estimates.data(), frames, &noteConfig, notes.data(), noteCount, &noteCount);
+    CHECK(noteCount == 1);
+
+    MQMaqamInfo bayati{};
+    for (int32_t i = 0; i < mq_maqam_count(); ++i) {
+        mq_maqam_info(i, &bayati);
+        if (std::string(bayati.id) == "bayati") break;
+    }
+    MQCorrectionSettings robotic = mq_correction_preset(MQ_CORRECTION_ROBOTIC);
+    std::vector<double> shift(frames);
+    std::vector<double> targets(noteCount);
+    CHECK(mq_compute_correction(times.data(), estimates.data(), frames, notes.data(), noteCount, nullptr,
+                                &bayati.scale, d4, &robotic, shift.data(), targets.data()) == MQ_OK);
+    if (noteCount == 1) CHECK_NEAR(targets[0], 150.0, 1e-9);
+
+    std::vector<float> hz(frames);
+    for (size_t i = 0; i < frames; ++i) hz[i] = estimates[i].voiced ? static_cast<float>(estimates[i].frequency_hz) : 0.0f;
+    MQMarkFinder* finder = mq_marks_create(rate, times[0], 0.01, hz.data(), frames);
+    mq_marks_push(finder, audio.data(), audio.size());
+    MQGrainPlan* plan = mq_grain_plan_create(finder, shift.data(), frames, times[0], 0.01, rate, audio.size(), 0.0, 1);
+    mq_marks_destroy(finder);
+    CHECK(plan != nullptr);
+    std::vector<float> out(audio.size());
+    const float* in[] = {audio.data()};
+    float* outs[] = {out.data()};
+    CHECK(mq_grain_plan_render(plan, in, 1, 0, audio.size(), 0, out.size(), outs) == MQ_OK);
+    int64_t from = -1, to = -1;
+    mq_grain_plan_input_range(plan, 1000, 500, &from, &to);
+    CHECK(from >= 0 && from <= 1000 && to >= 1500);
+    mq_grain_plan_destroy(plan);
+
+    MQPitchDetector* detector = mq_pitch_create(&config);
+    MQPitchEstimate estimate{};
+    mq_pitch_detect(detector, out.data() + out.size() / 2, &estimate);
+    mq_pitch_destroy(detector);
+    CHECK(estimate.voiced != 0);
+    CHECK_NEAR(1200.0 * std::log2(estimate.frequency_hz / d4), 150.0, 3.0);
+
+    CHECK(mq_compute_correction(times.data(), estimates.data(), frames, notes.data(), noteCount, nullptr,
+                                &bayati.scale, 0.0, &robotic, shift.data(), nullptr) == MQ_ERROR_INVALID_ARGUMENT);
+    CHECK(mq_grain_plan_create(nullptr, shift.data(), frames, 0, 0.01, rate, 10, 0, 1) == nullptr);
+}

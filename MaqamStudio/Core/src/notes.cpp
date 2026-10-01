@@ -36,9 +36,43 @@ struct Builder {
     const std::vector<double>& smoothed;
     double hop;
     std::vector<SungNote>& notes;
+    std::vector<std::pair<std::size_t, std::size_t>> ranges;  // the frames each note was built from
+
+    void close(std::size_t first, std::size_t last) {
+        const std::size_t before = notes.size();
+        build(first, last);
+        if (notes.size() > before) ranges.emplace_back(first, last);
+    }
+
+    // Two neighbouring pieces at the same pitch are one note that a slide's tail
+    // or a vibrato swing split; join them and measure the whole again.
+    void mergeSamePitch(double maximumGapSeconds) {
+        constexpr double kSameCents = 25.0;
+        std::size_t k = 0;
+        while (k + 1 < notes.size()) {
+            const bool adjacent = notes[k + 1].startSeconds - notes[k].endSeconds <= maximumGapSeconds + 2.0 * hop;
+            if (adjacent && std::fabs(notes[k + 1].cents - notes[k].cents) < kSameCents) {
+                const std::size_t first = ranges[k].first;
+                const std::size_t last = ranges[k + 1].second;
+                std::vector<SungNote> merged;
+                std::swap(merged, notes);  // build() appends to `notes`
+                build(first, last);
+                if (notes.size() == 1) {
+                    merged[k] = notes[0];
+                    merged.erase(merged.begin() + static_cast<std::ptrdiff_t>(k) + 1);
+                    ranges[k] = {first, last};
+                    ranges.erase(ranges.begin() + static_cast<std::ptrdiff_t>(k) + 1);
+                    std::swap(merged, notes);
+                    continue;
+                }
+                std::swap(merged, notes);
+            }
+            ++k;
+        }
+    }
 
     // Turns frames [first, last] into a note, if a steady enough part remains.
-    void close(std::size_t first, std::size_t last) {
+    void build(std::size_t first, std::size_t last) {
         std::vector<std::size_t> frames;
         for (std::size_t i = first; i <= last && i < track.size(); ++i) {
             if (valid[i]) frames.push_back(i);
@@ -188,7 +222,7 @@ std::vector<SungNote> segmentNotes(const std::vector<PitchFrame>& track, const N
         centre[i] = sum / static_cast<double>(used);
     }
 
-    Builder builder{track, config, valid, cents, smoothed, hop, notes};
+    Builder builder{track, config, valid, cents, smoothed, hop, notes, {}};
     const auto anchorFrames = static_cast<std::size_t>(std::max(3.0, std::round(0.3 / hop)));
     const auto holdFrames = static_cast<std::size_t>(std::max(1.0, std::round(config.splitHoldSeconds / hop)));
     const auto shiftFrames = static_cast<std::size_t>(std::max(3.0, std::round(config.shiftWindowSeconds / hop)));
@@ -252,9 +286,11 @@ std::vector<SungNote> segmentNotes(const std::vector<PitchFrame>& track, const N
             double windowMean = 0.0;
             for (std::size_t k = windowStart; k < recent.size(); ++k) windowMean += recent[k];
             windowMean /= static_cast<double>(shiftFrames);
-            double before = 0.0;
-            for (std::size_t k = windowStart - shiftAnchorFrames; k < windowStart; ++k) before += recent[k];
-            before /= static_cast<double>(shiftAnchorFrames);
+            // These are centre values (vibrato already averaged out), so a median
+            // is safe here and ignores the tail of a slide the note began with.
+            const double before = median(std::vector<double>(
+                recent.begin() + static_cast<std::ptrdiff_t>(windowStart - shiftAnchorFrames),
+                recent.begin() + static_cast<std::ptrdiff_t>(windowStart)));
             const double shift = windowMean - before;
             if (std::fabs(shift) > config.shiftCents) {
                 // The new note starts at the first frame past half the step.
@@ -272,6 +308,7 @@ std::vector<SungNote> segmentNotes(const std::vector<PitchFrame>& track, const N
         }
     }
     if (inNote) builder.close(segmentStart, lastValid);
+    builder.mergeSamePitch(config.maximumGapSeconds);
     return notes;
 }
 

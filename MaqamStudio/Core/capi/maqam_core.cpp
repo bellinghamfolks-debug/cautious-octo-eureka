@@ -3,10 +3,14 @@
 #include "maqam/levels.hpp"
 #include "maqam/maqam.hpp"
 #include "maqam/notes.hpp"
+#include "maqam/correction.hpp"
+#include "maqam/psola.hpp"
 #include "maqam/pitch_detector.hpp"
 #include "maqam/tuning.hpp"
 
 #include <cstring>
+#include <cmath>
+#include <limits>
 #include <new>
 #include <vector>
 
@@ -23,6 +27,15 @@ struct MQWaveformAccumulator {
 struct MQPitchTracker {
     MQPitchTracker(const maqam::PitchDetectorConfig& config, std::size_t hop) : tracker(config, hop) {}
     maqam::PitchTracker tracker;
+};
+
+struct MQMarkFinder {
+    MQMarkFinder(double rate, double first, double hop, std::vector<float> track) : finder(rate, first, hop, std::move(track)) {}
+    maqam::MarkFinder finder;
+};
+
+struct MQGrainPlan {
+    maqam::GrainPlan plan;
 };
 
 struct MQPitchDetector {
@@ -384,5 +397,127 @@ MQStatus mq_evaluate_intonation(const MQScale* scale, double tonic_hz, const MQS
         return MQ_ERROR_INVALID_ARGUMENT;
     }
 }
+
+MQCorrectionSettings mq_correction_preset(MQCorrectionPreset preset) {
+    switch (preset) {
+    case MQ_CORRECTION_STRONG:
+        return {25.0, 1.0, 0.15, 0.6, 0.0, 0.35, 0.8, 10.0, 1200.0};
+    case MQ_CORRECTION_ROBOTIC:
+        return {0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1200.0};
+    case MQ_CORRECTION_NATURAL:
+    default: {
+        const maqam::CorrectionSettings d;
+        return {d.retuneMs, d.strength, d.humanize, d.vibratoAmount, d.vibratoRateHz, d.transitionSensitivity,
+                d.driftCorrection, d.smoothingMs, d.maximumShiftCents};
+    }
+    }
+}
+
+MQStatus mq_compute_correction(const double* times, const MQPitchEstimate* estimates, size_t frame_count,
+                               const MQSungNote* notes, size_t note_count, const MQNoteOverride* overrides,
+                               const MQScale* scale, double tonic_hz, const MQCorrectionSettings* settings,
+                               double* out_shift_cents, double* out_note_targets) {
+    if (!scale || !settings || !out_shift_cents || !(tonic_hz > 0.0)) return MQ_ERROR_INVALID_ARGUMENT;
+    if ((frame_count > 0 && (!times || !estimates)) || (note_count > 0 && !notes)) return MQ_ERROR_INVALID_ARGUMENT;
+    try {
+        std::vector<maqam::PitchFrame> track(frame_count);
+        for (size_t i = 0; i < frame_count; ++i) {
+            track[i].timeSeconds = times[i];
+            track[i].estimate.frequencyHz = estimates[i].frequency_hz;
+            track[i].estimate.confidence = estimates[i].confidence;
+            track[i].estimate.voiced = estimates[i].voiced != 0;
+        }
+        std::vector<maqam::SungNote> sung(note_count);
+        for (size_t i = 0; i < note_count; ++i) {
+            sung[i].startSeconds = notes[i].start_seconds;
+            sung[i].endSeconds = notes[i].end_seconds;
+            sung[i].hz = notes[i].hz;
+            sung[i].cents = notes[i].cents;
+            sung[i].vibratoRateHz = notes[i].vibrato_rate_hz;
+            sung[i].vibratoExtentCents = notes[i].vibrato_extent_cents;
+        }
+        std::vector<maqam::NoteOverride> manual;
+        if (overrides) {
+            manual.resize(note_count);
+            for (size_t i = 0; i < note_count; ++i) {
+                manual[i].bypass = overrides[i].bypass != 0;
+                manual[i].hasTarget = overrides[i].has_target != 0;
+                manual[i].targetCentsFromTonic = overrides[i].target_cents_from_tonic;
+            }
+        }
+        maqam::CorrectionSettings s;
+        s.retuneMs = settings->retune_ms;
+        s.strength = settings->strength;
+        s.humanize = settings->humanize;
+        s.vibratoAmount = settings->vibrato_amount;
+        s.vibratoRateHz = settings->vibrato_rate_hz;
+        s.transitionSensitivity = settings->transition_sensitivity;
+        s.driftCorrection = settings->drift_correction;
+        s.smoothingMs = settings->smoothing_ms;
+        s.maximumShiftCents = settings->maximum_shift_cents;
+        const auto result = maqam::computeCorrection(track, sung, toScale(*scale), tonic_hz, s, manual);
+        std::copy(result.shiftCents.begin(), result.shiftCents.end(), out_shift_cents);
+        if (out_note_targets) std::copy(result.noteTargetCents.begin(), result.noteTargetCents.end(), out_note_targets);
+        return MQ_OK;
+    } catch (const std::bad_alloc&) {
+        return MQ_ERROR_OUT_OF_MEMORY;
+    } catch (...) {
+        return MQ_ERROR_INVALID_ARGUMENT;
+    }
+}
+
+MQMarkFinder* mq_marks_create(double sample_rate, double first_time, double hop_seconds, const float* track_hz,
+                              size_t frame_count) {
+    if (!(sample_rate > 0.0) || (frame_count > 0 && !track_hz)) return nullptr;
+    try {
+        return new MQMarkFinder(sample_rate, first_time, hop_seconds,
+                                std::vector<float>(track_hz, track_hz + frame_count));
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+void mq_marks_push(MQMarkFinder* finder, const float* mono, size_t frames) {
+    if (!finder || !mono) return;
+    try {
+        finder->finder.push(mono, frames);
+    } catch (...) {
+    }
+}
+
+void mq_marks_destroy(MQMarkFinder* finder) { delete finder; }
+
+MQGrainPlan* mq_grain_plan_create(MQMarkFinder* finder, const double* shift_cents, size_t frame_count,
+                                  double first_time, double hop_seconds, double sample_rate, uint64_t total_samples,
+                                  double formant_shift_cents, int32_t preserve_formants) {
+    if (!finder || (frame_count > 0 && !shift_cents)) return nullptr;
+    try {
+        auto* plan = new MQGrainPlan();
+        plan->plan = maqam::planGrains(finder->finder.finish(), std::vector<double>(shift_cents, shift_cents + frame_count),
+                                       first_time, hop_seconds, sample_rate, total_samples, formant_shift_cents,
+                                       preserve_formants != 0);
+        return plan;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+void mq_grain_plan_input_range(const MQGrainPlan* plan, int64_t output_start, size_t output_frames,
+                               int64_t* out_input_start, int64_t* out_input_end) {
+    if (!plan || !out_input_start || !out_input_end) return;
+    int64_t start = 0, end = 0;
+    maqam::inputRangeFor(plan->plan, output_start, output_frames, start, end);
+    *out_input_start = start;
+    *out_input_end = end;
+}
+
+MQStatus mq_grain_plan_render(const MQGrainPlan* plan, const float* const* input, int32_t channels, int64_t input_start,
+                              size_t input_frames, int64_t output_start, size_t output_frames, float* const* output) {
+    if (!plan || !input || !output || channels <= 0) return MQ_ERROR_INVALID_ARGUMENT;
+    maqam::renderBlock(plan->plan, input, channels, input_start, input_frames, output_start, output_frames, output);
+    return MQ_OK;
+}
+
+void mq_grain_plan_destroy(MQGrainPlan* plan) { delete plan; }
 
 }  // extern "C"

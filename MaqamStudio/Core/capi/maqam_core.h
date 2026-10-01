@@ -220,6 +220,64 @@ typedef struct {
 MQStatus mq_evaluate_intonation(const MQScale *scale, double tonic_hz, const MQSungNote *notes, size_t count,
                                 double tolerance_cents, MQNoteMatch *out_matches, MQIntonationSummary *out_summary);
 
+/* ----------------------------------------------------------- correction */
+
+typedef enum {
+    MQ_CORRECTION_NATURAL = 0,
+    MQ_CORRECTION_STRONG = 1,
+    MQ_CORRECTION_ROBOTIC = 2,
+} MQCorrectionPreset;
+
+typedef struct {
+    double retune_ms;
+    double strength;
+    double humanize;
+    double vibrato_amount;
+    double vibrato_rate_hz;          /* 0 keeps the singer's rate */
+    double transition_sensitivity;
+    double drift_correction;
+    double smoothing_ms;
+    double maximum_shift_cents;
+} MQCorrectionSettings;
+
+typedef struct {
+    int32_t bypass;
+    int32_t has_target;
+    double target_cents_from_tonic;
+} MQNoteOverride;
+
+MQCorrectionSettings mq_correction_preset(MQCorrectionPreset preset);
+
+/* Per-frame shift in cents for a pitch track and its notes. `overrides` may be
+ * NULL or hold `note_count` entries; `out_note_targets` may be NULL or hold
+ * `note_count` entries (NaN for a bypassed note). */
+MQStatus mq_compute_correction(const double *times, const MQPitchEstimate *estimates, size_t frame_count,
+                               const MQSungNote *notes, size_t note_count, const MQNoteOverride *overrides,
+                               const MQScale *scale, double tonic_hz, const MQCorrectionSettings *settings,
+                               double *out_shift_cents, double *out_note_targets);
+
+/* -------------------------------------------------- PSOLA pitch shifting */
+
+typedef struct MQMarkFinder MQMarkFinder;
+MQMarkFinder *mq_marks_create(double sample_rate, double first_time, double hop_seconds, const float *track_hz,
+                              size_t frame_count);
+void mq_marks_push(MQMarkFinder *finder, const float *mono, size_t frames);
+void mq_marks_destroy(MQMarkFinder *finder);
+
+typedef struct MQGrainPlan MQGrainPlan;
+/* Finishes `finder` (it can no longer be pushed to) and plans grains for the
+ * per-frame shift curve. */
+MQGrainPlan *mq_grain_plan_create(MQMarkFinder *finder, const double *shift_cents, size_t frame_count,
+                                  double first_time, double hop_seconds, double sample_rate, uint64_t total_samples,
+                                  double formant_shift_cents, int32_t preserve_formants);
+void mq_grain_plan_input_range(const MQGrainPlan *plan, int64_t output_start, size_t output_frames,
+                               int64_t *out_input_start, int64_t *out_input_end);
+/* `input[c]` holds `input_frames` samples of channel c from `input_start`;
+ * `output[c]` receives `output_frames` samples from `output_start`. */
+MQStatus mq_grain_plan_render(const MQGrainPlan *plan, const float *const *input, int32_t channels, int64_t input_start,
+                              size_t input_frames, int64_t output_start, size_t output_frames, float *const *output);
+void mq_grain_plan_destroy(MQGrainPlan *plan);
+
 #ifdef __cplusplus
 }
 #endif
