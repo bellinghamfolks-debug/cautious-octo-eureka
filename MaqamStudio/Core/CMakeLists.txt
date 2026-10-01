@@ -13,6 +13,7 @@ add_library(maqam_core STATIC
     src/notes.cpp
     src/correction.cpp
     src/psola.cpp
+    src/detection.cpp
     capi/maqam_core.cpp)
 target_include_directories(maqam_core PUBLIC include capi)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
@@ -29,6 +30,7 @@ add_executable(maqam_core_tests
     tests/test_notes.cpp
     tests/test_psola.cpp
     tests/test_correction.cpp
+    tests/test_detection.cpp
     tests/test_capi.cpp)
 target_link_libraries(maqam_core_tests PRIVATE maqam_core)
 add_test(NAME maqam_core_tests COMMAND maqam_core_tests)

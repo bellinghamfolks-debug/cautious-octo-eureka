@@ -207,3 +207,40 @@ TEST_CASE("the C correction and PSOLA path tunes a sharp quarter-tone note") {
                                 &bayati.scale, 0.0, &robotic, shift.data(), nullptr) == MQ_ERROR_INVALID_ARGUMENT);
     CHECK(mq_grain_plan_create(nullptr, shift.data(), frames, 0, 0.01, rate, 10, 0, 1) == nullptr);
 }
+
+TEST_CASE("the C detector ranks maqamat and reports when it cannot tell") {
+    std::vector<MQScale> scales;
+    int32_t saba = -1;
+    for (int32_t i = 0; i < mq_maqam_count(); ++i) {
+        MQMaqamInfo info{};
+        mq_maqam_info(i, &info);
+        if (std::string(info.id) == "saba") saba = i;
+        scales.push_back(info.scale);
+    }
+    const double d4 = 293.6648;
+    std::vector<MQSungNote> notes;
+    double t = 0.0;
+    for (double cents : {0.0, 150.0, 300.0, 400.0, 700.0, 800.0, 1000.0, 800.0, 700.0, 400.0, 300.0, 150.0, 0.0}) {
+        MQSungNote note{};
+        note.start_seconds = t;
+        note.end_seconds = t + 0.45;
+        note.hz = d4 * std::exp2(cents / 1200.0);
+        notes.push_back(note);
+        t += 0.5;
+    }
+    notes.back().end_seconds += 0.8;
+    MQDetectionSummary summary{};
+    size_t count = 0;
+    CHECK(mq_detect_maqam(notes.data(), notes.size(), scales.data(), scales.size(), &summary, nullptr, 0, &count) == MQ_OK);
+    CHECK(count > 0);
+    CHECK(summary.enough_data == 1);
+    std::vector<MQMaqamCandidate> ranked(count);
+    CHECK(mq_detect_maqam(notes.data(), notes.size(), scales.data(), scales.size(), &summary, ranked.data(), count, &count) == MQ_OK);
+    CHECK(static_cast<int32_t>(ranked[0].scale_index) == saba);
+    CHECK_NEAR(1200.0 * std::log2(ranked[0].tonic_hz / d4), 0.0, 2.0);
+    CHECK(ranked[0].probability >= ranked[1].probability);
+
+    CHECK(mq_detect_maqam(notes.data(), 1, scales.data(), scales.size(), &summary, nullptr, 0, &count) == MQ_OK);
+    CHECK(summary.enough_data == 0);
+    CHECK(mq_detect_maqam(nullptr, 3, scales.data(), scales.size(), &summary, nullptr, 0, &count) == MQ_ERROR_INVALID_ARGUMENT);
+}

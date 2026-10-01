@@ -4,6 +4,7 @@
 #include "maqam/maqam.hpp"
 #include "maqam/notes.hpp"
 #include "maqam/correction.hpp"
+#include "maqam/detection.hpp"
 #include "maqam/psola.hpp"
 #include "maqam/pitch_detector.hpp"
 #include "maqam/tuning.hpp"
@@ -519,5 +520,39 @@ MQStatus mq_grain_plan_render(const MQGrainPlan* plan, const float* const* input
 }
 
 void mq_grain_plan_destroy(MQGrainPlan* plan) { delete plan; }
+
+MQStatus mq_detect_maqam(const MQSungNote* notes, size_t note_count, const MQScale* scales, size_t scale_count,
+                         MQDetectionSummary* out_summary, MQMaqamCandidate* out_candidates, size_t capacity,
+                         size_t* out_count) {
+    if (!out_summary || !out_count || (note_count > 0 && !notes) || (scale_count > 0 && !scales)) {
+        return MQ_ERROR_INVALID_ARGUMENT;
+    }
+    if (capacity > 0 && !out_candidates) return MQ_ERROR_INVALID_ARGUMENT;
+    try {
+        std::vector<maqam::SungNote> sung(note_count);
+        for (size_t i = 0; i < note_count; ++i) {
+            sung[i].startSeconds = notes[i].start_seconds;
+            sung[i].endSeconds = notes[i].end_seconds;
+            sung[i].hz = notes[i].hz;
+        }
+        std::vector<maqam::Scale> converted(scale_count);
+        for (size_t i = 0; i < scale_count; ++i) converted[i] = toScale(scales[i]);
+        const maqam::MaqamDetection detection = maqam::detectMaqam(sung, converted);
+        *out_summary = {detection.enoughData ? 1 : 0, detection.sungSeconds, detection.pitchClasses,
+                        detection.tonicHz, detection.tonicConfidence};
+        if (capacity == 0) { *out_count = detection.ranked.size(); return MQ_OK; }
+        const size_t written = detection.ranked.size() < capacity ? detection.ranked.size() : capacity;
+        for (size_t i = 0; i < written; ++i) {
+            const maqam::MaqamCandidate& c = detection.ranked[i];
+            out_candidates[i] = {c.scaleIndex, c.tonicHz, c.probability, c.meanDeviationCents};
+        }
+        *out_count = written;
+        return MQ_OK;
+    } catch (const std::bad_alloc&) {
+        return MQ_ERROR_OUT_OF_MEMORY;
+    } catch (...) {
+        return MQ_ERROR_INVALID_ARGUMENT;
+    }
+}
 
 }  // extern "C"

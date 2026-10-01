@@ -278,6 +278,29 @@ MQStatus mq_grain_plan_render(const MQGrainPlan *plan, const float *const *input
                               size_t input_frames, int64_t output_start, size_t output_frames, float *const *output);
 void mq_grain_plan_destroy(MQGrainPlan *plan);
 
+/* ------------------------------------------------- maqam and tonic detection */
+
+typedef struct {
+    uint64_t scale_index;        /* into the `scales` passed in */
+    double tonic_hz;             /* as sung, not snapped to A = 440 */
+    double probability;
+    double mean_deviation_cents;
+} MQMaqamCandidate;
+
+typedef struct {
+    int32_t enough_data;         /* 0: too little or too uniform singing to make a claim */
+    double sung_seconds;
+    uint64_t pitch_classes;
+    double tonic_hz;
+    double tonic_confidence;
+} MQDetectionSummary;
+
+/* Ranks every (scale, tonic) pair, most probable first. Pass capacity = 0 to
+ * learn the count; the summary is filled either way. */
+MQStatus mq_detect_maqam(const MQSungNote *notes, size_t note_count, const MQScale *scales, size_t scale_count,
+                         MQDetectionSummary *out_summary, MQMaqamCandidate *out_candidates, size_t capacity,
+                         size_t *out_count);
+
 #ifdef __cplusplus
 }
 #endif
