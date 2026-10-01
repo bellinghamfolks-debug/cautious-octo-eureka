@@ -56,8 +56,14 @@ final class LocalizationTests: XCTestCase {
     func testFormattedArgumentsAreFilledInOrder() {
         let l10n = L10n(language: .english, defaults: isolatedDefaults())
         XCTAssertEqual(l10n("maqam.ajnas", "Rast", "Hijaz"), "Lower jins Rast, upper jins Hijaz")
+        // In Arabic, Foundation wraps each argument in directional isolates
+        // (U+2068 … U+2069) so a Latin word or number inside an RTL sentence
+        // keeps its place. That is wanted; compare the visible text.
         let arabic = L10n(language: .arabic, defaults: isolatedDefaults())
-        XCTAssertEqual(arabic("maqam.ajnas", "راست", "حجاز"), "الجنس الأسفل راست، والجنس الأعلى حجاز")
+        let filled = arabic("maqam.ajnas", "راست", "حجاز")
+            .replacingOccurrences(of: "\u{2068}", with: "")
+            .replacingOccurrences(of: "\u{2069}", with: "")
+        XCTAssertEqual(filled, "الجنس الأسفل راست، والجنس الأعلى حجاز")
     }
 
     func testNumbersAndDurationsAreSpokenInTheInterfaceLanguage() {
