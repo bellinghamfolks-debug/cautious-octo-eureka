@@ -1,0 +1,57 @@
+name: Maqam Studio (iOS)
+
+on:
+  push:
+    branches: [main, "claude/**", "codex/**"]
+    paths:
+      - "MaqamStudio/**"
+      - ".github/workflows/maqam-studio.yml"
+      - "codemagic.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: maqam-studio-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: DSP core, sanitizers, localization
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: MaqamStudio
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/ci-core.sh
+
+  ios:
+    name: Build, test and package (unsigned)
+    needs: core
+    runs-on: macos-15
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: MaqamStudio
+    steps:
+      - uses: actions/checkout@v4
+      - name: Core tests on macOS (Apple clang)
+        run: |
+          cmake -S Core -B build/core -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/core -j
+          ./build/core/maqam_core_tests
+      - name: Build, test, archive
+        run: ./scripts/ci-ios.sh
+      - name: Upload unsigned IPA and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maqam-studio-${{ github.sha }}
+          path: |
+            MaqamStudio/build/ci/MaqamStudio-unsigned.ipa
+            MaqamStudio/build/ci/*.log
+          if-no-files-found: warn
+          retention-days: 14

@@ -3,6 +3,11 @@ name: Android validation
 on:
   push:
     branches: [main, master, "codex/**", "claude/**"]
+    # Maqam Studio (iOS) has its own workflow.
+    paths-ignore:
+      - "MaqamStudio/**"
+      - ".github/workflows/maqam-studio.yml"
+      - "codemagic.yaml"
   workflow_dispatch:
 
 permissions:

@@ -1,0 +1,36 @@
+# Codemagic builds for this repository. Only Maqam Studio (iOS) is built here;
+# the Android app is built by GitHub Actions.
+workflows:
+  maqam-studio:
+    name: Maqam Studio (iOS)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      xcode: latest
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: "claude/*"
+        - pattern: "main"
+    when:
+      changeset:
+        includes:
+          - "MaqamStudio/"
+          - "codemagic.yaml"
+    working_directory: MaqamStudio
+    scripts:
+      - name: DSP core and localization
+        script: |
+          cmake -S Core -B build/core -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/core -j
+          ./build/core/maqam_core_tests
+          python3 tools/check_localization.py
+      - name: Build, test, archive (unsigned)
+        script: ./scripts/ci-ios.sh
+    artifacts:
+      - $CM_BUILD_DIR/MaqamStudio/build/ci/MaqamStudio-unsigned.ipa
+      - $CM_BUILD_DIR/MaqamStudio/build/ci/*.log
+    # Signing and TestFlight: add an App Store Connect integration in Codemagic,
+    # then replace the unsigned archive with `xcode-project use-profiles` and
+    # `xcode-project build-ipa`. No signing material is stored in this repository.

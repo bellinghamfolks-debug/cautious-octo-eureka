@@ -1,0 +1,194 @@
+/* مقام ستوديو — النصوص العربية. كل مفتاح هنا يجب أن يوجد في en.lproj (يفحصه LocalizationTests). */
+
+"app.name" = "مقام ستوديو";
+
+/* الوحدات */
+"units.silence" = "صمت";
+"units.decibels" = "%@ ديسيبل";
+"units.hertz" = "%@ هيرتز";
+
+/* الأخطاء */
+"error.unsupported.title" = "صيغة غير مدعومة";
+"error.unsupported.message" = "لا يمكن فتح ملفات %@. استورد ملف WAV أو FLAC أو MP3 أو M4A أو AAC.";
+"error.corrupted.title" = "الملف الصوتي تالف";
+"error.corrupted.message" = "تعذّرت قراءة الصوت من هذا الملف. قد يكون ناقصاً أو تالفاً. جرّب نسخة أخرى منه أو صدّره من جديد من التطبيق الذي أنشأه.";
+"error.empty.message" = "هذا الملف لا يحتوي على أي صوت. اختر ملفاً آخر.";
+"error.access.title" = "تعذّر الوصول إلى الملف";
+"error.access.message" = "لم يسمح النظام بقراءة هذا الملف. انقله إلى تطبيق الملفات على جهازك ثم استورده من هناك.";
+"error.microphone.title" = "الميكروفون غير مسموح";
+"error.microphone.message" = "يحتاج التسجيل إلى إذن الميكروفون. افتح الإعدادات وفعّل الميكروفون لمقام ستوديو.";
+"error.noinput.title" = "لا يوجد ميكروفون";
+"error.noinput.message" = "لم يُعثر على مدخل صوتي. صِل ميكروفوناً أو سماعة بميكروفون ثم حاول مجدداً.";
+"error.storage.title" = "المساحة غير كافية";
+"error.storage.message" = "يحتاج هذا إلى نحو %@ ميغابايت من المساحة الحرة. احذف بعض الملفات أو المشاريع القديمة ثم حاول مجدداً.";
+"error.engine.title" = "خطأ في محرك الصوت";
+"error.engine.message" = "توقف محرك الصوت: %@. أغلق التطبيقات الأخرى التي تستخدم الصوت ثم حاول مجدداً.";
+"error.recording.title" = "تعذّر التسجيل";
+"error.recording.message" = "توقف التسجيل: %@. ما سُجّل قبل الخطأ محفوظ إن وُجد.";
+"error.playback.title" = "تعذّر التشغيل";
+"error.playback.message" = "تعذّر تشغيل الصوت: %@.";
+"error.project.title" = "مشكلة في المشروع";
+"error.corruptproject.message" = "تعذّر فتح المشروع «%@». ملفه تالف ولا توجد نسخة احتياطية سليمة. التسجيل الأصلي لم يُمس.";
+"error.notfound.message" = "لم يعد هذا المشروع موجوداً.";
+"error.save.title" = "تعذّر الحفظ";
+"error.save.message" = "لم يُحفظ المشروع: %@. تعديلاتك ما زالت في الذاكرة؛ حرّر بعض المساحة ثم احفظ.";
+"error.core.message" = "أعاد محرك المعالجة الخطأ رقم %@.";
+
+/* الاستعادة */
+"recovery.message" = "أُغلق التطبيق بشكل غير متوقع أثناء العمل على «%@». فُتح المشروع كما حُفظ آخر مرة.";
+"recovery.backup" = "كان ملف المشروع «%@» تالفاً، فاستُعيد من النسخة الاحتياطية.";
+
+/* الإعلانات المنطوقة */
+"announce.projectcreated" = "أُنشئ مشروع %@";
+"announce.projectopened" = "فُتح مشروع %@";
+"announce.duplicated" = "أُنشئت نسخة: %@";
+"announce.deleted" = "حُذف المشروع";
+"announce.undone" = "تراجع عن %@";
+"announce.redone" = "إعادة %@";
+"announce.imported" = "استُورد %1$@، المدة %2$@";
+"announce.analyzing" = "جارٍ تحليل الصوت";
+"announce.analyzed" = "اكتمل التحليل";
+"announce.progress" = "التحليل %@";
+"announce.recording" = "بدأ التسجيل";
+"announce.recorded" = "توقف التسجيل، المدة %@";
+"announce.playbackfinished" = "انتهى التشغيل";
+"announce.interrupted" = "توقف الصوت بسبب مقاطعة من النظام";
+
+/* المشاريع */
+"project.copyname" = "%@ (نسخة)";
+"project.defaultname" = "مشروع %@";
+"projects.title" = "المشاريع";
+"projects.empty.title" = "لا توجد مشاريع بعد";
+"projects.empty.body" = "سجّل صوتك أو استورد ملفاً ليُنشأ مشروعك الأول.";
+"projects.modified" = "آخر تعديل %@";
+"projects.noaudio" = "بلا تسجيل";
+"projects.needsrecovery" = "أُغلق بشكل غير متوقع، افتحه لاستعادته";
+"projects.open" = "مفتوح الآن";
+"projects.row.hint" = "انقر مرتين للفتح. للنسخ أو الحذف اسحب لأعلى أو لأسفل لاختيار الإجراء.";
+"projects.delete.title" = "حذف المشروع؟";
+"projects.delete.message" = "سيُحذف «%@» مع تسجيله الأصلي نهائياً.";
+
+/* الإجراءات */
+"action.rename" = "إعادة التسمية";
+"action.undo" = "تراجع";
+"action.undo.named" = "تراجع عن %@";
+"action.redo" = "إعادة";
+"action.redo.named" = "إعادة %@";
+"action.maqam" = "اختيار المقام";
+"action.tonic" = "تغيير القرار";
+"action.opensettings" = "فتح الإعدادات";
+"action.close" = "إغلاق";
+"action.done" = "تم";
+"action.ok" = "حسناً";
+"action.save" = "حفظ";
+"action.cancel" = "إلغاء";
+"action.delete" = "حذف";
+"action.openproject" = "فتح مشروع";
+"action.record" = "تسجيل";
+"action.import" = "استيراد ملف";
+"action.projects" = "المشاريع";
+"action.language" = "اللغة";
+"action.duplicate" = "نسخ المشروع";
+"action.newproject" = "مشروع جديد";
+"action.projectmenu" = "خيارات المشروع";
+"action.stoprecording" = "إيقاف التسجيل";
+"action.back5" = "رجوع خمس ثوانٍ";
+"action.forward5" = "تقديم خمس ثوانٍ";
+"action.pause" = "إيقاف مؤقت";
+"action.play" = "تشغيل";
+"action.stop" = "إيقاف والعودة للبداية";
+"action.choosemaqam" = "اختر المقام";
+"action.changemaqam" = "تغيير المقام";
+"action.clearmaqam" = "بلا مقام";
+"action.resettonic" = "إعادة القرار إلى %@";
+
+/* الوصف النصي للصوت */
+"describe.duration" = "المدة %@.";
+"describe.allsilent" = "التسجيل صامت بالكامل تقريباً.";
+"describe.startsat" = "يبدأ الصوت بعد %@.";
+"describe.endsat" = "ينتهي الصوت عند %@.";
+"describe.pauses" = "فيه وقفات صامتة عددها %@.";
+"describe.loudest" = "أعلى لحظة عند %@.";
+"describe.clipping" = "يوجد تشبّع (تقطيع) في %@ عينة.";
+"describe.noclipping" = "لا يوجد تشبّع.";
+
+"loudness.silent" = "صامت";
+"loudness.quiet" = "هادئ";
+"loudness.moderate" = "متوسط";
+"loudness.loud" = "مرتفع";
+
+/* الموجة والرسم */
+"waveform.label" = "شكل الموجة";
+"waveform.value" = "الموضع %1$@ من %2$@";
+"waveform.hint" = "اسحب لأعلى أو لأسفل للتنقل خمسة بالمئة. يمكن سماع الرسم البياني من قائمة الدوّار.";
+"chart.time" = "الزمن";
+"chart.loudness" = "الشدة";
+"chart.series" = "شدة الصوت";
+
+/* الشاشات */
+"rename.title" = "إعادة تسمية المشروع";
+"rename.field" = "اسم المشروع";
+"welcome.title" = "أهلاً بك في مقام ستوديو";
+"welcome.body" = "سجّل صوتك أو استورد ملفاً. يبقى كل شيء على جهازك، والتسجيل الأصلي لا يُعدَّل أبداً.";
+"empty.title" = "المشروع فارغ";
+"empty.body" = "سجّل صوتك أو استورد ملفاً صوتياً لهذا المشروع.";
+"newtake.title" = "تسجيل جديد";
+"newtake.body" = "التسجيل أو الاستيراد هنا يُنشئ مشروعاً جديداً ولا يمس التسجيل الحالي.";
+"hint.record" = "يبدأ التسجيل من الميكروفون فوراً.";
+"hint.import" = "يفتح تطبيق الملفات لاختيار ملف WAV أو FLAC أو MP3 أو M4A أو AAC.";
+"progress.analyzing" = "جارٍ التحليل";
+"recording.title" = "جارٍ التسجيل";
+"recording.elapsed" = "زمن التسجيل";
+
+/* المستوى والتشغيل */
+"level.clipped" = "الصوت مرتفع جداً ويتشبّع، ابتعد عن الميكروفون";
+"level.ok" = "مستوى الدخل";
+"level.label" = "مستوى الميكروفون";
+"level.value" = "الذروة %@";
+"transport.position" = "موضع التشغيل";
+
+/* التحليل */
+"analysis.title" = "تحليل التسجيل";
+"analysis.duration" = "المدة";
+"analysis.format" = "الصيغة";
+"analysis.mono" = "أحادي";
+"analysis.stereo" = "%@ قنوات";
+"analysis.peak" = "الذروة";
+"analysis.rms" = "متوسط الشدة";
+"analysis.noisefloor" = "مستوى الضجيج";
+"analysis.dynamicrange" = "المدى الديناميكي";
+"analysis.clipping" = "التشبّع";
+"analysis.clipping.yes" = "نعم، %@ عينة";
+"analysis.clipping.no" = "لا يوجد";
+"analysis.dcoffset" = "انحراف التيار المستمر";
+
+/* المقام */
+"maqam.title" = "المقام";
+"maqam.picker.title" = "اختيار المقام";
+"maqam.tonic.value" = "القرار %1$@، %2$@ هيرتز";
+"maqam.none" = "لم يُختر مقام بعد. اكتشاف المقام تلقائياً يأتي في مرحلة لاحقة؛ اختره الآن يدوياً.";
+"maqam.degrees" = "الدرجات بالسنت من القرار: %@";
+"maqam.family" = "عائلة %@";
+"maqam.ajnas" = "الجنس الأسفل %1$@، والجنس الأعلى %2$@";
+"maqam.selected" = "مختار";
+"maqam.manual.footer" = "الاختيار يدوي. لا يُقرّب أي درجة إلى أقرب نصف تون؛ الأرباع تبقى أرباعاً.";
+"maqam.tonic.header" = "القرار";
+"maqam.tonic.quarter" = "القرار بأرباع التون";
+"maqam.tonic.fine" = "ضبط دقيق للقرار، خمسة سنت";
+"maqam.tonic.offset" = "منحرف %@ سنت";
+"maqam.degrees.header" = "درجات %@";
+"maqam.degree.row" = "الدرجة %1$@: %2$@، %3$@ سنت";
+"maqam.degree.alternates" = "بديل: %@";
+"maqam.nooctave" = "هذا المقام لا يكرّر القرار في الجواب؛ الدرجة الثامنة تختلف عن القرار.";
+
+/* الأجناس */
+"jins.rast" = "راست";
+"jins.bayati" = "بياتي";
+"jins.nahawand" = "نهاوند";
+"jins.hijaz" = "حجاز";
+"jins.saba" = "صبا";
+"jins.kurd" = "كرد";
+"jins.ajam" = "عجم";
+"jins.sikah" = "سيكاه";
+"jins.saba_zamzam" = "صبا زمزم";
+"jins.nawa_athar" = "نوى أثر";

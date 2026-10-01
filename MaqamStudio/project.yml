@@ -1,0 +1,77 @@
+name: MaqamStudio
+options:
+  bundleIdPrefix: com.maqamstudio
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  developmentLanguage: ar
+  xcodeVersion: "16.0"
+
+settings:
+  base:
+    SWIFT_VERSION: 5.0
+    SWIFT_STRICT_CONCURRENCY: minimal
+    IPHONEOS_DEPLOYMENT_TARGET: 16.0
+    TARGETED_DEVICE_FAMILY: "1,2"
+    CLANG_CXX_LANGUAGE_STANDARD: c++17
+    CLANG_CXX_LIBRARY: libc++
+    GCC_TREAT_WARNINGS_AS_ERRORS: NO
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    HEADER_SEARCH_PATHS:
+      - $(SRCROOT)/Core/include
+      - $(SRCROOT)/Core/capi
+
+targets:
+  MaqamStudio:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+        excludes:
+          - Support/Info.plist
+      - path: Core/src
+      - path: Core/capi
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.maqamstudio.app
+        PRODUCT_NAME: MaqamStudio
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        INFOPLIST_FILE: App/Support/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        SWIFT_OBJC_BRIDGING_HEADER: App/Support/MaqamStudio-Bridging-Header.h
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SUPPORTS_MACCATALYST: NO
+
+  MaqamStudioTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/Unit
+      - path: Tests/Fixtures
+        buildPhase: resources
+    dependencies:
+      - target: MaqamStudio
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.maqamstudio.app.tests
+        GENERATE_INFOPLIST_FILE: YES
+        BUNDLE_LOADER: $(TEST_HOST)
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/MaqamStudio.app/MaqamStudio
+        SWIFT_OBJC_BRIDGING_HEADER: App/Support/MaqamStudio-Bridging-Header.h
+
+schemes:
+  MaqamStudio:
+    build:
+      targets:
+        MaqamStudio: all
+        MaqamStudioTests: [test]
+    test:
+      targets:
+        - MaqamStudioTests
+      gatherCoverageData: false
+    run:
+      config: Debug
+    archive:
+      config: Release

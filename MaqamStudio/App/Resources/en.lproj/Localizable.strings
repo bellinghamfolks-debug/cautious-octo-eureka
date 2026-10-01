@@ -1,0 +1,194 @@
+/* Maqam Studio — English text. Every key here must exist in ar.lproj (checked by LocalizationTests). */
+
+"app.name" = "Maqam Studio";
+
+/* Units */
+"units.silence" = "silence";
+"units.decibels" = "%@ dB";
+"units.hertz" = "%@ Hz";
+
+/* Errors */
+"error.unsupported.title" = "Unsupported format";
+"error.unsupported.message" = "%@ files can't be opened. Import a WAV, FLAC, MP3, M4A or AAC file.";
+"error.corrupted.title" = "Damaged audio file";
+"error.corrupted.message" = "The audio in this file couldn't be read. It may be incomplete or damaged. Try another copy, or export it again from the app that made it.";
+"error.empty.message" = "This file contains no audio. Choose another file.";
+"error.access.title" = "Can't open the file";
+"error.access.message" = "The system didn't allow this file to be read. Move it into the Files app on this device and import it from there.";
+"error.microphone.title" = "Microphone not allowed";
+"error.microphone.message" = "Recording needs microphone access. Open Settings and turn on the microphone for Maqam Studio.";
+"error.noinput.title" = "No microphone";
+"error.noinput.message" = "No audio input was found. Connect a microphone or a headset with a microphone and try again.";
+"error.storage.title" = "Not enough space";
+"error.storage.message" = "This needs about %@ MB of free space. Delete some files or old projects and try again.";
+"error.engine.title" = "Audio engine error";
+"error.engine.message" = "The audio engine stopped: %@. Close other apps that are using audio and try again.";
+"error.recording.title" = "Recording failed";
+"error.recording.message" = "Recording stopped: %@. Anything recorded before the error has been kept.";
+"error.playback.title" = "Playback failed";
+"error.playback.message" = "The audio couldn't be played: %@.";
+"error.project.title" = "Project problem";
+"error.corruptproject.message" = "The project “%@” couldn't be opened. Its file is damaged and there is no good backup. The original recording was not touched.";
+"error.notfound.message" = "This project no longer exists.";
+"error.save.title" = "Couldn't save";
+"error.save.message" = "The project wasn't saved: %@. Your changes are still in memory; free some space, then save.";
+"error.core.message" = "The processing engine returned error %@.";
+
+/* Recovery */
+"recovery.message" = "The app closed unexpectedly while you were working on “%@”. The project was opened as last saved.";
+"recovery.backup" = "The project file for “%@” was damaged, so it was restored from its backup.";
+
+/* Spoken announcements */
+"announce.projectcreated" = "Created project %@";
+"announce.projectopened" = "Opened project %@";
+"announce.duplicated" = "Made a copy: %@";
+"announce.deleted" = "Project deleted";
+"announce.undone" = "Undid %@";
+"announce.redone" = "Redid %@";
+"announce.imported" = "Imported %1$@, length %2$@";
+"announce.analyzing" = "Analyzing audio";
+"announce.analyzed" = "Analysis complete";
+"announce.progress" = "Analysis %@";
+"announce.recording" = "Recording started";
+"announce.recorded" = "Recording stopped, length %@";
+"announce.playbackfinished" = "Playback finished";
+"announce.interrupted" = "Audio stopped because of a system interruption";
+
+/* Projects */
+"project.copyname" = "%@ (copy)";
+"project.defaultname" = "Project %@";
+"projects.title" = "Projects";
+"projects.empty.title" = "No projects yet";
+"projects.empty.body" = "Record your voice or import a file to create your first project.";
+"projects.modified" = "modified %@";
+"projects.noaudio" = "no recording";
+"projects.needsrecovery" = "closed unexpectedly, open it to recover";
+"projects.open" = "open now";
+"projects.row.hint" = "Double-tap to open. To duplicate or delete, swipe up or down to choose an action.";
+"projects.delete.title" = "Delete project?";
+"projects.delete.message" = "“%@” and its original recording will be deleted permanently.";
+
+/* Actions */
+"action.rename" = "Rename";
+"action.undo" = "Undo";
+"action.undo.named" = "Undo %@";
+"action.redo" = "Redo";
+"action.redo.named" = "Redo %@";
+"action.maqam" = "Choose maqam";
+"action.tonic" = "Change tonic";
+"action.opensettings" = "Open Settings";
+"action.close" = "Close";
+"action.done" = "Done";
+"action.ok" = "OK";
+"action.save" = "Save";
+"action.cancel" = "Cancel";
+"action.delete" = "Delete";
+"action.openproject" = "Open a project";
+"action.record" = "Record";
+"action.import" = "Import a file";
+"action.projects" = "Projects";
+"action.language" = "Language";
+"action.duplicate" = "Duplicate project";
+"action.newproject" = "New project";
+"action.projectmenu" = "Project options";
+"action.stoprecording" = "Stop recording";
+"action.back5" = "Back five seconds";
+"action.forward5" = "Forward five seconds";
+"action.pause" = "Pause";
+"action.play" = "Play";
+"action.stop" = "Stop and return to start";
+"action.choosemaqam" = "Choose the maqam";
+"action.changemaqam" = "Change maqam";
+"action.clearmaqam" = "No maqam";
+"action.resettonic" = "Reset tonic to %@";
+
+/* Text description of the audio */
+"describe.duration" = "Length %@.";
+"describe.allsilent" = "The recording is almost entirely silent.";
+"describe.startsat" = "Sound starts after %@.";
+"describe.endsat" = "Sound ends at %@.";
+"describe.pauses" = "It has %@ silent pauses.";
+"describe.loudest" = "Loudest moment at %@.";
+"describe.clipping" = "Clipping in %@ samples.";
+"describe.noclipping" = "No clipping.";
+
+"loudness.silent" = "silent";
+"loudness.quiet" = "quiet";
+"loudness.moderate" = "moderate";
+"loudness.loud" = "loud";
+
+/* Waveform and chart */
+"waveform.label" = "Waveform";
+"waveform.value" = "Position %1$@ of %2$@";
+"waveform.hint" = "Swipe up or down to move five percent. The chart can be heard from the rotor.";
+"chart.time" = "Time";
+"chart.loudness" = "Loudness";
+"chart.series" = "Loudness";
+
+/* Screens */
+"rename.title" = "Rename project";
+"rename.field" = "Project name";
+"welcome.title" = "Welcome to Maqam Studio";
+"welcome.body" = "Record your voice or import a file. Everything stays on this device, and the original recording is never changed.";
+"empty.title" = "This project is empty";
+"empty.body" = "Record your voice or import an audio file for this project.";
+"newtake.title" = "New take";
+"newtake.body" = "Recording or importing here creates a new project and leaves the current recording untouched.";
+"hint.record" = "Starts recording from the microphone right away.";
+"hint.import" = "Opens Files to choose a WAV, FLAC, MP3, M4A or AAC file.";
+"progress.analyzing" = "Analyzing";
+"recording.title" = "Recording";
+"recording.elapsed" = "Recording time";
+
+/* Levels and transport */
+"level.clipped" = "Too loud and clipping, move back from the microphone";
+"level.ok" = "Input level";
+"level.label" = "Microphone level";
+"level.value" = "Peak %@";
+"transport.position" = "Playback position";
+
+/* Analysis */
+"analysis.title" = "Recording analysis";
+"analysis.duration" = "Length";
+"analysis.format" = "Format";
+"analysis.mono" = "mono";
+"analysis.stereo" = "%@ channels";
+"analysis.peak" = "Peak";
+"analysis.rms" = "Average level";
+"analysis.noisefloor" = "Noise floor";
+"analysis.dynamicrange" = "Dynamic range";
+"analysis.clipping" = "Clipping";
+"analysis.clipping.yes" = "Yes, %@ samples";
+"analysis.clipping.no" = "None";
+"analysis.dcoffset" = "DC offset";
+
+/* Maqam */
+"maqam.title" = "Maqam";
+"maqam.picker.title" = "Choose maqam";
+"maqam.tonic.value" = "Tonic %1$@, %2$@ Hz";
+"maqam.none" = "No maqam chosen yet. Automatic maqam detection arrives in a later phase; choose it by hand for now.";
+"maqam.degrees" = "Degrees in cents from the tonic: %@";
+"maqam.family" = "%@ family";
+"maqam.ajnas" = "Lower jins %1$@, upper jins %2$@";
+"maqam.selected" = "selected";
+"maqam.manual.footer" = "Chosen by hand. No degree is rounded to the nearest semitone; quarter tones stay quarter tones.";
+"maqam.tonic.header" = "Tonic";
+"maqam.tonic.quarter" = "Tonic, in quarter tones";
+"maqam.tonic.fine" = "Fine-tune tonic, five cents";
+"maqam.tonic.offset" = "%@ cents off";
+"maqam.degrees.header" = "Degrees of %@";
+"maqam.degree.row" = "Degree %1$@: %2$@, %3$@ cents";
+"maqam.degree.alternates" = "Alternate: %@";
+"maqam.nooctave" = "This maqam does not repeat its tonic at the octave; the eighth degree differs from the tonic.";
+
+/* Ajnas */
+"jins.rast" = "Rast";
+"jins.bayati" = "Bayati";
+"jins.nahawand" = "Nahawand";
+"jins.hijaz" = "Hijaz";
+"jins.saba" = "Saba";
+"jins.kurd" = "Kurd";
+"jins.ajam" = "Ajam";
+"jins.sikah" = "Sikah";
+"jins.saba_zamzam" = "Saba Zamzam";
+"jins.nawa_athar" = "Nawa Athar";
