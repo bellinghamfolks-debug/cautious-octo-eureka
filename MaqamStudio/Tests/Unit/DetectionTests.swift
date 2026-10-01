@@ -55,7 +55,9 @@ final class DetectionTests: XCTestCase {
 
     func testTheSingersOwnTonicIsKept() throws {
         let bayati = try XCTUnwrap(MaqamCatalog.definition(id: "bayati"))
-        let tonic = bayati.typicalTonicHz * pow(2, 28.0 / 1200)  // a singer 28 cents high
+        // A singer 15 cents high: still named D, described as sharp of it. (Past
+        // 25 cents the nearest name would be D half-sharp instead.)
+        let tonic = bayati.typicalTonicHz * pow(2, 15.0 / 1200)
         let result = try detect(sing(bayati, tonicHz: tonic))
         XCTAssertEqual(result.best?.maqam.id, "bayati")
         XCTAssertEqual(mq_hz_to_cents(try XCTUnwrap(result.best).tonicHz, tonic), 0, accuracy: 6)
