@@ -148,6 +148,78 @@ MQStatus mq_pitch_track(const float *mono, size_t frames, const MQPitchConfig *c
                         uint32_t hop_size, double *out_times, MQPitchEstimate *out_estimates,
                         size_t capacity, size_t *out_count);
 
+/* Smallest power-of-two frame holding two periods of `minimum_hz`. The default
+ * configuration already uses it, so 88.2 and 96 kHz files work. */
+uint32_t mq_pitch_frame_size_for(double sample_rate, double minimum_hz);
+
+/* Streaming offline tracker: the same frames as mq_pitch_track, fed in chunks.
+ * Allocates as it goes; never use it on the audio thread. */
+typedef struct MQPitchTracker MQPitchTracker;
+MQPitchTracker *mq_pitch_tracker_create(const MQPitchConfig *config, uint32_t hop_size);
+void mq_pitch_tracker_push(MQPitchTracker *tracker, const float *mono, size_t frames);
+size_t mq_pitch_tracker_count(const MQPitchTracker *tracker);
+/* Copies up to `capacity` frames from the start; returns how many were copied. */
+size_t mq_pitch_tracker_read(const MQPitchTracker *tracker, double *out_times, MQPitchEstimate *out_estimates,
+                             size_t capacity);
+void mq_pitch_tracker_destroy(MQPitchTracker *tracker);
+
+/* ---------------------------------------------------------------- notes */
+
+typedef struct {
+    double minimum_note_seconds;
+    double maximum_gap_seconds;
+    double split_cents;
+    double split_hold_seconds;
+    double shift_cents;
+    double shift_window_seconds;
+    double trim_cents;
+    double minimum_confidence;
+    double reference_hz;
+} MQNoteConfig;
+
+typedef struct {
+    double start_seconds;
+    double end_seconds;
+    double hz;
+    double cents;               /* above reference_hz */
+    double spread_cents;
+    double vibrato_rate_hz;     /* 0 when none */
+    double vibrato_extent_cents;
+    uint64_t first_frame;
+    uint64_t frame_count;
+} MQSungNote;
+
+MQNoteConfig mq_note_default_config(double reference_hz);
+
+/* Segments a pitch track into notes. Pass capacity = 0 to learn the count. */
+MQStatus mq_segment_notes(const double *times, const MQPitchEstimate *estimates, size_t count,
+                          const MQNoteConfig *config, MQSungNote *out_notes, size_t capacity, size_t *out_count);
+
+typedef struct {
+    MQTargetMatch target;
+    int32_t in_tune;
+} MQNoteMatch;
+
+typedef struct {
+    uint64_t note_count;
+    double seconds;
+    double mean_deviation_cents; /* positive: sung sharp */
+} MQDegreeTendency;
+
+typedef struct {
+    uint64_t note_count;
+    uint64_t in_tune_count;
+    double total_seconds;
+    double in_tune_fraction;
+    double mean_absolute_deviation_cents;
+    MQDegreeTendency degrees[MQ_MAX_DEGREES];
+} MQIntonationSummary;
+
+/* Judges notes against `scale` on `tonic_hz`. `out_matches` may be NULL;
+ * otherwise it must hold `count` entries. */
+MQStatus mq_evaluate_intonation(const MQScale *scale, double tonic_hz, const MQSungNote *notes, size_t count,
+                                double tolerance_cents, MQNoteMatch *out_matches, MQIntonationSummary *out_summary);
+
 #ifdef __cplusplus
 }
 #endif

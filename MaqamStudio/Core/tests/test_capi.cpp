@@ -2,7 +2,9 @@
 #include "test_support.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <string>
 
 TEST_CASE("the C interface lists every built-in maqam with its Arabic name") {
     const int32_t count = mq_maqam_count();
@@ -92,4 +94,59 @@ TEST_CASE("the streaming C accumulators agree with the one-shot calls") {
     CHECK(mq_waveform_accumulator_create(0, 1, 64) == nullptr);
     mq_level_accumulator_destroy(levels);
     mq_waveform_accumulator_destroy(waveform);
+}
+
+TEST_CASE("the C tracker, note segmenter and intonation judge work end to end") {
+    const double rate = 48000.0;
+    const double d4 = 293.6648;
+    std::vector<float> audio;
+    for (double cents : {0.0, 150.0, 320.0}) {  // third degree 20 cents sharp
+        const auto note = synth::tone(d4 * std::exp2(cents / 1200.0), 0.5, rate, 0.4, 4);
+        audio.insert(audio.end(), note.begin(), note.end());
+        audio.insert(audio.end(), static_cast<std::size_t>(0.1 * rate), 0.0f);
+    }
+    MQPitchConfig config = mq_pitch_default_config(rate);
+    MQPitchTracker* tracker = mq_pitch_tracker_create(&config, 480);
+    CHECK(tracker != nullptr);
+    for (std::size_t start = 0; start < audio.size(); start += 1000) {
+        mq_pitch_tracker_push(tracker, audio.data() + start, std::min<std::size_t>(1000, audio.size() - start));
+    }
+    const size_t frames = mq_pitch_tracker_count(tracker);
+    std::size_t expected = 0;
+    CHECK(mq_pitch_track(audio.data(), audio.size(), &config, 480, nullptr, nullptr, 0, &expected) == MQ_OK);
+    CHECK(frames == expected);
+    std::vector<double> times(frames);
+    std::vector<MQPitchEstimate> estimates(frames);
+    CHECK(mq_pitch_tracker_read(tracker, times.data(), estimates.data(), frames) == frames);
+    mq_pitch_tracker_destroy(tracker);
+
+    const MQNoteConfig noteConfig = mq_note_default_config(440.0);
+    size_t count = 0;
+    CHECK(mq_segment_notes(times.data(), estimates.data(), frames, &noteConfig, nullptr, 0, &count) == MQ_OK);
+    CHECK(count == 3);
+    std::vector<MQSungNote> notes(count);
+    CHECK(mq_segment_notes(times.data(), estimates.data(), frames, &noteConfig, notes.data(), count, &count) == MQ_OK);
+
+    MQMaqamInfo bayati{};
+    for (int32_t i = 0; i < mq_maqam_count(); ++i) {
+        mq_maqam_info(i, &bayati);
+        if (std::string(bayati.id) == "bayati") break;
+    }
+    std::vector<MQNoteMatch> matches(count);
+    MQIntonationSummary summary{};
+    CHECK(mq_evaluate_intonation(&bayati.scale, d4, notes.data(), count, 15.0, matches.data(), &summary) == MQ_OK);
+    CHECK(summary.note_count == 3);
+    CHECK(summary.in_tune_count == 2);
+    if (count == 3) {
+        CHECK(matches[2].target.degree_index == 2);
+        CHECK_NEAR(matches[2].target.deviation_cents, 20.0, 3.0);
+        CHECK(matches[2].in_tune == 0);
+    }
+    CHECK_NEAR(summary.degrees[2].mean_deviation_cents, 20.0, 3.0);
+
+    CHECK(mq_evaluate_intonation(nullptr, d4, notes.data(), count, 15.0, nullptr, &summary) == MQ_ERROR_INVALID_ARGUMENT);
+    CHECK(mq_evaluate_intonation(&bayati.scale, 0.0, notes.data(), count, 15.0, nullptr, &summary) == MQ_ERROR_INVALID_ARGUMENT);
+    CHECK(mq_segment_notes(nullptr, nullptr, 5, &noteConfig, nullptr, 0, &count) == MQ_ERROR_INVALID_ARGUMENT);
+    CHECK(mq_pitch_tracker_create(&config, 0) == nullptr);
+    CHECK(mq_pitch_default_config(96000.0).frame_size == 4096);
 }

@@ -109,4 +109,35 @@ std::vector<PitchFrame> trackPitch(const float* mono, std::size_t frames,
     return track;
 }
 
+std::size_t frameSizeFor(double sampleRate, double minimumHz) {
+    if (!(sampleRate > 0.0) || !(minimumHz > 0.0)) return 2048;
+    const auto period = static_cast<std::size_t>(std::ceil(sampleRate / minimumHz));
+    return std::max<std::size_t>(1024, FFT::nextPowerOfTwo(period * 2));
+}
+
+PitchTracker::PitchTracker(const PitchDetectorConfig& config, std::size_t hopSize)
+    : detector_(config), hop_(hopSize) {
+    if (hopSize == 0) throw std::invalid_argument("hop size must be positive");
+}
+
+void PitchTracker::push(const float* mono, std::size_t frames) {
+    if (!mono || frames == 0) return;
+    pending_.insert(pending_.end(), mono, mono + frames);
+    const std::size_t size = detector_.config().frameSize;
+    const double sampleRate = detector_.config().sampleRate;
+    while (readPosition_ + size <= pending_.size()) {
+        PitchFrame frame;
+        const double start = static_cast<double>(pendingOffset_ + readPosition_);
+        frame.timeSeconds = (start + size / 2.0) / sampleRate;
+        frame.estimate = detector_.detect(pending_.data() + readPosition_);
+        track_.push_back(frame);
+        readPosition_ += hop_;
+    }
+    // Drop what no future frame can reach, once per push rather than per hop.
+    const std::size_t consumed = std::min(readPosition_, pending_.size());
+    pending_.erase(pending_.begin(), pending_.begin() + static_cast<std::ptrdiff_t>(consumed));
+    pendingOffset_ += consumed;
+    readPosition_ -= consumed;
+}
+
 }  // namespace maqam

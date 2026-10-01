@@ -12,6 +12,7 @@
 
 #include <complex>
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace maqam {
@@ -59,5 +60,28 @@ struct PitchFrame {
 // Offline pitch track over a whole mono signal, one frame every `hopSize`.
 std::vector<PitchFrame> trackPitch(const float* mono, std::size_t frames,
                                    const PitchDetectorConfig& config, std::size_t hopSize);
+
+// The smallest power-of-two frame that fits two periods of `minimumHz` at
+// `sampleRate` (2048 at 44.1/48 kHz, 4096 at 88.2/96 kHz).
+std::size_t frameSizeFor(double sampleRate, double minimumHz);
+
+// The same track as trackPitch, fed in chunks of any size, so a long file is
+// analysed while it is decoded instead of after it is loaded whole. Offline
+// only: push() allocates as frames accumulate.
+class PitchTracker {
+public:
+    PitchTracker(const PitchDetectorConfig& config, std::size_t hopSize);
+
+    void push(const float* mono, std::size_t frames);
+    const std::vector<PitchFrame>& frames() const noexcept { return track_; }
+
+private:
+    PitchDetector detector_;
+    std::size_t hop_;
+    std::vector<float> pending_;
+    std::size_t readPosition_ = 0;   // next frame start within pending_
+    std::uint64_t pendingOffset_ = 0;  // absolute sample index of pending_[0]
+    std::vector<PitchFrame> track_;
+};
 
 }  // namespace maqam
