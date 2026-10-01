@@ -13,7 +13,7 @@ VoiceOver.
 | 2 | Pitch track, note segmentation, intonation against the maqam, pitch curve, note list, live tuner | **Implemented** |
 | 3 | Maqam engine UI: per-degree tuning, A4 reference, tuning tables, custom maqam editor, library import/export | **Implemented** |
 | 4 | Pitch correction: Natural/Strong/Robotic and every control, formant preservation and shift, manual note pinning, A/B with measured before/after | **Implemented (offline)**; live correction comes with the live mode |
-| 5 | Maqam and tonic detection with confidence | Not started. The app says so and asks for a manual choice |
+| 5 | Maqam and tonic detection with confidence, manual override | **Implemented** |
 | 6 | Auto Studio chain and genre profiles | Not started |
 | 7 | Export, stem separation interface | Not started |
 
@@ -116,6 +116,25 @@ block from just the input each block needs — sample-identical to rendering the
 whole file. With no shift the output equals the input exactly. The corrected
 audio is written to `renders/tuned.caf` beside the untouched original, then
 analysed again so the reported "after" accuracy is measured, not assumed.
+
+## Maqam and tonic detection
+
+Every pitch class the singer used is a tonic candidate, and every candidate is
+paired with every scale (built-in and the user's own). A pair scores by how
+well it explains the notes, time-weighted, with a capped Gaussian cost per
+note against the exact degrees and alternates; tonic evidence (the resting
+note, time on it, the lowest notes) separates maqamat that share a pitch set,
+such as Rast on C and Sikah on E half-flat. Scores become probabilities over
+all pairs. The tonic is reported exactly as sung, so tuning follows the
+singer rather than A = 440.
+
+Measured on synthetic presentations of all 15 built-ins: 15/15 correct with
+intonation off by up to ±20 cents; at ±25 cents Bayati and Husseini (50 cents
+apart on one degree) become a low-confidence tie. Singing that does not tell
+maqamat apart (only Bayati's lower jins) gives 48% / 48% rather than a false
+answer, and under 3 seconds or 3 pitch classes no claim is made. Detection is
+applied automatically only when nothing is chosen and confidence is at least
+60%; a choice made by hand is never replaced, only questioned.
 
 ## Projects
 

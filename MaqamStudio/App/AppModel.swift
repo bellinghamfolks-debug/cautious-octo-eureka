@@ -39,6 +39,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var tuningRender: TuningRenderInfo?
     /// Whether playback uses the tuned render rather than the original.
     @Published private(set) var listeningToTuned = false
+    /// What the singing suggests; recomputed when the notes or the library change.
+    @Published private(set) var detection: MaqamDetectionResult?
     /// Whether the tuner speaks each newly held note (useful with VoiceOver).
     @Published var tunerSpeaksNotes: Bool = UserDefaults.standard.bool(forKey: AppModel.tunerSpeechKey) {
         didSet { UserDefaults.standard.set(tunerSpeaksNotes, forKey: Self.tunerSpeechKey) }
@@ -193,6 +195,7 @@ final class AppModel: ObservableObject {
         analysis = nil
         tuningRender = nil
         listeningToTuned = false
+        detection = nil
         history.clear()
         updateUndoState()
         playbackState = .idle
@@ -227,6 +230,7 @@ final class AppModel: ObservableObject {
         analysis = store?.loadAnalysis(for: opened)
         tuningRender = store?.loadRenderInfo(for: opened)
         listeningToTuned = false
+        updateDetection()
         position = opened.playback.positionSeconds
         if opened.original != nil {
             loadPlayback()
@@ -394,6 +398,8 @@ final class AppModel: ObservableObject {
                 self.analysis = analysis
                 try? store.saveAnalysis(analysis, for: projectId)
                 self.announcer.announce(self.l10n("announce.analyzed"), important: true)
+                self.updateDetection()
+                self.applyDetectionIfUnchosen()
             case .failure(let failure):
                 if failure is CancellationError { return }
                 self.present(failure) { _ in .corruptedAudio }
@@ -833,7 +839,36 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: Maqam (manual choice; detection arrives with phase 5)
+    // MARK: Maqam and tonic detection (phase 5)
+
+    private func updateDetection() {
+        guard let notes = pitch?.notes else { detection = nil; return }
+        detection = MaqamDetectionResult.detect(notes: notes, maqamat: MaqamCatalog.builtins + library.maqamat)
+    }
+
+    /// After a new recording or import: if nothing is chosen yet and the
+    /// detection is confident, use it, say so, and leave it undoable.
+    private func applyDetectionIfUnchosen() {
+        guard document?.maqam.maqamId == nil, let detection, detection.enoughData, let best = detection.best,
+              best.probability >= MaqamDetectionResult.applyAutomaticallyAbove else { return }
+        applyDetection(best, automatically: true)
+    }
+
+    /// Uses a detected maqam and tonic (the tonic exactly as sung).
+    func applyDetection(_ candidate: MaqamDetectionResult.Candidate, automatically: Bool = false) {
+        edit(actionKey: "action.detectionused") { editable in
+            editable.maqam.maqamId = candidate.maqam.id
+            editable.maqam.tonicHz = candidate.tonicHz
+            editable.maqam.degreeOffsets = [:]
+            editable.maqam.manuallyChosen = false
+            editable.maqam.customDefinition = candidate.maqam.isCustom ? candidate.maqam : nil
+        }
+        announcer.announce(l10n(automatically ? "announce.detected.auto" : "announce.detected.applied",
+                                candidate.maqam.name(l10n), PitchNaming.label(hz: candidate.tonicHz, l10n: l10n),
+                                l10n.percent(candidate.probability)), important: automatically)
+    }
+
+    // MARK: Maqam (manual choice)
 
     func chooseMaqam(id: String?) {
         let definition = id.flatMap(library.definition(id:))
@@ -921,6 +956,7 @@ final class AppModel: ObservableObject {
             edit(actionKey: "action.editmaqam") { $0.maqam.customDefinition = maqam }
         }
         objectWillChange.send()
+        updateDetection()
         announcer.announce(l10n("announce.maqamsaved", maqam.name(l10n)))
         return true
     }
@@ -929,6 +965,7 @@ final class AppModel: ObservableObject {
         do {
             try library.delete(maqamId: id)
             objectWillChange.send()
+            updateDetection()
             announcer.announce(l10n("announce.maqamdeleted"))
         } catch {
             present(error) { .projectSaveFailed(detail: $0) }
@@ -955,6 +992,7 @@ final class AppModel: ObservableObject {
             let data = try Data(contentsOf: url)
             let added = try library.importData(data)
             objectWillChange.send()
+            updateDetection()
             announcer.announce(l10n("announce.imported.library", l10n.number(Double(added.maqamat)),
                                     l10n.number(Double(added.tables))), important: true)
         } catch MaqamLibrary.ImportError.invalidMaqam(let name) {

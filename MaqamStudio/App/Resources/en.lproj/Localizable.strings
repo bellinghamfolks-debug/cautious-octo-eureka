@@ -166,7 +166,7 @@
 "maqam.title" = "Maqam";
 "maqam.picker.title" = "Choose maqam";
 "maqam.tonic.value" = "Tonic %1$@, %2$@ Hz";
-"maqam.none" = "No maqam chosen yet. Automatic maqam detection arrives in a later phase; choose it by hand for now.";
+"maqam.none" = "No maqam chosen yet. Record or import singing to have it detected, or choose it by hand.";
 "maqam.degrees" = "Degrees in cents from the tonic: %@";
 "maqam.family" = "%@ family";
 "maqam.ajnas" = "Lower jins %1$@, upper jins %2$@";
@@ -393,3 +393,25 @@
 "pin.title" = "Pin to a degree";
 "pin.message" = "Choose the degree %@ is corrected to.";
 "pin.option" = "%1$@, %2$@ (%3$@)";
+
+/* Phase 5: maqam and tonic detection */
+"detect.title" = "Maqam detection";
+"detect.suggestion" = "Most likely: %1$@ on %2$@, %3$@ confidence";
+"detect.agrees" = "Detection agrees with this choice, %@ confidence.";
+"detect.notenough" = "Not enough singing to detect the maqam: %1$@ of singing and %2$@ different notes. At least three seconds and three notes are needed.";
+"detect.notenough.short" = "The results below are weak: there is little singing.";
+"detect.basis" = "Based on %1$@ of singing and %2$@ different notes.";
+"detect.tonic" = "Tonic: %1$@, %2$@ Hz, %3$@ confidence.";
+"detect.tonic.standard" = "The tonic is exactly on the standard pitch.";
+"detect.tonic.offset" = "The tonic as the singer sang it: %@ from the standard pitch; tuning follows it.";
+"detect.candidates" = "Possibilities";
+"detect.deviation" = "Notes are on average %@ cents from its degrees.";
+"detect.footer" = "Probabilities come from the sung notes and the resting note. When they are close, the singing does not tell the maqamat apart, as with two maqamat that differ only in their upper part.";
+"detect.apply.hint" = "Double-tap to use this maqam and tonic.";
+"action.applydetection" = "Use the detected maqam";
+"action.showcandidates" = "Show all possibilities";
+"announce.detected.auto" = "Detected maqam %1$@ on %2$@, %3$@ confidence, and applied it. You can undo or change it.";
+"announce.detected.applied" = "Using maqam %1$@ on %2$@, %3$@ confidence";
+"maqam.source.manual" = "Chosen by hand.";
+"maqam.source.detected" = "Detected from the singing.";
+"action.detectionused" = "using the detected maqam";

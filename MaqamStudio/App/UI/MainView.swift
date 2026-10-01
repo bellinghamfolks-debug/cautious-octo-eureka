@@ -434,6 +434,7 @@ struct MaqamSummaryView: View {
     @EnvironmentObject private var l10n: L10n
     @EnvironmentObject private var model: AppModel
     let choose: () -> Void
+    @State private var showingDetection = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -445,10 +446,13 @@ struct MaqamSummaryView: View {
                               l10n.number(tonic, fractionDigits: 1)))
                         .foregroundStyle(.secondary)
                 }
+                Text(l10n(model.document?.maqam.manuallyChosen == true ? "maqam.source.manual" : "maqam.source.detected"))
+                    .font(.footnote).foregroundStyle(.secondary)
                 Text(MaqamText.degrees(maqam, l10n: l10n)).font(.footnote).foregroundStyle(.secondary)
             } else {
                 Text(l10n("maqam.none")).foregroundStyle(.secondary)
             }
+            detectionLine
             Button(action: choose) {
                 Label(model.currentMaqam == nil ? l10n("action.choosemaqam") : l10n("action.changemaqam"),
                       systemImage: "music.quarternote.3")
@@ -458,6 +462,102 @@ struct MaqamSummaryView: View {
         }
         .padding()
         .background(RoundedRectangle(cornerRadius: 14).fill(Color(.secondarySystemBackground)))
+        .sheet(isPresented: $showingDetection) { DetectionView() }
+    }
+
+    /// What the singing suggests, when it adds something to what is chosen.
+    @ViewBuilder
+    private var detectionLine: some View {
+        if let detection = model.detection {
+            if !detection.enoughData {
+                Text(l10n("detect.notenough", l10n.spokenDuration(detection.sungSeconds),
+                          l10n.number(Double(detection.pitchClasses))))
+                    .font(.footnote).foregroundStyle(.secondary)
+            } else if let best = detection.best {
+                let settings = model.document?.maqam
+                if model.currentMaqam == nil || detection.disagrees(with: settings?.maqamId, tonicHz: settings?.tonicHz) {
+                    Text(DetectionText.suggestion(best, l10n: l10n)).font(.subheadline.bold())
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button {
+                        model.applyDetection(best)
+                    } label: {
+                        Label(l10n("action.applydetection"), systemImage: "checkmark.seal")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Text(l10n("detect.agrees", l10n.percent(best.probability))).font(.footnote).foregroundStyle(.secondary)
+                }
+                Button(l10n("action.showcandidates")) { showingDetection = true }
+                    .font(.footnote)
+            }
+        }
+    }
+}
+
+/// Detection results in words.
+enum DetectionText {
+    static func suggestion(_ candidate: MaqamDetectionResult.Candidate, l10n: L10n) -> String {
+        l10n("detect.suggestion", candidate.maqam.name(l10n), PitchNaming.label(hz: candidate.tonicHz, l10n: l10n),
+             l10n.percent(candidate.probability))
+    }
+
+    /// How far the sung tonic is from the standard pitch of the same name.
+    static func tonicOffset(_ hz: Double, l10n: L10n) -> String {
+        let remainder = PitchNaming.name(hz: hz).remainderCents.rounded()
+        return abs(remainder) < 3 ? l10n("detect.tonic.standard") : l10n("detect.tonic.offset", PitchText.deviation(remainder, l10n: l10n))
+    }
+}
+
+/// Every candidate with its probability; any can be applied.
+struct DetectionView: View {
+    @EnvironmentObject private var l10n: L10n
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let detection = model.detection {
+                    Section {
+                        Text(l10n("detect.basis", l10n.spokenDuration(detection.sungSeconds),
+                                  l10n.number(Double(detection.pitchClasses))))
+                        Text(l10n("detect.tonic", PitchNaming.label(hz: detection.tonicHz, l10n: l10n),
+                                  l10n.number(detection.tonicHz, fractionDigits: 1), l10n.percent(detection.tonicConfidence)))
+                        Text(DetectionText.tonicOffset(detection.tonicHz, l10n: l10n)).foregroundStyle(.secondary)
+                        if !detection.enoughData {
+                            Text(l10n("detect.notenough.short")).foregroundStyle(.orange)
+                        }
+                    } footer: {
+                        Text(l10n("detect.footer"))
+                    }
+                    Section {
+                        ForEach(detection.candidates) { candidate in
+                            Button {
+                                model.applyDetection(candidate)
+                                dismiss()
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(DetectionText.suggestion(candidate, l10n: l10n)).font(.headline)
+                                    Text(l10n("detect.deviation", l10n.number(candidate.meanDeviationCents.rounded())))
+                                        .font(.footnote).foregroundStyle(.secondary)
+                                }
+                            }
+                            .accessibilityHint(l10n("detect.apply.hint"))
+                        }
+                    } header: {
+                        Text(l10n("detect.candidates"))
+                    }
+                } else {
+                    Text(l10n("intonation.nonotes"))
+                }
+            }
+            .navigationTitle(l10n("detect.title"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button(l10n("action.done")) { dismiss() } } }
+        }
+        .environment(\.locale, l10n.locale)
+        .environment(\.layoutDirection, l10n.layoutDirection)
     }
 }
 
