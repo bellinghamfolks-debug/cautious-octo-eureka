@@ -71,8 +71,9 @@ final class AudioDescriptionTests: XCTestCase {
     func testSummaryTellsWhereTheSoundIs() {
         let l10n = L10n(language: .english, defaults: UserDefaults(suiteName: "maqam-desc-\(UUID())")!)
         let shape = waveform([-90, -90, -20, -12, -20, -20, -20, -90, -90, -90])
-        let levels = LevelSummary(peakDbfs: -3, rmsDbfs: -20, crestDb: 17, dcOffset: 0, noiseFloorDbfs: -90,
-                                  dynamicRangeDb: 70, clippedSamples: 0, frames: 480_000, channels: 1)
+        let levels = LevelSummary(MQLevelReport(peak: 0.7, peak_dbfs: -3, rms_dbfs: -20, crest_db: 17, dc_offset: 0,
+                                                noise_floor_dbfs: -90, dynamic_range_db: 70, clipped_samples: 0,
+                                                frames: 480_000, channels: 1))
         let text = AudioDescription.summary(levels: levels, waveform: shape, duration: 10, l10n: l10n)
         XCTAssertTrue(text.contains("Sound starts after 2 seconds"), text)
         XCTAssertTrue(text.contains("Sound ends at 7 seconds"), text)
@@ -83,8 +84,9 @@ final class AudioDescriptionTests: XCTestCase {
     func testSilentRecordingIsSaidToBeSilent() {
         let l10n = L10n(language: .arabic, defaults: UserDefaults(suiteName: "maqam-desc-\(UUID())")!)
         let shape = waveform(Array(repeating: -120, count: 20))
-        let levels = LevelSummary(peakDbfs: -160, rmsDbfs: -160, crestDb: 0, dcOffset: 0, noiseFloorDbfs: -160,
-                                  dynamicRangeDb: 0, clippedSamples: 0, frames: 48_000, channels: 1)
+        let levels = LevelSummary(MQLevelReport(peak: 0, peak_dbfs: -160, rms_dbfs: -160, crest_db: 0, dc_offset: 0,
+                                                noise_floor_dbfs: -160, dynamic_range_db: 0, clipped_samples: 0,
+                                                frames: 48_000, channels: 1))
         let text = AudioDescription.summary(levels: levels, waveform: shape, duration: 1, l10n: l10n)
         XCTAssertTrue(text.contains(l10n("describe.allsilent")), text)
     }
