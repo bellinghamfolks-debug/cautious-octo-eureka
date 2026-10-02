@@ -86,6 +86,8 @@ struct ProcessingSettings: Codable, Equatable {
     var chainVersion: Int = 1
     /// Pitch correction; absent until the user first tunes this project.
     var tuning: PitchCorrectionSettings?
+    /// Auto Studio; absent until first used.
+    var studio: StudioSettings?
 }
 
 struct PlaybackSettings: Codable, Equatable {

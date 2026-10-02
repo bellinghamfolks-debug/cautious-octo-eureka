@@ -83,7 +83,7 @@ struct MainView: View {
         case .importing(let fraction):
             ProgressSection(titleKey: "progress.analyzing", fraction: fraction)
         case .rendering(let fraction):
-            ProgressSection(titleKey: "progress.tuning", fraction: fraction) { model.cancelRendering() }
+            ProgressSection(titleKey: "progress.rendering", fraction: fraction) { model.cancelRendering() }
         case .idle:
             if model.hasAudio {
                 audioSections
@@ -102,6 +102,7 @@ struct MainView: View {
                          position: model.position) { model.seek(to: $0) }
         }
         TransportView()
+        ListeningPicker()
         if let pitch = model.pitch, !pitch.notes.isEmpty {
             PitchCurveView(pitch: pitch, intonation: model.intonation, maqam: model.effectiveMaqam,
                            tonicHz: model.document?.maqam.tonicHz, duration: model.duration,
@@ -111,6 +112,7 @@ struct MainView: View {
         if model.analysis != nil {
             IntonationSummaryView { showingNotes = true }
             TuningSection { showingMaqam = true }
+            StudioSection()
         }
         if let analysis = model.analysis, let original = model.document?.original {
             AnalysisSummaryView(levels: analysis.levels, original: original)

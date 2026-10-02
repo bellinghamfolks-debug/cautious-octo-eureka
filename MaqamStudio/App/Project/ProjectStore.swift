@@ -23,6 +23,7 @@ final class ProjectStore {
     static let audioFolder = "audio"
     static let rendersFolder = "renders"
     static let renderInfoName = "tuned.json"
+    static let studioInfoName = "studio.json"
 
     let root: URL
     private let fileManager: FileManager
@@ -178,6 +179,20 @@ final class ProjectStore {
     func loadRenderInfo(for document: ProjectDocument) -> TuningRenderInfo? {
         guard let data = try? Data(contentsOf: renderURL(for: document.id, fileName: Self.renderInfoName)),
               let info = try? Self.decoder.decode(TuningRenderInfo.self, from: data),
+              info.sourceSHA256 == document.original?.sha256,
+              fileManager.fileExists(atPath: renderURL(for: document.id, fileName: info.fileName).path) else { return nil }
+        return info
+    }
+
+    func saveStudioInfo(_ info: StudioRenderInfo, for id: UUID) throws {
+        try prepareRendersFolder(for: id)
+        try Self.encoder.encode(info).write(to: renderURL(for: id, fileName: Self.studioInfoName), options: [.atomic])
+    }
+
+    /// The last studio render, if its audio is still there.
+    func loadStudioInfo(for document: ProjectDocument) -> StudioRenderInfo? {
+        guard let data = try? Data(contentsOf: renderURL(for: document.id, fileName: Self.studioInfoName)),
+              let info = try? Self.decoder.decode(StudioRenderInfo.self, from: data),
               info.sourceSHA256 == document.original?.sha256,
               fileManager.fileExists(atPath: renderURL(for: document.id, fileName: info.fileName).path) else { return nil }
         return info

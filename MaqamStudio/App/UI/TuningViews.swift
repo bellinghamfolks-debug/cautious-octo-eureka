@@ -68,14 +68,6 @@ struct TuningSection: View {
         if model.tuningRender != nil {
             if model.tuningIsFresh {
                 Text(model.tuningResultText).font(.subheadline.bold()).fixedSize(horizontal: false, vertical: true)
-                Picker(l10n("listen.label"), selection: Binding(get: { model.listeningToTuned },
-                                                                set: { model.setListening(tuned: $0) })) {
-                    Text(l10n("listen.original")).tag(false)
-                    Text(l10n("listen.tuned")).tag(true)
-                }
-                .pickerStyle(.segmented)
-                .accessibilityLabel(l10n("listen.label"))
-                .accessibilityHint(l10n("listen.hint"))
             } else {
                 Label(l10n("tuning.stale"), systemImage: "arrow.triangle.2.circlepath")
                     .foregroundStyle(.orange)

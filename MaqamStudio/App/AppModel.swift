@@ -37,8 +37,15 @@ final class AppModel: ObservableObject {
     @Published private(set) var tunerActive = false
     /// The last tuning render of this project, if any.
     @Published private(set) var tuningRender: TuningRenderInfo?
-    /// Whether playback uses the tuned render rather than the original.
-    @Published private(set) var listeningToTuned = false
+    /// Which version playback uses.
+    enum ListeningSource: String, CaseIterable, Identifiable {
+        case original, tuned, studio
+        var id: String { rawValue }
+    }
+    @Published private(set) var listening: ListeningSource = .original
+    var listeningToTuned: Bool { listening == .tuned }
+    /// The last Auto Studio render of this project, if any.
+    @Published private(set) var studioRender: StudioRenderInfo?
     /// What the singing suggests; recomputed when the notes or the library change.
     @Published private(set) var detection: MaqamDetectionResult?
     /// Whether the tuner speaks each newly held note (useful with VoiceOver).
@@ -194,7 +201,8 @@ final class AppModel: ObservableObject {
         document = nil
         analysis = nil
         tuningRender = nil
-        listeningToTuned = false
+        studioRender = nil
+        listening = .original
         detection = nil
         history.clear()
         updateUndoState()
@@ -229,7 +237,8 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(opened.id.uuidString, forKey: Self.lastProjectKey)
         analysis = store?.loadAnalysis(for: opened)
         tuningRender = store?.loadRenderInfo(for: opened)
-        listeningToTuned = false
+        studioRender = store?.loadStudioInfo(for: opened)
+        listening = .original
         updateDetection()
         position = opened.playback.positionSeconds
         if opened.original != nil {
@@ -514,8 +523,13 @@ final class AppModel: ObservableObject {
 
     private func loadPlayback() {
         guard let store, let current = document, var url = store.originalURL(for: current) else { return }
-        if listeningToTuned, tuningIsFresh, let render = tuningRender {
-            url = store.renderURL(for: current.id, fileName: render.fileName)
+        switch listening {
+        case .tuned where tuningIsFresh:
+            if let render = tuningRender { url = store.renderURL(for: current.id, fileName: render.fileName) }
+        case .studio where studioIsFresh:
+            if let render = studioRender { url = store.renderURL(for: current.id, fileName: render.fileName) }
+        default:
+            break
         }
         do {
             try engine.load(url: url)
@@ -719,8 +733,9 @@ final class AppModel: ObservableObject {
 
     /// After any edit: a tuned render that no longer matches is not played.
     private func documentChanged() {
-        if listeningToTuned, !tuningIsFresh {
-            listeningToTuned = false
+        let stale = (listening == .tuned && !tuningIsFresh) || (listening == .studio && !studioIsFresh)
+        if stale {
+            listening = .original
             reloadKeepingPosition()
             announcer.announce(l10n("announce.tunedstale"))
         }
@@ -728,70 +743,95 @@ final class AppModel: ObservableObject {
 
     /// Renders the tuned version in the background, then measures it.
     func renderTuning() {
-        guard activity == .idle, canTune, let store, let current = document, let original = current.original,
+        guard activity == .idle, canTune else { return }
+        importTask = Task { [weak self] in
+            guard let self else { return }
+            self.beginRendering(task: "tuning", announcementKey: "announce.tuning")
+            if await self.performTuning(progressFrom: 0, to: 1) {
+                self.listening = .tuned
+                self.reloadKeepingPosition()
+                self.announcer.announce(self.tuningResultText, important: true)
+            }
+            self.activity = .idle
+        }
+    }
+
+    private var progressBase = 0.0
+    private var progressSpan = 1.0
+
+    private func beginRendering(task: String, announcementKey: String) {
+        stopTuner()
+        if listening != .original {
+            listening = .original
+            reloadKeepingPosition()
+        }
+        activity = .rendering(fraction: 0)
+        announcer.reset(task: task)
+        announcer.announce(l10n(announcementKey))
+    }
+
+    /// The tuning render itself; true when a fresh tuned file is in place.
+    private func performTuning(progressFrom base: Double, to end: Double) async -> Bool {
+        guard canTune, let store, let current = document, let original = current.original,
               let source = store.originalURL(for: current), let pitch, let maqam = effectiveMaqam,
-              let tonic = current.maqam.tonicHz, let fingerprint = currentTuningFingerprint else { return }
+              let tonic = current.maqam.tonicHz, let fingerprint = currentTuningFingerprint else { return false }
         let settings = tuningSettings
         do {
             try store.prepareRendersFolder(for: current.id)
             try store.ensureSpace(forBytes: Int64(original.frames) * Int64(max(1, original.channels)) * 4)
         } catch {
             present(error) { .projectSaveFailed(detail: $0) }
-            return
+            return false
         }
-        stopTuner()
-        if listeningToTuned {
-            listeningToTuned = false
-            reloadKeepingPosition()
-        }
+        progressBase = base
+        progressSpan = end - base
         let projectId = current.id
         let temporary = store.renderURL(for: projectId, fileName: "rendering-\(UUID().uuidString).caf")
         let destination = store.renderURL(for: projectId, fileName: TuningRenderer.fileName)
-        activity = .rendering(fraction: 0)
-        announcer.reset(task: "tuning")
-        announcer.announce(l10n("announce.tuning"))
         let reportProgress: @Sendable (Double) -> Void = { [weak self] fraction in
             Task { @MainActor in self?.renderProgress(fraction) }
         }
-        importTask = Task { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) { () -> Result<TuningRenderInfo.Measured?, Error> in
-                Result {
-                    try TuningRenderer.render(source: source, destination: temporary, pitch: pitch, maqam: maqam,
-                                              tonicHz: tonic, settings: settings, progress: reportProgress)
-                    // Measure the result itself rather than assume the correction worked.
-                    let check = try AudioFileReader.analyzeFully(temporary, buckets: 64) { reportProgress(0.9 + 0.1 * $0) }
-                    guard let notes = check.pitch?.notes,
-                          let measured = Intonation.evaluate(notes, maqam: maqam, tonicHz: tonic) else { return nil }
-                    return TuningRenderInfo.Measured(noteCount: notes.count, inTuneFraction: measured.inTuneFraction,
-                                                     meanAbsoluteDeviationCents: measured.meanAbsoluteDeviationCents)
-                }
-            }.value
-            guard let self else { return }
-            self.activity = .idle
-            guard self.document?.id == projectId else { try? FileManager.default.removeItem(at: temporary); return }
-            switch result {
-            case .success(let measured):
-                do {
-                    if FileManager.default.fileExists(atPath: destination.path) {
-                        _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
-                    } else {
-                        try FileManager.default.moveItem(at: temporary, to: destination)
-                    }
-                    let info = TuningRenderInfo(fileName: TuningRenderer.fileName, sourceSHA256: original.sha256,
-                                                fingerprint: fingerprint, renderedAt: Date(), after: measured)
-                    try store.saveRenderInfo(info, for: projectId)
-                    self.tuningRender = info
-                    self.listeningToTuned = true
-                    self.reloadKeepingPosition()
-                    self.announcer.announce(self.tuningResultText, important: true)
-                } catch {
-                    self.present(error) { .projectSaveFailed(detail: $0) }
-                }
-            case .failure(let failure):
-                try? FileManager.default.removeItem(at: temporary)
-                if failure is CancellationError { return }
-                self.present(failure) { .projectSaveFailed(detail: $0) }
+        // A detached task does not inherit cancellation; pass it on explicitly,
+        // so Cancel really stops the work and its result is never applied.
+        let job = Task.detached(priority: .userInitiated) { () -> Result<TuningRenderInfo.Measured?, Error> in
+            Result {
+                try TuningRenderer.render(source: source, destination: temporary, pitch: pitch, maqam: maqam,
+                                          tonicHz: tonic, settings: settings, progress: reportProgress)
+                // Measure the result itself rather than assume the correction worked.
+                let check = try AudioFileReader.analyzeFully(temporary, buckets: 64) { reportProgress(0.9 + 0.1 * $0) }
+                guard let notes = check.pitch?.notes,
+                      let measured = Intonation.evaluate(notes, maqam: maqam, tonicHz: tonic) else { return nil }
+                return TuningRenderInfo.Measured(noteCount: notes.count, inTuneFraction: measured.inTuneFraction,
+                                                 meanAbsoluteDeviationCents: measured.meanAbsoluteDeviationCents)
             }
+        }
+        let result = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
+        guard !Task.isCancelled, document?.id == projectId else { try? FileManager.default.removeItem(at: temporary); return false }
+        switch result {
+        case .success(let measured):
+            do {
+                try Self.replace(destination, with: temporary)
+                let info = TuningRenderInfo(fileName: TuningRenderer.fileName, sourceSHA256: original.sha256,
+                                            fingerprint: fingerprint, renderedAt: Date(), after: measured)
+                try store.saveRenderInfo(info, for: projectId)
+                tuningRender = info
+                return true
+            } catch {
+                present(error) { .projectSaveFailed(detail: $0) }
+                return false
+            }
+        case .failure(let failure):
+            try? FileManager.default.removeItem(at: temporary)
+            if !(failure is CancellationError) { present(failure) { .projectSaveFailed(detail: $0) } }
+            return false
+        }
+    }
+
+    private static func replace(_ destination: URL, with temporary: URL) throws {
+        if FileManager.default.fileExists(atPath: destination.path) {
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
+        } else {
+            try FileManager.default.moveItem(at: temporary, to: destination)
         }
     }
 
@@ -805,7 +845,7 @@ final class AppModel: ObservableObject {
 
     private func renderProgress(_ fraction: Double) {
         guard case .rendering = activity else { return }
-        activity = .rendering(fraction: fraction)
+        activity = .rendering(fraction: progressBase + progressSpan * min(1, max(0, fraction)))
         announcer.progress(task: "tuning", fraction: fraction) { [l10n] reached in
             l10n("announce.tuningprogress", l10n.percent(reached))
         }
@@ -820,11 +860,23 @@ final class AppModel: ObservableObject {
 
     /// Switches between the original and the tuned render at the same moment.
     func setListening(tuned: Bool) {
-        guard tuned != listeningToTuned else { return }
-        if tuned, !tuningIsFresh { return }
-        listeningToTuned = tuned
+        setListening(tuned ? .tuned : .original)
+    }
+
+    /// Switches version at the same moment of the song, without stopping.
+    func setListening(_ source: ListeningSource) {
+        guard source != listening, canListen(to: source) else { return }
+        listening = source
         reloadKeepingPosition()
-        announcer.announce(l10n(tuned ? "announce.listeningtuned" : "announce.listeningoriginal"))
+        announcer.announce(l10n("announce.listening." + source.rawValue))
+    }
+
+    func canListen(to source: ListeningSource) -> Bool {
+        switch source {
+        case .original: return hasAudio
+        case .tuned: return tuningIsFresh
+        case .studio: return studioIsFresh
+        }
     }
 
     private func reloadKeepingPosition() {
@@ -837,6 +889,156 @@ final class AppModel: ObservableObject {
             try? engine.play()
             playbackState = engine.state
         }
+    }
+
+    // MARK: Auto Studio (phase 6)
+
+    var studioSettings: StudioSettings { document?.processing.studio ?? StudioSettings() }
+
+    /// The audio the studio works on: the tuned voice when wanted and current.
+    private var studioInput: (url: URL, fingerprint: String, tuned: Bool)? {
+        guard let store, let current = document, let original = current.original,
+              let originalURL = store.originalURL(for: current) else { return nil }
+        if studioSettings.useTuned, tuningIsFresh, let render = tuningRender {
+            return (store.renderURL(for: current.id, fileName: render.fileName), render.fingerprint, true)
+        }
+        return (originalURL, original.sha256, false)
+    }
+
+    var currentStudioFingerprint: String? {
+        guard let input = studioInput else { return nil }
+        return StudioRenderer.fingerprint(settings: studioSettings, inputFingerprint: input.fingerprint)
+    }
+
+    var studioIsFresh: Bool {
+        guard let render = studioRender, let current = currentStudioFingerprint else { return false }
+        return render.fingerprint == current
+    }
+
+    func setStudioProfile(_ profile: GenreProfile) {
+        updateStudio(actionKey: "action.studioprofile") { settings in
+            settings.profile = profile
+            settings.plan = nil  // a new style starts from its own automatic plan
+        }
+    }
+
+    func setStudioUsesTuned(_ useTuned: Bool) {
+        updateStudio(actionKey: "action.studiosetting") { $0.useTuned = useTuned }
+    }
+
+    /// A Pro-mode change: from now on this plan is used as edited.
+    func setStudioPlan(_ plan: StudioPlanValues) {
+        updateStudio(actionKey: "action.studiosetting") { $0.plan = plan }
+    }
+
+    func resetStudioToAutomatic() {
+        updateStudio(actionKey: "action.studioautomatic") { $0.plan = nil }
+    }
+
+    /// The plan Pro mode starts from: the edited one, else the last automatic one.
+    var studioPlanForEditing: StudioPlanValues? {
+        studioSettings.plan ?? studioRender?.automaticPlan
+    }
+
+    private func updateStudio(actionKey: String, _ change: (inout StudioSettings) -> Void) {
+        let current = studioSettings
+        edit(actionKey: actionKey) { editable in
+            var settings = editable.processing.studio ?? current
+            change(&settings)
+            editable.processing.studio = settings
+        }
+    }
+
+    /// AUTO STUDIO: tune to the maqam when one is known (in the profile's style
+    /// unless tuning was set by hand), then clean, shape and finish the voice.
+    func runAutoStudio() {
+        guard activity == .idle, hasAudio, pitch != nil else { return }
+        importTask = Task { [weak self] in
+            guard let self else { return }
+            self.beginRendering(task: "studio", announcementKey: "announce.studio")
+            let settings = self.studioSettings
+            var tuningShare = 0.0
+            if settings.useTuned, self.canTune, !self.tuningIsFresh {
+                if self.document?.processing.tuning == nil {
+                    self.updateTuning(actionKey: "action.tuningpreset") { $0 = $0.applying(settings.profile.tuningPreset) }
+                }
+                tuningShare = 0.45
+                guard await self.performTuning(progressFrom: 0, to: tuningShare) else { self.activity = .idle; return }
+            }
+            if !self.canTune { self.announcer.announce(self.l10n("announce.studio.notuning")) }
+            if await self.performStudio(progressFrom: tuningShare, to: 1) {
+                self.listening = .studio
+                self.reloadKeepingPosition()
+                self.announcer.announce(self.studioResultText, important: true)
+            }
+            self.activity = .idle
+        }
+    }
+
+    private func performStudio(progressFrom base: Double, to end: Double) async -> Bool {
+        guard let store, let current = document, let original = current.original, let input = studioInput,
+              let pitch, let fingerprint = currentStudioFingerprint else { return false }
+        let settings = studioSettings
+        do {
+            try store.prepareRendersFolder(for: current.id)
+            // Stereo float, plus a few seconds of tail.
+            try store.ensureSpace(forBytes: (Int64(original.frames) + Int64(original.sampleRate * 6)) * 8)
+        } catch {
+            present(error) { .projectSaveFailed(detail: $0) }
+            return false
+        }
+        progressBase = base
+        progressSpan = end - base
+        let projectId = current.id
+        let temporary = store.renderURL(for: projectId, fileName: "studio-\(UUID().uuidString).caf")
+        let destination = store.renderURL(for: projectId, fileName: StudioRenderer.fileName)
+        let reportProgress: @Sendable (Double) -> Void = { [weak self] fraction in
+            Task { @MainActor in self?.renderProgress(fraction) }
+        }
+        let track = pitch.track
+        let job = Task.detached(priority: .userInitiated) { () -> Result<StudioRenderInfo, Error> in
+            Result {
+                // 1. Listen to the voice and decide.
+                let session = try StudioRenderer.analyse(source: input.url, pitch: track) { reportProgress(0.25 * $0) }
+                let automatic = try session.plan(for: settings.profile)
+                let plan = settings.plan ?? automatic.plan
+                // 2. Measure the chain's loudness, 3. render at the gain that reaches the target.
+                let measured = try StudioRenderer.run(session: session, plan: plan, source: input.url, gainDb: 0, limit: false,
+                                                      destination: nil) { reportProgress(0.25 + 0.3 * $0) }
+                let gain = measured.lufs > -100 ? plan.loudnessTargetLufs - measured.lufs : 0
+                let final = try StudioRenderer.run(session: session, plan: plan, source: input.url, gainDb: gain, limit: true,
+                                                   destination: temporary) { reportProgress(0.55 + 0.45 * $0) }
+                return StudioRenderInfo(fileName: StudioRenderer.fileName, sourceSHA256: original.sha256,
+                                        fingerprint: fingerprint, renderedAt: Date(), usedTuned: input.tuned,
+                                        before: session.measurements, automaticPlan: automatic.plan, usedPlan: plan,
+                                        reasons: automatic.reasons, afterLufs: final.lufs, afterPeakDbfs: final.peakDbfs)
+            }
+        }
+        let result = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
+        guard !Task.isCancelled, document?.id == projectId else { try? FileManager.default.removeItem(at: temporary); return false }
+        switch result {
+        case .success(let info):
+            do {
+                try Self.replace(destination, with: temporary)
+                try store.saveStudioInfo(info, for: projectId)
+                studioRender = info
+                return true
+            } catch {
+                present(error) { .projectSaveFailed(detail: $0) }
+                return false
+            }
+        case .failure(let failure):
+            try? FileManager.default.removeItem(at: temporary)
+            if !(failure is CancellationError) { present(failure) { .projectSaveFailed(detail: $0) } }
+            return false
+        }
+    }
+
+    /// "Loudness −23 → −14 LUFS, peak −1 dBFS", for the screen and VoiceOver.
+    var studioResultText: String {
+        guard let render = studioRender else { return "" }
+        return l10n("studio.result", l10n.number(render.before.integratedLufs, fractionDigits: 1),
+                    l10n.number(render.afterLufs, fractionDigits: 1), l10n.number(render.afterPeakDbfs, fractionDigits: 1))
     }
 
     // MARK: Maqam and tonic detection (phase 5)

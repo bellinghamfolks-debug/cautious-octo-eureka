@@ -14,7 +14,7 @@ VoiceOver.
 | 3 | Maqam engine UI: per-degree tuning, A4 reference, tuning tables, custom maqam editor, library import/export | **Implemented** |
 | 4 | Pitch correction: Natural/Strong/Robotic and every control, formant preservation and shift, manual note pinning, A/B with measured before/after | **Implemented (offline)**; live correction comes with the live mode |
 | 5 | Maqam and tonic detection with confidence, manual override | **Implemented** |
-| 6 | Auto Studio chain and genre profiles | Not started |
+| 6 | Auto Studio: analysis, adaptive chain, 12 genre profiles, decisions in words, Pro mode, A/B | **Implemented** |
 | 7 | Export, stem separation interface | Not started |
 
 Nothing in the interface is a placeholder: a control appears only when the
@@ -135,6 +135,40 @@ maqamat apart (only Bayati's lower jins) gives 48% / 48% rather than a false
 answer, and under 3 seconds or 3 pitch classes no claim is made. Detection is
 applied automatically only when nothing is chosen and confidence is at least
 60%; a choice made by hand is never replaced, only questioned.
+
+## Auto Studio
+
+AUTO STUDIO listens to the voice once (the tuned take when one is current,
+otherwise the original) and measures what the decisions need: integrated
+loudness (BS.1770-4), peaks and clipping, the room's noise floor and its
+spectrum, mains hum at 50 or 60 Hz, rumble, the voice's long-term spectrum,
+sibilance, level spread, and breaths (unvoiced, noisy, quieter than the
+singing, 0.12–0.8 s). A plan is then made for the chosen profile, and every
+stage records why it is on, off, or set as it is; the app reads those reasons
+as sentences ("Mains hum at 50 Hz, 24 dB above its surroundings; it and its
+harmonics were removed").
+
+The chain, in order: high-pass, hum notches, spectral noise reduction,
+plosive control (only on unvoiced low bursts), breath reduction, leveler,
+corrective EQ, de-esser and harshness control, compressor or multiband
+compressor, saturation, exciter, stereo reverb and echo, then gain to the
+profile's loudness target and a look-ahead limiter at -1 dBFS. The chain is
+run once to measure its loudness and again at the gain that reaches the
+target, so the reported "after" numbers are measured from the written file.
+The result goes to `renders/studio.caf`; the original is never changed.
+
+The 12 profiles (Khaleeji, Arabic Pop, Tarab, Shilat, Iraqi, Egyptian,
+Levantine, Acoustic, Clean Studio, Modern Commercial, Natural, Heavy
+Auto-Tune) are starting points chosen by ear for each style, not measured
+standards. Each also names the tuning style it pairs with; when a take has
+never been tuned, AUTO STUDIO tunes it in that style first. Pro mode exposes
+every value of the plan, and "back to automatic" discards the edits.
+
+Measured in the tests: every profile lands within 1 LU of its target with
+peaks at or below -1 dBFS; hum drops by at least 20 dB against the voice;
+noise reduction removes about 13 dB of steady noise while the voice moves by
+less than 0.2 dB; the K-weighting filter matches the BS.1770 reference
+coefficients at 48 kHz.
 
 ## Projects
 
