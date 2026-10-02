@@ -29,15 +29,28 @@ jobs:
       - run: ./scripts/ci-core.sh
 
   ios:
-    name: Build, test and package (unsigned)
+    name: Build, test and package (unsigned, Xcode ${{ matrix.xcode }})
     needs: core
     runs-on: macos-15
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # "default" is the image's Xcode; "newest" is the latest one installed,
+        # which is what Codemagic's "xcode: latest" builds with.
+        xcode: [default, newest]
     defaults:
       run:
         working-directory: MaqamStudio
     steps:
       - uses: actions/checkout@v4
+      - name: Choose Xcode
+        if: matrix.xcode == 'newest'
+        run: |
+          ls -d /Applications/Xcode*.app
+          NEWEST="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$NEWEST"
+          xcodebuild -version
       - name: Core tests on macOS (Apple clang)
         run: |
           cmake -S Core -B build/core -DCMAKE_BUILD_TYPE=Release
@@ -51,7 +64,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: maqam-studio-${{ github.sha }}
+          name: maqam-studio-${{ github.sha }}-${{ matrix.xcode }}
           path: |
             MaqamStudio/build/ci/MaqamStudio-unsigned.ipa
             MaqamStudio/build/ci/*.log
