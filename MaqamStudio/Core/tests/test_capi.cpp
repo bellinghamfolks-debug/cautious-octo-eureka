@@ -244,3 +244,69 @@ TEST_CASE("the C detector ranks maqamat and reports when it cannot tell") {
     CHECK(summary.enough_data == 0);
     CHECK(mq_detect_maqam(nullptr, 3, scales.data(), scales.size(), &summary, nullptr, 0, &count) == MQ_ERROR_INVALID_ARGUMENT);
 }
+
+TEST_CASE("the C studio path analyses, plans with reasons, and renders to target") {
+    const double rate = 48000.0;
+    std::vector<float> voice;
+    for (int note = 0; note < 6; ++note) {
+        const auto part = synth::tone(220.0 * std::exp2(note * 150.0 / 1200.0), 0.6, rate, 0.25, 6);
+        voice.insert(voice.end(), part.begin(), part.end());
+        voice.insert(voice.end(), 12000, 0.0f);
+    }
+    const auto noise = synth::noise(voice.size(), 0.003, 5);
+    for (std::size_t i = 0; i < voice.size(); ++i) voice[i] += noise[i];
+
+    MQStudioAnalyzer* analyzer = mq_studio_analyzer_create(rate);
+    mq_studio_analyzer_push(analyzer, voice.data(), voice.size());
+    MQPitchConfig config = mq_pitch_default_config(rate);
+    size_t frames = 0;
+    mq_pitch_track(voice.data(), voice.size(), &config, 480, nullptr, nullptr, 0, &frames);
+    std::vector<double> times(frames);
+    std::vector<MQPitchEstimate> estimates(frames);
+    mq_pitch_track(voice.data(), voice.size(), &config, 480, times.data(), estimates.data(), frames, &frames);
+    std::vector<float> hz(frames);
+    for (size_t i = 0; i < frames; ++i) hz[i] = estimates[i].voiced ? static_cast<float>(estimates[i].frequency_hz) : 0.0f;
+    MQStudioSession* session = mq_studio_session_create(analyzer, hz.data(), frames, times[0], 0.01);
+    mq_studio_analyzer_destroy(analyzer);
+    CHECK(session != nullptr);
+
+    MQStudioMeasurements measured{};
+    mq_studio_measurements(session, &measured);
+    CHECK(measured.duration_seconds > 5.0);
+    CHECK(measured.noise_floor_dbfs < -40.0);
+
+    MQStudioPlan plan{};
+    MQStudioReason reasons[64];
+    size_t count = 0;
+    CHECK(mq_studio_plan(session, MQ_PROFILE_KHALEEJI, &plan, reasons, 64, &count) == MQ_OK);
+    CHECK(count > 5);
+    CHECK(plan.denoise_db > 0.0);
+    CHECK(mq_studio_plan(session, 99, &plan, nullptr, 0, nullptr) == MQ_ERROR_INVALID_ARGUMENT);
+    CHECK(mq_studio_profile_tuning(MQ_PROFILE_HEAVY_AUTOTUNE) == MQ_CORRECTION_ROBOTIC);
+
+    auto renderAt = [&](double gain, int32_t limit, std::vector<float>& left, std::vector<float>& right) {
+        MQStudioChain* chain = mq_studio_chain_create(session, &plan, gain, limit);
+        std::vector<float> input = voice;
+        input.resize(voice.size() + mq_studio_chain_tail(chain), 0.0f);
+        left.assign(input.size(), 0.0f);
+        right.assign(input.size(), 0.0f);
+        mq_studio_chain_process(chain, input.data(), left.data(), right.data(), input.size());
+        const auto latency = static_cast<std::ptrdiff_t>(mq_studio_chain_latency(chain));
+        left.erase(left.begin(), left.begin() + latency);
+        right.erase(right.begin(), right.begin() + latency);
+        mq_studio_chain_destroy(chain);
+        MQLoudnessMeter* meter = mq_loudness_create(rate, 2);
+        mq_loudness_push(meter, left.data(), right.data(), left.size());
+        const double lufs = mq_loudness_integrated(meter);
+        mq_loudness_destroy(meter);
+        return lufs;
+    };
+    std::vector<float> left, right;
+    const double before = renderAt(0.0, 0, left, right);
+    const double after = renderAt(plan.loudness_target_lufs - before, 1, left, right);
+    CHECK_NEAR(after, plan.loudness_target_lufs, 0.8);
+    float peak = 0.0f;
+    for (std::size_t i = 0; i < left.size(); ++i) peak = std::max({peak, std::fabs(left[i]), std::fabs(right[i])});
+    CHECK(peak <= std::pow(10.0f, static_cast<float>(plan.ceiling_db) / 20.0f) + 1e-6f);
+    mq_studio_session_destroy(session);
+}

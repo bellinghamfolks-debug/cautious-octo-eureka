@@ -10,7 +10,7 @@ cmake --build build/core -j
 ./build/core/maqam_core_tests
 
 if [[ "$(uname)" == "Linux" ]]; then
-  cmake -S Core -B build/core-asan -DCMAKE_BUILD_TYPE=Debug \
+  cmake -S Core -B build/core-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
   cmake --build build/core-asan -j
   ./build/core-asan/maqam_core_tests

@@ -341,8 +341,9 @@ void Reverb::prepare(double sampleRate, double roomSize, double damping, double 
     feedback_ = static_cast<float>(std::clamp(roomSize, 0.0, 1.0) * 0.28 + 0.7);
     damp_ = static_cast<float>(std::clamp(damping, 0.0, 1.0) * 0.4);
     const double width = std::clamp(widthAmount, 0.0, 1.0);
-    wet1_ = static_cast<float>(width / 2.0 + 0.5);
-    wet2_ = static_cast<float>((1.0 - width) / 2.0);
+    // Freeverb's wet scale (3), so that a mix of 1 is about as loud as the dry voice.
+    wet1_ = static_cast<float>(3.0 * (width / 2.0 + 0.5));
+    wet2_ = static_cast<float>(3.0 * (1.0 - width) / 2.0);
     reset();
 }
 

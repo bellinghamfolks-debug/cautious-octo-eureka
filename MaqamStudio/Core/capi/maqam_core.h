@@ -301,6 +301,128 @@ MQStatus mq_detect_maqam(const MQSungNote *notes, size_t note_count, const MQSca
                          MQDetectionSummary *out_summary, MQMaqamCandidate *out_candidates, size_t capacity,
                          size_t *out_count);
 
+/* ------------------------------------------------------------ Auto Studio */
+
+enum {
+    MQ_PROFILE_KHALEEJI = 0, MQ_PROFILE_ARABIC_POP, MQ_PROFILE_TARAB, MQ_PROFILE_SHILAT, MQ_PROFILE_IRAQI,
+    MQ_PROFILE_EGYPTIAN, MQ_PROFILE_LEVANTINE, MQ_PROFILE_ACOUSTIC, MQ_PROFILE_CLEAN_STUDIO,
+    MQ_PROFILE_MODERN_COMMERCIAL, MQ_PROFILE_NATURAL, MQ_PROFILE_HEAVY_AUTOTUNE, MQ_PROFILE_COUNT
+};
+
+/* Why a stage is on, off or set as it is; `a` and `b` carry the numbers. */
+enum {
+    MQ_REASON_HIGH_PASS = 1, MQ_REASON_RUMBLE, MQ_REASON_HUM, MQ_REASON_NO_HUM, MQ_REASON_DENOISE,
+    MQ_REASON_ALREADY_CLEAN, MQ_REASON_PLOSIVES, MQ_REASON_BREATHS, MQ_REASON_NO_BREATHS, MQ_REASON_LEVELER,
+    MQ_REASON_STEADY_LEVEL, MQ_REASON_MUD, MQ_REASON_BOXY, MQ_REASON_HARSH, MQ_REASON_AIR, MQ_REASON_RESONANCE,
+    MQ_REASON_DE_ESS, MQ_REASON_DE_ESS_LIGHT, MQ_REASON_COMPRESS, MQ_REASON_MULTIBAND, MQ_REASON_COLOUR,
+    MQ_REASON_REVERB, MQ_REASON_DELAY, MQ_REASON_LOUDNESS, MQ_REASON_LIMITER, MQ_REASON_CLIPPED_INPUT,
+    MQ_REASON_TONAL
+};
+
+typedef struct { int32_t code; double a; double b; } MQStudioReason;
+
+typedef struct {
+    int32_t type;  /* 0 peaking, 1 low shelf, 2 high shelf */
+    double frequency_hz;
+    double q;
+    double gain_db;
+} MQEqBand;
+
+typedef struct {
+    int32_t enabled;
+    double frequency_hz;
+    double threshold_db;
+    double maximum_cut_db;
+} MQDynamicBand;
+
+typedef struct {
+    double threshold_db;
+    double ratio;
+    double attack_ms;
+    double release_ms;
+} MQCompressorBand;
+
+typedef struct {
+    int32_t profile;
+    double high_pass_hz;          /* 0 = off */
+    double hum_hz;                /* 0 = off */
+    int32_t hum_harmonics;
+    double denoise_db;            /* 0 = off */
+    double plosive_db;            /* 0 = off */
+    double breath_db;             /* 0 = off */
+    int32_t leveler;
+    double leveler_target_db;
+    double leveler_range_db;
+    MQEqBand eq[8];
+    int32_t eq_count;
+    MQDynamicBand de_esser;
+    MQDynamicBand harshness;
+    MQCompressorBand compressor;  /* ratio 1 = off */
+    int32_t multiband;
+    MQCompressorBand bands[3];
+    double saturation_drive_db;
+    double saturation_mix;
+    double exciter_amount;
+    double reverb_mix;
+    double reverb_size;
+    double reverb_damping;
+    double reverb_pre_delay_ms;
+    double delay_mix;
+    double delay_ms;
+    double delay_feedback;
+    double loudness_target_lufs;
+    double ceiling_db;
+} MQStudioPlan;
+
+typedef struct {
+    double duration_seconds;
+    double integrated_lufs;
+    double peak_dbfs;
+    double noise_floor_dbfs;
+    double voice_level_dbfs;
+    double level_spread_db;
+    double hum_hz;
+    double hum_strength_db;
+    double sibilance_db;
+    uint64_t clipped_samples;
+    uint64_t breath_count;
+} MQStudioMeasurements;
+
+typedef struct MQStudioAnalyzer MQStudioAnalyzer;
+typedef struct MQStudioSession MQStudioSession;
+typedef struct MQStudioChain MQStudioChain;
+typedef struct MQLoudnessMeter MQLoudnessMeter;
+
+MQStudioAnalyzer *mq_studio_analyzer_create(double sample_rate);
+void mq_studio_analyzer_push(MQStudioAnalyzer *analyzer, const float *mono, size_t frames);
+void mq_studio_analyzer_destroy(MQStudioAnalyzer *analyzer);
+
+/* Finishes the analysis. The pitch track (Hz per frame, 0 = unvoiced) tells
+ * where the singing is, for breath and plosive handling. */
+MQStudioSession *mq_studio_session_create(MQStudioAnalyzer *analyzer, const float *track_hz, size_t track_count,
+                                          double track_first_time, double track_hop_seconds);
+void mq_studio_session_destroy(MQStudioSession *session);
+void mq_studio_measurements(const MQStudioSession *session, MQStudioMeasurements *out);
+
+/* The adaptive plan for a profile, and the reasons behind it. */
+MQStatus mq_studio_plan(const MQStudioSession *session, int32_t profile, MQStudioPlan *out_plan,
+                        MQStudioReason *out_reasons, size_t capacity, size_t *out_count);
+/* The tuning style a profile pairs with: an MQCorrectionPreset value. */
+int32_t mq_studio_profile_tuning(int32_t profile);
+
+MQStudioChain *mq_studio_chain_create(const MQStudioSession *session, const MQStudioPlan *plan, double output_gain_db,
+                                      int32_t limit);
+void mq_studio_chain_process(MQStudioChain *chain, const float *mono, float *left, float *right, size_t frames);
+uint64_t mq_studio_chain_latency(const MQStudioChain *chain);
+uint64_t mq_studio_chain_tail(const MQStudioChain *chain);
+void mq_studio_chain_destroy(MQStudioChain *chain);
+
+/* ITU-R BS.1770-4 integrated loudness. `right` may be NULL for mono. */
+MQLoudnessMeter *mq_loudness_create(double sample_rate, int32_t channels);
+void mq_loudness_push(MQLoudnessMeter *meter, const float *left, const float *right, size_t frames);
+double mq_loudness_integrated(const MQLoudnessMeter *meter);
+void mq_loudness_destroy(MQLoudnessMeter *meter);
+
 #ifdef __cplusplus
 }
 #endif

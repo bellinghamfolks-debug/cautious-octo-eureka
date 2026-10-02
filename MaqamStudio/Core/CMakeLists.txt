@@ -16,6 +16,7 @@ add_library(maqam_core STATIC
     src/detection.cpp
     src/dsp.cpp
     src/cleanup.cpp
+    src/studio.cpp
     capi/maqam_core.cpp)
 target_include_directories(maqam_core PUBLIC include capi)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
@@ -35,6 +36,7 @@ add_executable(maqam_core_tests
     tests/test_detection.cpp
     tests/test_dsp.cpp
     tests/test_cleanup.cpp
+    tests/test_studio.cpp
     tests/test_capi.cpp)
 target_link_libraries(maqam_core_tests PRIVATE maqam_core)
 add_test(NAME maqam_core_tests COMMAND maqam_core_tests)

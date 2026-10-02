@@ -5,13 +5,16 @@
 #include "maqam/notes.hpp"
 #include "maqam/correction.hpp"
 #include "maqam/detection.hpp"
+#include "maqam/studio.hpp"
 #include "maqam/psola.hpp"
 #include "maqam/pitch_detector.hpp"
 #include "maqam/tuning.hpp"
 
 #include <cstring>
+#include <algorithm>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <new>
 #include <vector>
 
@@ -37,6 +40,26 @@ struct MQMarkFinder {
 
 struct MQGrainPlan {
     maqam::GrainPlan plan;
+};
+
+struct MQStudioAnalyzer {
+    explicit MQStudioAnalyzer(double rate) : analyzer(rate) {}
+    maqam::StudioAnalyzer analyzer;
+};
+
+struct MQStudioSession {
+    maqam::StudioAnalysis analysis;
+    std::vector<bool> voiced;  // per analysis frame
+    std::vector<maqam::RegionAttenuator::Region> breaths;
+};
+
+struct MQStudioChain {
+    std::unique_ptr<maqam::StudioChain> chain;
+};
+
+struct MQLoudnessMeter {
+    MQLoudnessMeter(double rate, int channels) : meter(rate, channels) {}
+    maqam::dsp::LoudnessMeter meter;
 };
 
 struct MQPitchDetector {
@@ -94,6 +117,120 @@ maqam::NoteSegmentConfig toNoteConfig(const MQNoteConfig& config) {
 
 MQTargetMatch toMatch(const maqam::TargetMatch& match) {
     return {match.targetCents, match.deviationCents, match.degreeIndex, match.alternate ? 1 : 0};
+}
+
+maqam::dsp::Biquad::Type eqType(int32_t type) {
+    switch (type) {
+    case 1: return maqam::dsp::Biquad::Type::lowShelf;
+    case 2: return maqam::dsp::Biquad::Type::highShelf;
+    default: return maqam::dsp::Biquad::Type::peaking;
+    }
+}
+
+int32_t eqTypeCode(maqam::dsp::Biquad::Type type) {
+    if (type == maqam::dsp::Biquad::Type::lowShelf) return 1;
+    if (type == maqam::dsp::Biquad::Type::highShelf) return 2;
+    return 0;
+}
+
+MQStudioPlan toCPlan(const maqam::StudioPlan& p) {
+    MQStudioPlan c{};
+    c.profile = static_cast<int32_t>(p.profile);
+    c.high_pass_hz = p.highPassHz;
+    c.hum_hz = p.humHz;
+    c.hum_harmonics = p.humHarmonics;
+    c.denoise_db = p.denoiseDb;
+    c.plosive_db = p.plosiveDb;
+    c.breath_db = p.breathDb;
+    c.leveler = p.leveler ? 1 : 0;
+    c.leveler_target_db = p.levelerTargetDb;
+    c.leveler_range_db = p.levelerRangeDb;
+    c.eq_count = p.eqCount;
+    for (int i = 0; i < p.eqCount; ++i) {
+        const auto& band = p.eq[static_cast<std::size_t>(i)];
+        c.eq[i] = {eqTypeCode(band.type), band.frequencyHz, band.q, band.gainDb};
+    }
+    c.de_esser = {p.deEsserOn ? 1 : 0, p.deEsser.frequencyHz, p.deEsser.thresholdDb, p.deEsser.maximumCutDb};
+    c.harshness = {p.harshnessOn ? 1 : 0, p.harshness.frequencyHz, p.harshness.thresholdDb, p.harshness.maximumCutDb};
+    c.compressor = {p.compressor.thresholdDb, p.compressor.ratio, p.compressor.attackMs, p.compressor.releaseMs};
+    c.multiband = p.multibandOn ? 1 : 0;
+    for (std::size_t b = 0; b < 3; ++b) {
+        c.bands[b] = {p.multiband[b].thresholdDb, p.multiband[b].ratio, p.multiband[b].attackMs, p.multiband[b].releaseMs};
+    }
+    c.saturation_drive_db = p.saturationDriveDb;
+    c.saturation_mix = p.saturationMix;
+    c.exciter_amount = p.exciterAmount;
+    c.reverb_mix = p.reverbMix;
+    c.reverb_size = p.reverbSize;
+    c.reverb_damping = p.reverbDamping;
+    c.reverb_pre_delay_ms = p.reverbPreDelayMs;
+    c.delay_mix = p.delayMix;
+    c.delay_ms = p.delayMs;
+    c.delay_feedback = p.delayFeedback;
+    c.loudness_target_lufs = p.loudnessTargetLufs;
+    c.ceiling_db = p.ceilingDb;
+    return c;
+}
+
+maqam::StudioPlan fromCPlan(const MQStudioPlan& c) {
+    maqam::StudioPlan p;
+    p.profile = static_cast<maqam::GenreProfile>(std::clamp(c.profile, 0, static_cast<int32_t>(maqam::GenreProfile::count) - 1));
+    p.highPassHz = std::clamp(c.high_pass_hz, 0.0, 400.0);
+    p.humHz = (c.hum_hz == 50.0 || c.hum_hz == 60.0) ? c.hum_hz : 0.0;
+    p.humHarmonics = std::clamp(c.hum_harmonics, 0, 6);
+    p.denoiseDb = std::clamp(c.denoise_db, 0.0, 30.0);
+    p.plosiveDb = std::clamp(c.plosive_db, 0.0, 30.0);
+    p.breathDb = std::clamp(c.breath_db, 0.0, 40.0);
+    p.leveler = c.leveler != 0;
+    p.levelerTargetDb = std::clamp(c.leveler_target_db, -60.0, 0.0);
+    p.levelerRangeDb = std::clamp(c.leveler_range_db, 0.0, 12.0);
+    p.eqCount = std::clamp(c.eq_count, 0, 8);
+    for (int i = 0; i < p.eqCount; ++i) {
+        p.eq[static_cast<std::size_t>(i)] = {eqType(c.eq[i].type), std::clamp(c.eq[i].frequency_hz, 20.0, 20000.0),
+                                             std::clamp(c.eq[i].q, 0.1, 20.0), std::clamp(c.eq[i].gain_db, -24.0, 24.0)};
+    }
+    p.deEsserOn = c.de_esser.enabled != 0;
+    p.deEsser.frequencyHz = std::clamp(c.de_esser.frequency_hz, 2000.0, 16000.0);
+    p.deEsser.thresholdDb = c.de_esser.threshold_db;
+    p.deEsser.maximumCutDb = std::clamp(c.de_esser.maximum_cut_db, 0.0, 24.0);
+    p.deEsser.q = 1.0;
+    p.deEsser.ratio = 4.0;
+    p.deEsser.attackMs = 1.0;
+    p.deEsser.releaseMs = 60.0;
+    p.harshnessOn = c.harshness.enabled != 0;
+    p.harshness.frequencyHz = std::clamp(c.harshness.frequency_hz, 1000.0, 8000.0);
+    p.harshness.thresholdDb = c.harshness.threshold_db;
+    p.harshness.maximumCutDb = std::clamp(c.harshness.maximum_cut_db, 0.0, 18.0);
+    p.harshness.q = 1.2;
+    p.harshness.ratio = 3.0;
+    p.harshness.attackMs = 3.0;
+    p.harshness.releaseMs = 80.0;
+    p.compressor.thresholdDb = c.compressor.threshold_db;
+    p.compressor.ratio = std::clamp(c.compressor.ratio, 1.0, 20.0);
+    p.compressor.attackMs = std::clamp(c.compressor.attack_ms, 0.1, 200.0);
+    p.compressor.releaseMs = std::clamp(c.compressor.release_ms, 5.0, 2000.0);
+    p.compressor.kneeDb = 6.0;
+    p.multibandOn = c.multiband != 0;
+    for (std::size_t b = 0; b < 3; ++b) {
+        p.multiband[b].thresholdDb = c.bands[b].threshold_db;
+        p.multiband[b].ratio = std::clamp(c.bands[b].ratio, 1.0, 20.0);
+        p.multiband[b].attackMs = std::clamp(c.bands[b].attack_ms, 0.1, 200.0);
+        p.multiband[b].releaseMs = std::clamp(c.bands[b].release_ms, 5.0, 2000.0);
+        p.multiband[b].kneeDb = 6.0;
+    }
+    p.saturationDriveDb = std::clamp(c.saturation_drive_db, 0.0, 24.0);
+    p.saturationMix = std::clamp(c.saturation_mix, 0.0, 1.0);
+    p.exciterAmount = std::clamp(c.exciter_amount, 0.0, 1.0);
+    p.reverbMix = std::clamp(c.reverb_mix, 0.0, 1.0);
+    p.reverbSize = std::clamp(c.reverb_size, 0.0, 1.0);
+    p.reverbDamping = std::clamp(c.reverb_damping, 0.0, 1.0);
+    p.reverbPreDelayMs = std::clamp(c.reverb_pre_delay_ms, 0.0, 200.0);
+    p.delayMix = std::clamp(c.delay_mix, 0.0, 1.0);
+    p.delayMs = std::clamp(c.delay_ms, 10.0, 2000.0);
+    p.delayFeedback = std::clamp(c.delay_feedback, 0.0, 0.9);
+    p.loudnessTargetLufs = std::clamp(c.loudness_target_lufs, -30.0, -6.0);
+    p.ceilingDb = std::clamp(c.ceiling_db, -12.0, -0.1);
+    return p;
 }
 
 void copyName(char* destination, std::size_t capacity, const std::string& source) {
@@ -554,5 +691,112 @@ MQStatus mq_detect_maqam(const MQSungNote* notes, size_t note_count, const MQSca
         return MQ_ERROR_INVALID_ARGUMENT;
     }
 }
+
+MQStudioAnalyzer* mq_studio_analyzer_create(double sample_rate) {
+    if (!(sample_rate > 0.0)) return nullptr;
+    try { return new MQStudioAnalyzer(sample_rate); } catch (...) { return nullptr; }
+}
+
+void mq_studio_analyzer_push(MQStudioAnalyzer* analyzer, const float* mono, size_t frames) {
+    if (!analyzer || !mono) return;
+    try { analyzer->analyzer.push(mono, frames); } catch (...) {}
+}
+
+void mq_studio_analyzer_destroy(MQStudioAnalyzer* analyzer) { delete analyzer; }
+
+MQStudioSession* mq_studio_session_create(MQStudioAnalyzer* analyzer, const float* track_hz, size_t track_count,
+                                          double track_first_time, double track_hop_seconds) {
+    if (!analyzer || (track_count > 0 && !track_hz)) return nullptr;
+    try {
+        auto* session = new MQStudioSession();
+        session->analysis = analyzer->analyzer.finish();
+        const auto& a = session->analysis;
+        session->voiced.assign(a.frames.size(), false);
+        if (track_count > 0 && track_hop_seconds > 0.0) {
+            for (size_t i = 0; i < a.frames.size(); ++i) {
+                const double centre = (static_cast<double>(i * a.hop) + maqam::SpectralDenoiser::kFrameSize / 2.0) / a.sampleRate;
+                const long frame = std::lround((centre - track_first_time) / track_hop_seconds);
+                session->voiced[i] = frame >= 0 && static_cast<size_t>(frame) < track_count && track_hz[frame] > 0.0f;
+            }
+        }
+        session->breaths = maqam::findBreaths(a, session->voiced);
+        return session;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+void mq_studio_session_destroy(MQStudioSession* session) { delete session; }
+
+void mq_studio_measurements(const MQStudioSession* session, MQStudioMeasurements* out) {
+    if (!session || !out) return;
+    const auto& a = session->analysis;
+    *out = {static_cast<double>(a.samples) / a.sampleRate, a.integratedLufs, a.peakDbfs, a.noiseFloorDbfs,
+            a.voiceLevelDbfs, a.levelSpreadDb, a.humHz, a.humStrengthDb, a.sibilanceDb, a.clippedSamples,
+            session->breaths.size()};
+}
+
+MQStatus mq_studio_plan(const MQStudioSession* session, int32_t profile, MQStudioPlan* out_plan,
+                        MQStudioReason* out_reasons, size_t capacity, size_t* out_count) {
+    if (!session || !out_plan || profile < 0 || profile >= MQ_PROFILE_COUNT) return MQ_ERROR_INVALID_ARGUMENT;
+    try {
+        std::vector<maqam::StudioReason> reasons;
+        const maqam::StudioPlan plan = maqam::planStudio(session->analysis, session->breaths.size(),
+                                                         static_cast<maqam::GenreProfile>(profile), &reasons);
+        *out_plan = toCPlan(plan);
+        if (out_count) *out_count = reasons.size();
+        if (out_reasons) {
+            const size_t written = reasons.size() < capacity ? reasons.size() : capacity;
+            for (size_t i = 0; i < written; ++i) out_reasons[i] = {static_cast<int32_t>(reasons[i].code), reasons[i].a, reasons[i].b};
+            if (out_count) *out_count = written;
+        }
+        return MQ_OK;
+    } catch (...) {
+        return MQ_ERROR_INVALID_ARGUMENT;
+    }
+}
+
+int32_t mq_studio_profile_tuning(int32_t profile) {
+    if (profile < 0 || profile >= MQ_PROFILE_COUNT) return MQ_CORRECTION_NATURAL;
+    return maqam::profileTuningPreset(static_cast<maqam::GenreProfile>(profile));
+}
+
+MQStudioChain* mq_studio_chain_create(const MQStudioSession* session, const MQStudioPlan* plan, double output_gain_db,
+                                      int32_t limit) {
+    if (!session || !plan) return nullptr;
+    try {
+        const auto& a = session->analysis;
+        auto* chain = new MQStudioChain();
+        chain->chain = std::make_unique<maqam::StudioChain>(
+            fromCPlan(*plan), a, session->breaths, session->voiced,
+            maqam::SpectralDenoiser::kFrameSize / 2.0 / a.sampleRate, static_cast<double>(a.hop) / a.sampleRate,
+            output_gain_db, limit != 0);
+        return chain;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+void mq_studio_chain_process(MQStudioChain* chain, const float* mono, float* left, float* right, size_t frames) {
+    if (!chain || !mono || !left || !right) return;
+    chain->chain->process(mono, left, right, frames);
+}
+
+uint64_t mq_studio_chain_latency(const MQStudioChain* chain) { return chain ? chain->chain->latency() : 0; }
+uint64_t mq_studio_chain_tail(const MQStudioChain* chain) { return chain ? chain->chain->tail() : 0; }
+void mq_studio_chain_destroy(MQStudioChain* chain) { delete chain; }
+
+MQLoudnessMeter* mq_loudness_create(double sample_rate, int32_t channels) {
+    if (!(sample_rate > 0.0)) return nullptr;
+    try { return new MQLoudnessMeter(sample_rate, channels); } catch (...) { return nullptr; }
+}
+
+void mq_loudness_push(MQLoudnessMeter* meter, const float* left, const float* right, size_t frames) {
+    if (!meter || !left) return;
+    try { meter->meter.push(left, right, frames); } catch (...) {}
+}
+
+double mq_loudness_integrated(const MQLoudnessMeter* meter) { return meter ? meter->meter.integratedLufs() : -200.0; }
+void mq_loudness_destroy(MQLoudnessMeter* meter) { delete meter; }
 
 }  // extern "C"

@@ -20,7 +20,7 @@ jobs:
   core:
     name: DSP core, sanitizers, localization
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: MaqamStudio
