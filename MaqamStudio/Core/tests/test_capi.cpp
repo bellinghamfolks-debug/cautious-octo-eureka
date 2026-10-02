@@ -1,5 +1,8 @@
 #include "maqam_core.h"
 #include "test_support.hpp"
+#include "third_party/decoders.hpp"
+#include <cstdio>
+#include <vector>
 
 #include <algorithm>
 #include <cmath>
@@ -309,4 +312,46 @@ TEST_CASE("the C studio path analyses, plans with reasons, and renders to target
     for (std::size_t i = 0; i < left.size(); ++i) peak = std::max({peak, std::fabs(left[i]), std::fabs(right[i])});
     CHECK(peak <= std::pow(10.0f, static_cast<float>(plan.ceiling_db) / 20.0f) + 1e-6f);
     mq_studio_session_destroy(session);
+}
+
+TEST_CASE("the C export path writes a file another decoder reads, and refuses bad settings") {
+    MQExportSettings settings;
+    mq_export_default_settings(&settings);
+    settings.format = MQ_EXPORT_FLAC;
+    settings.bits = 16;
+    settings.sample_rate = 44100.0;
+    CHECK(mq_export_check(&settings, 48000.0, 1) == MQ_EXPORT_OK);
+    const std::string path = "/tmp/maqam_capi_export_test.flac";
+    MQExporter* exporter = mq_exporter_create(&settings, 48000.0, 1, path.c_str());
+    CHECK(exporter != nullptr);
+    const std::vector<float> tone = synth::tone(440.0, 1.0, 48000.0, 0.25);
+    CHECK(mq_exporter_push(exporter, tone.data(), tone.size()) == MQ_OK);
+    MQExportStats stats;
+    CHECK(mq_exporter_finish(exporter, &stats) == MQ_OK);
+    CHECK(mq_exporter_finish(exporter, &stats) == MQ_ERROR_INVALID_ARGUMENT);  // only once
+    mq_exporter_destroy(exporter);
+    CHECK(stats.frames == 44100);
+    CHECK_NEAR(stats.sample_peak_dbfs, 20.0 * std::log10(0.25), 0.2);
+    std::FILE* file = std::fopen(path.c_str(), "rb");
+    CHECK(file != nullptr);
+    std::vector<std::uint8_t> bytes;
+    if (file) {
+        std::uint8_t buffer[4096];
+        std::size_t read;
+        while ((read = std::fread(buffer, 1, sizeof buffer, file)) > 0) bytes.insert(bytes.end(), buffer, buffer + read);
+        std::fclose(file);
+    }
+    std::remove(path.c_str());
+    CHECK(bytes.size() == stats.bytes);
+    std::vector<std::int32_t> samples;
+    unsigned channels = 0, rate = 0;
+    CHECK(thirdparty::decodeFlac(bytes, samples, channels, rate));
+    CHECK(channels == 2 && rate == 44100 && samples.size() == 2 * 44100);
+
+    settings.format = MQ_EXPORT_MP3;
+    settings.sample_rate = 22050.0;
+    CHECK(mq_export_check(&settings, 48000.0, 1) == MQ_EXPORT_MP3_SAMPLE_RATE);
+    CHECK(mq_exporter_create(&settings, 48000.0, 1, nullptr) == nullptr);
+    settings.sample_rate = 48000.0;
+    CHECK(mq_exporter_create(&settings, 48000.0, 1, "/nonexistent-folder/x.mp3") == nullptr);
 }

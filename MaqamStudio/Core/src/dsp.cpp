@@ -214,11 +214,13 @@ void Limiter::reset() noexcept {
     maximumReductionDb_ = 0.0;
 }
 
-void Limiter::process(float& left, float& right) noexcept {
+void Limiter::process(float& left, float& right) noexcept { process(left, right, 0.0); }
+
+void Limiter::process(float& left, float& right, double detectorPeak) noexcept {
     const std::size_t size = delay_ + 1;
     // Gain each incoming sample needs; the minimum over the lookahead window,
     // then averaged over it, reaches every peak in time and never overshoots.
-    const double peak = std::max(std::fabs(left), std::fabs(right));
+    const double peak = std::max({static_cast<double>(std::fabs(left)), static_cast<double>(std::fabs(right)), detectorPeak});
     const double required = peak > ceiling_ ? ceiling_ / peak : 1.0;
     double* need = peaks_.data();
     double* windowMin = peaks_.data() + size;

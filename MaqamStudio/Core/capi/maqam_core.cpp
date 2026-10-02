@@ -6,6 +6,7 @@
 #include "maqam/correction.hpp"
 #include "maqam/detection.hpp"
 #include "maqam/studio.hpp"
+#include "maqam/export.hpp"
 #include "maqam/psola.hpp"
 #include "maqam/pitch_detector.hpp"
 #include "maqam/tuning.hpp"
@@ -55,6 +56,12 @@ struct MQStudioSession {
 
 struct MQStudioChain {
     std::unique_ptr<maqam::StudioChain> chain;
+};
+
+struct MQExporter {
+    std::unique_ptr<maqam::FileSink> file;
+    std::unique_ptr<maqam::Exporter> exporter;
+    bool finished = false;
 };
 
 struct MQLoudnessMeter {
@@ -798,5 +805,109 @@ void mq_loudness_push(MQLoudnessMeter* meter, const float* left, const float* ri
 
 double mq_loudness_integrated(const MQLoudnessMeter* meter) { return meter ? meter->meter.integratedLufs() : -200.0; }
 void mq_loudness_destroy(MQLoudnessMeter* meter) { delete meter; }
+
+}  // extern "C"
+
+// MARK: Export
+
+namespace {
+
+maqam::ExportSettings fromCExport(const MQExportSettings& c) {
+    maqam::ExportSettings s;
+    switch (c.format) {
+    case MQ_EXPORT_FLAC: s.format = maqam::ExportSettings::Format::flac; break;
+    case MQ_EXPORT_MP3: s.format = maqam::ExportSettings::Format::mp3; break;
+    default: s.format = maqam::ExportSettings::Format::wav; break;
+    }
+    s.sampleRate = c.sample_rate;
+    s.channels = c.channels;
+    s.bits = c.bits;
+    s.mp3Kbps = c.mp3_kbps;
+    s.resamplerQuality = c.resampler_quality;
+    s.gainDb = std::isfinite(c.gain_db) ? std::clamp(c.gain_db, -60.0, 60.0) : 0.0;
+    s.limit = c.limit != 0;
+    s.ceilingDb = std::isfinite(c.ceiling_db) ? std::clamp(c.ceiling_db, -20.0, 0.0) : -1.0;
+    s.dither = c.dither != 0;
+    return s;
+}
+
+}  // namespace
+
+extern "C" {
+
+void mq_export_default_settings(MQExportSettings* out) {
+    if (!out) return;
+    const maqam::ExportSettings s;
+    out->format = MQ_EXPORT_WAV;
+    out->sample_rate = s.sampleRate;
+    out->channels = s.channels;
+    out->bits = s.bits;
+    out->mp3_kbps = s.mp3Kbps;
+    out->resampler_quality = s.resamplerQuality;
+    out->gain_db = s.gainDb;
+    out->limit = s.limit ? 1 : 0;
+    out->ceiling_db = s.ceilingDb;
+    out->dither = s.dither ? 1 : 0;
+}
+
+int32_t mq_export_check(const MQExportSettings* settings, double input_rate, int32_t input_channels) {
+    if (!settings) return MQ_EXPORT_BAD_SAMPLE_RATE;
+    switch (maqam::validate(fromCExport(*settings), input_rate, input_channels)) {
+    case maqam::ExportProblem::none: return MQ_EXPORT_OK;
+    case maqam::ExportProblem::sampleRate: return MQ_EXPORT_BAD_SAMPLE_RATE;
+    case maqam::ExportProblem::channels: return MQ_EXPORT_BAD_CHANNELS;
+    case maqam::ExportProblem::bits: return MQ_EXPORT_BAD_BITS;
+    case maqam::ExportProblem::bitrate: return MQ_EXPORT_BAD_BITRATE;
+    case maqam::ExportProblem::mp3SampleRate: return MQ_EXPORT_MP3_SAMPLE_RATE;
+    }
+    return MQ_EXPORT_BAD_SAMPLE_RATE;
+}
+
+MQExporter* mq_exporter_create(const MQExportSettings* settings, double input_rate, int32_t input_channels, const char* path) {
+    if (!settings || mq_export_check(settings, input_rate, input_channels) != MQ_EXPORT_OK) return nullptr;
+    try {
+        auto handle = std::make_unique<MQExporter>();
+        if (path) {
+            handle->file = std::make_unique<maqam::FileSink>(path);
+            if (!handle->file->ok()) return nullptr;
+        }
+        handle->exporter = std::make_unique<maqam::Exporter>(fromCExport(*settings), input_rate, input_channels, handle->file.get());
+        if (!handle->exporter->ok()) return nullptr;
+        return handle.release();
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+MQStatus mq_exporter_push(MQExporter* exporter, const float* interleaved, size_t frames) {
+    if (!exporter || exporter->finished || (!interleaved && frames > 0)) return MQ_ERROR_INVALID_ARGUMENT;
+    try {
+        return exporter->exporter->push(interleaved, frames) ? MQ_OK : MQ_ERROR_INVALID_ARGUMENT;
+    } catch (...) {
+        return MQ_ERROR_OUT_OF_MEMORY;
+    }
+}
+
+MQStatus mq_exporter_finish(MQExporter* exporter, MQExportStats* out) {
+    if (!exporter || !out || exporter->finished) return MQ_ERROR_INVALID_ARGUMENT;
+    exporter->finished = true;
+    try {
+        maqam::ExportStats stats;
+        if (!exporter->exporter->finish(stats)) return MQ_ERROR_INVALID_ARGUMENT;
+        if (exporter->file && !exporter->file->close()) return MQ_ERROR_INVALID_ARGUMENT;
+        out->frames = stats.frames;
+        out->integrated_lufs = stats.integratedLufs;
+        out->true_peak_dbtp = stats.truePeakDbtp;
+        out->sample_peak_dbfs = stats.samplePeakDbfs;
+        out->clipped_samples = stats.clippedSamples;
+        out->maximum_reduction_db = stats.maximumReductionDb;
+        out->bytes = stats.bytes;
+        return MQ_OK;
+    } catch (...) {
+        return MQ_ERROR_OUT_OF_MEMORY;
+    }
+}
+
+void mq_exporter_destroy(MQExporter* exporter) { delete exporter; }
 
 }  // extern "C"

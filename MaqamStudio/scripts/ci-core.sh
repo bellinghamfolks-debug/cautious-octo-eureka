@@ -20,3 +20,7 @@ python3 tools/check_localization.py
 
 python3 tools/make_fixtures.py >/dev/null
 git diff --exit-code -- Tests/Fixtures
+
+# The MP3 tables are derived from an independent decoder; they must still match.
+python3 tools/make_mp3_tables.py >/dev/null
+git diff --exit-code -- Core/src/mp3_tables.cpp

@@ -165,6 +165,9 @@ public:
     void reset() noexcept;
     // Processes a stereo pair in place; both channels share one gain.
     void process(float& left, float& right) noexcept;
+    // The same, limiting on `detectorPeak` too: the true (inter-sample) peak
+    // around this sample, so the output stays under the ceiling between samples.
+    void process(float& left, float& right, double detectorPeak) noexcept;
     std::size_t latency() const noexcept { return delay_; }
     double maximumReductionDb() const noexcept { return maximumReductionDb_; }
 

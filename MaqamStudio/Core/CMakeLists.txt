@@ -17,6 +17,11 @@ add_library(maqam_core STATIC
     src/dsp.cpp
     src/cleanup.cpp
     src/studio.cpp
+    src/encode.cpp
+    src/flac.cpp
+    src/mp3.cpp
+    src/mp3_tables.cpp
+    src/export.cpp
     capi/maqam_core.cpp)
 target_include_directories(maqam_core PUBLIC include capi)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
@@ -37,6 +42,11 @@ add_executable(maqam_core_tests
     tests/test_dsp.cpp
     tests/test_cleanup.cpp
     tests/test_studio.cpp
-    tests/test_capi.cpp)
+    tests/test_export.cpp
+    tests/test_capi.cpp
+    tests/third_party/decoders.cpp)
 target_link_libraries(maqam_core_tests PRIVATE maqam_core)
+target_include_directories(maqam_core_tests PRIVATE tests)
+# Other people's decoders, used only to check our encoders: no warnings, no sanitizers.
+set_source_files_properties(tests/third_party/decoders.cpp PROPERTIES COMPILE_OPTIONS "-w;-fno-sanitize=all")
 add_test(NAME maqam_core_tests COMMAND maqam_core_tests)

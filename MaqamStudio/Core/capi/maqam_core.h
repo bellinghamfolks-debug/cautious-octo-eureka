@@ -423,6 +423,61 @@ void mq_loudness_push(MQLoudnessMeter *meter, const float *left, const float *ri
 double mq_loudness_integrated(const MQLoudnessMeter *meter);
 void mq_loudness_destroy(MQLoudnessMeter *meter);
 
+/* ---- Export ------------------------------------------------------------- */
+
+typedef enum {
+    MQ_EXPORT_WAV = 0,
+    MQ_EXPORT_FLAC = 1,
+    MQ_EXPORT_MP3 = 2,
+} MQExportFormat;
+
+typedef enum {
+    MQ_EXPORT_OK = 0,
+    MQ_EXPORT_BAD_SAMPLE_RATE = 1,
+    MQ_EXPORT_BAD_CHANNELS = 2,
+    MQ_EXPORT_BAD_BITS = 3,
+    MQ_EXPORT_BAD_BITRATE = 4,
+    MQ_EXPORT_MP3_SAMPLE_RATE = 5,
+} MQExportProblem;
+
+typedef struct {
+    int32_t format;             /* MQExportFormat */
+    double sample_rate;
+    int32_t channels;           /* 1 or 2 */
+    int32_t bits;               /* WAV 16/24/32 (float); FLAC 16/24; ignored for MP3 */
+    int32_t mp3_kbps;           /* 128, 160, 192, 224, 256 or 320 */
+    int32_t resampler_quality;  /* 0 fast, 1 good, 2 best */
+    double gain_db;
+    int32_t limit;              /* true-peak limiter at ceiling_db */
+    double ceiling_db;
+    int32_t dither;             /* TPDF dither for integer formats */
+} MQExportSettings;
+
+typedef struct {
+    uint64_t frames;
+    double integrated_lufs;
+    double true_peak_dbtp;
+    double sample_peak_dbfs;
+    uint64_t clipped_samples;
+    double maximum_reduction_db;
+    uint64_t bytes;
+} MQExportStats;
+
+typedef struct MQExporter MQExporter;
+
+void mq_export_default_settings(MQExportSettings *out);
+/* Why these settings cannot be used for this input (MQ_EXPORT_OK if they can). */
+int32_t mq_export_check(const MQExportSettings *settings, double input_rate, int32_t input_channels);
+/* `path` NULL measures without writing. Returns NULL if the settings are not
+ * usable or the file cannot be created. */
+MQExporter *mq_exporter_create(const MQExportSettings *settings, double input_rate, int32_t input_channels,
+                               const char *path);
+/* Interleaved input frames. */
+MQStatus mq_exporter_push(MQExporter *exporter, const float *interleaved, size_t frames);
+/* Flushes, finishes the file (lengths, checksums) and reports what was written. */
+MQStatus mq_exporter_finish(MQExporter *exporter, MQExportStats *out);
+void mq_exporter_destroy(MQExporter *exporter);
+
 #ifdef __cplusplus
 }
 #endif
