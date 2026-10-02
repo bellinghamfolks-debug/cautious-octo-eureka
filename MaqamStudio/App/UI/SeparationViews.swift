@@ -121,6 +121,7 @@ struct SeparationModelsView: View {
     }()
 }
 
+@MainActor
 enum SeparationText {
     static func name(_ separator: VocalSeparator, l10n: L10n) -> String {
         if let coreML = separator as? CoreMLSeparator { return l10n("separation.engine.model", coreML.name) }
