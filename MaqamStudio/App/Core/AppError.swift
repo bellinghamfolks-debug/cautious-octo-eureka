@@ -23,6 +23,8 @@ enum AppError: Error, Equatable {
     case libraryTooNew
     case exportFailed(detail: String)
     case exportSettings(problem: Int32)
+    case separationTooLong(minutes: Int)
+    case separationModel(SeparationModelProblem)
 
     /// Short title for alerts.
     var titleKey: String {
@@ -40,6 +42,7 @@ enum AppError: Error, Equatable {
         case .projectSaveFailed: return "error.save.title"
         case .maqamInvalid, .libraryUnreadable, .libraryTooNew: return "error.library.title"
         case .exportFailed, .exportSettings: return "error.export.title"
+        case .separationTooLong, .separationModel: return "error.separation.title"
         }
     }
 
@@ -70,6 +73,16 @@ enum AppError: Error, Equatable {
             case Int32(MQ_EXPORT_MP3_SAMPLE_RATE.rawValue): return l10n("error.export.mp3rate")
             default: return l10n("error.export.settings")
             }
+        case .separationTooLong(let minutes): return l10n("error.separation.toolong", l10n.number(Double(minutes)))
+        case .separationModel(let problem):
+            switch problem {
+            case .unreadable(let detail): return l10n("error.model.unreadable", detail)
+            case .missingInput: return l10n("error.model.input", CoreMLSeparator.inputName)
+            case .missingOutput: return l10n("error.model.output", CoreMLSeparator.outputName)
+            case .wrongShape(let name, let shape):
+                return l10n("error.model.shape", name, shape.isEmpty ? "?" : shape.map(String.init).joined(separator: " × "),
+                            "1 × \(CoreMLSeparator.framesPerCall) × \(SeparationSession.bins)")
+            }
         }
     }
 
@@ -81,6 +94,7 @@ extension AppError {
     /// Wraps an unexpected error from the system into the closest case.
     static func from(_ error: Error, fallback: (String) -> AppError) -> AppError {
         if let known = error as? AppError { return known }
+        if let problem = error as? SeparationModelProblem { return .separationModel(problem) }
         let nsError = error as NSError
         if nsError.domain == NSCocoaErrorDomain, nsError.code == NSFileWriteOutOfSpaceError {
             return .insufficientStorage(requiredMegabytes: 200)

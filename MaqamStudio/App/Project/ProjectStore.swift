@@ -24,6 +24,7 @@ final class ProjectStore {
     static let rendersFolder = "renders"
     static let renderInfoName = "tuned.json"
     static let studioInfoName = "studio.json"
+    static let separationInfoName = "separation.json"
 
     let root: URL
     private let fileManager: FileManager
@@ -203,6 +204,22 @@ final class ProjectStore {
               let info = try? Self.decoder.decode(StudioRenderInfo.self, from: data),
               info.sourceSHA256 == document.original?.sha256,
               fileManager.fileExists(atPath: renderURL(for: document.id, fileName: info.fileName).path) else { return nil }
+        return info
+    }
+
+    func saveSeparationInfo(_ info: SeparationInfo, for id: UUID) throws {
+        try prepareRendersFolder(for: id)
+        try Self.encoder.encode(info).write(to: renderURL(for: id, fileName: Self.separationInfoName), options: [.atomic])
+    }
+
+    /// The last separation of this project's original, if both stems are still there.
+    func loadSeparationInfo(for document: ProjectDocument) -> SeparationInfo? {
+        guard let data = try? Data(contentsOf: renderURL(for: document.id, fileName: Self.separationInfoName)),
+              let info = try? Self.decoder.decode(SeparationInfo.self, from: data),
+              info.sourceSHA256 == document.original?.sha256,
+              [SeparationInfo.vocalsFile, SeparationInfo.accompanimentFile].allSatisfy({
+                  fileManager.fileExists(atPath: renderURL(for: document.id, fileName: $0).path)
+              }) else { return nil }
         return info
     }
 

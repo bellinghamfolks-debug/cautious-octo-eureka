@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Original, tuned or studio: switched at the same moment of the song.
+/// Original, tuned, studio, or the separated vocal and music: switched at
+/// the same moment of the song.
 struct ListeningPicker: View {
     @EnvironmentObject private var l10n: L10n
     @EnvironmentObject private var model: AppModel
@@ -8,12 +9,15 @@ struct ListeningPicker: View {
     var body: some View {
         let sources = AppModel.ListeningSource.allCases.filter { model.canListen(to: $0) }
         if sources.count > 1 {
-            Picker(l10n("listen.label"), selection: Binding(get: { model.listening }, set: { model.setListening($0) })) {
+            let picker = Picker(l10n("listen.label"), selection: Binding(get: { model.listening }, set: { model.setListening($0) })) {
                 ForEach(sources) { source in
                     Text(l10n("listen." + source.rawValue)).tag(source)
                 }
             }
-            .pickerStyle(.segmented)
+            Group {
+                // Segments while they fit, a menu beyond three versions.
+                if sources.count <= 3 { picker.pickerStyle(.segmented) } else { picker.pickerStyle(.menu) }
+            }
             .accessibilityLabel(l10n("listen.label"))
             .accessibilityHint(l10n("listen.hint"))
         }

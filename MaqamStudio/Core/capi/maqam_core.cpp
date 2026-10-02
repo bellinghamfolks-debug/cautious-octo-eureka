@@ -7,6 +7,7 @@
 #include "maqam/detection.hpp"
 #include "maqam/studio.hpp"
 #include "maqam/export.hpp"
+#include "maqam/separation.hpp"
 #include "maqam/psola.hpp"
 #include "maqam/pitch_detector.hpp"
 #include "maqam/tuning.hpp"
@@ -56,6 +57,11 @@ struct MQStudioSession {
 
 struct MQStudioChain {
     std::unique_ptr<maqam::StudioChain> chain;
+};
+
+struct MQSeparation {
+    explicit MQSeparation(double rate) : separation(rate) {}
+    maqam::Separation separation;
 };
 
 struct MQExporter {
@@ -909,5 +915,68 @@ MQStatus mq_exporter_finish(MQExporter* exporter, MQExportStats* out) {
 }
 
 void mq_exporter_destroy(MQExporter* exporter) { delete exporter; }
+
+// MARK: Separation
+
+size_t mq_separation_bins(void) { return maqam::Separation::kBins; }
+size_t mq_separation_hop(void) { return maqam::Separation::kHop; }
+
+MQSeparation* mq_separation_create(double sample_rate) {
+    if (!(sample_rate >= 8000.0 && sample_rate <= 384000.0)) return nullptr;
+    try { return new MQSeparation(sample_rate); } catch (...) { return nullptr; }
+}
+
+MQStatus mq_separation_analyse(MQSeparation* separation, const float* stereo, size_t frames) {
+    if (!separation || (!stereo && frames > 0)) return MQ_ERROR_INVALID_ARGUMENT;
+    try { separation->separation.analyse(stereo, frames); } catch (...) { return MQ_ERROR_OUT_OF_MEMORY; }
+    return MQ_OK;
+}
+
+MQStatus mq_separation_finish_analysis(MQSeparation* separation) {
+    if (!separation) return MQ_ERROR_INVALID_ARGUMENT;
+    try { separation->separation.finishAnalysis(); } catch (...) { return MQ_ERROR_OUT_OF_MEMORY; }
+    return MQ_OK;
+}
+
+size_t mq_separation_frame_count(const MQSeparation* separation) {
+    return separation ? separation->separation.frameCount() : 0;
+}
+
+MQStatus mq_separation_estimate_classical(MQSeparation* separation, size_t first_frame, size_t count) {
+    if (!separation) return MQ_ERROR_INVALID_ARGUMENT;
+    try { separation->separation.estimateClassical(first_frame, count); } catch (...) { return MQ_ERROR_OUT_OF_MEMORY; }
+    return MQ_OK;
+}
+
+MQStatus mq_separation_magnitudes(const MQSeparation* separation, size_t first_frame, size_t count, float* out) {
+    if (!separation || (!out && count > 0)) return MQ_ERROR_INVALID_ARGUMENT;
+    separation->separation.magnitudes(first_frame, count, out);
+    return MQ_OK;
+}
+
+MQStatus mq_separation_set_masks(MQSeparation* separation, size_t first_frame, size_t count, const float* masks) {
+    if (!separation || (!masks && count > 0)) return MQ_ERROR_INVALID_ARGUMENT;
+    separation->separation.setMasks(first_frame, count, masks);
+    return MQ_OK;
+}
+
+MQStatus mq_separation_render(MQSeparation* separation, const float* stereo, size_t frames) {
+    if (!separation || (!stereo && frames > 0)) return MQ_ERROR_INVALID_ARGUMENT;
+    try { separation->separation.render(stereo, frames); } catch (...) { return MQ_ERROR_OUT_OF_MEMORY; }
+    return MQ_OK;
+}
+
+MQStatus mq_separation_finish_render(MQSeparation* separation) {
+    if (!separation) return MQ_ERROR_INVALID_ARGUMENT;
+    try { separation->separation.finishRender(); } catch (...) { return MQ_ERROR_OUT_OF_MEMORY; }
+    return MQ_OK;
+}
+
+size_t mq_separation_pull(MQSeparation* separation, float* vocals, float* accompaniment, size_t capacity) {
+    if (!separation || !vocals || !accompaniment) return 0;
+    return separation->separation.pull(vocals, accompaniment, capacity);
+}
+
+void mq_separation_destroy(MQSeparation* separation) { delete separation; }
 
 }  // extern "C"

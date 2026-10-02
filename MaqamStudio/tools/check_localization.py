@@ -63,6 +63,9 @@ STRAY_PERCENT = re.compile(r"%(?!@|\d+\$@)")
 LITERAL = re.compile(r'"([a-z]+(?:\.[a-z0-9_]+)+)"')
 NOT_KEYS = re.compile(r"\.(json|bak|lock|tmp|wav|caf)$")
 SYMBOLS = re.compile(r"(systemName|systemImage):.*$", re.M)
+# A dotted literal that is not text for people (a metadata key, say) is marked
+# on its line with this comment.
+NOT_LOCALIZED = re.compile(r"^.*// not localized.*$", re.M)
 
 
 def used_keys(prefixes: set[str] | None = None) -> set[str]:
@@ -75,7 +78,7 @@ def used_keys(prefixes: set[str] | None = None) -> set[str]:
         # literals; any literal under a prefix the tables use counts as a key.
         if prefixes:
             # SF Symbol names ("waveform.circle") look like keys; drop them.
-            symbols_removed = SYMBOLS.sub("", source)
+            symbols_removed = NOT_LOCALIZED.sub("", SYMBOLS.sub("", source))
             for literal in LITERAL.findall(symbols_removed):
                 if literal.split(".")[0] in prefixes and not NOT_KEYS.search(literal):
                     keys.add(literal)

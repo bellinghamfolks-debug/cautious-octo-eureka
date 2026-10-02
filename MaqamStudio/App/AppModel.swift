@@ -39,7 +39,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var tuningRender: TuningRenderInfo?
     /// Which version playback uses.
     enum ListeningSource: String, CaseIterable, Identifiable {
-        case original, tuned, studio
+        case original, tuned, studio, vocals, accompaniment
         var id: String { rawValue }
     }
     @Published private(set) var listening: ListeningSource = .original
@@ -101,6 +101,7 @@ final class AppModel: ObservableObject {
             error = failure
         } catch {}
         refreshProjects()
+        refreshSeparationModels()
         if let crashed = projects.first(where: { $0.needsRecovery }) {
             openProject(id: crashed.id)
             recoveryNotice = l10n("recovery.message", crashed.name)
@@ -203,6 +204,7 @@ final class AppModel: ObservableObject {
         tuningRender = nil
         studioRender = nil
         exportResult = nil
+        separation = nil
         listening = .original
         detection = nil
         history.clear()
@@ -239,6 +241,7 @@ final class AppModel: ObservableObject {
         analysis = store?.loadAnalysis(for: opened)
         tuningRender = store?.loadRenderInfo(for: opened)
         studioRender = store?.loadStudioInfo(for: opened)
+        separation = store?.loadSeparationInfo(for: opened)
         listening = .original
         updateDetection()
         position = opened.playback.positionSeconds
@@ -334,7 +337,7 @@ final class AppModel: ObservableObject {
 
     // MARK: Import
 
-    func importAudio(from url: URL) {
+    func importAudio(from url: URL, name: String? = nil) {
         guard activity == .idle else { return }
         let accessing = url.startAccessingSecurityScopedResource()
         let metadata: AudioMetadata
@@ -345,7 +348,7 @@ final class AppModel: ObservableObject {
             present(error) { _ in .corruptedAudio }
             return
         }
-        prepareProjectForNewAudio(named: (url.lastPathComponent as NSString).deletingPathExtension)
+        prepareProjectForNewAudio(named: name ?? (url.lastPathComponent as NSString).deletingPathExtension)
         guard let store, var current = document else {
             if accessing { url.stopAccessingSecurityScopedResource() }
             return
@@ -529,6 +532,10 @@ final class AppModel: ObservableObject {
             if let render = tuningRender { url = store.renderURL(for: current.id, fileName: render.fileName) }
         case .studio where studioIsFresh:
             if let render = studioRender { url = store.renderURL(for: current.id, fileName: render.fileName) }
+        case .vocals where separationIsFresh:
+            url = store.renderURL(for: current.id, fileName: SeparationInfo.vocalsFile)
+        case .accompaniment where separationIsFresh:
+            url = store.renderURL(for: current.id, fileName: SeparationInfo.accompanimentFile)
         default:
             break
         }
@@ -734,7 +741,7 @@ final class AppModel: ObservableObject {
 
     /// After any edit: a tuned render that no longer matches is not played.
     private func documentChanged() {
-        let stale = (listening == .tuned && !tuningIsFresh) || (listening == .studio && !studioIsFresh)
+        let stale = !canListen(to: listening)
         if stale {
             listening = .original
             reloadKeepingPosition()
@@ -880,6 +887,7 @@ final class AppModel: ObservableObject {
         case .original: return hasAudio
         case .tuned: return tuningIsFresh
         case .studio: return studioIsFresh
+        case .vocals, .accompaniment: return separationIsFresh
         }
     }
 
@@ -1084,6 +1092,10 @@ final class AppModel: ObservableObject {
         case .studio:
             guard studioIsFresh else { return nil }
             return store.renderURL(for: current.id, fileName: StudioRenderer.fileName)
+        case .vocals, .accompaniment:
+            guard separationIsFresh else { return nil }
+            return store.renderURL(for: current.id, fileName: source == .vocals ? SeparationInfo.vocalsFile
+                                                                                  : SeparationInfo.accompanimentFile)
         }
     }
 
@@ -1151,6 +1163,124 @@ final class AppModel: ObservableObject {
             parts.append(l10n("export.result.clipped", l10n.number(Double(result.clippedSamples))))
         }
         return parts.joined(separator: " ")
+    }
+
+    // MARK: Vocal separation (phase 7)
+
+    static let separatorKey = "maqamstudio.separator"
+
+    /// The last separation of this project's song, while its stems exist.
+    @Published private(set) var separation: SeparationInfo?
+    /// Core ML models the user added that follow the separation contract.
+    @Published private(set) var separationModels: [CoreMLSeparator] = []
+
+    var separators: [VocalSeparator] { [ClassicalSeparator()] + separationModels }
+
+    var separatorId: String {
+        get {
+            let stored = UserDefaults.standard.string(forKey: Self.separatorKey) ?? "classical"
+            return separators.contains { $0.id == stored } ? stored : "classical"
+        }
+        set {
+            objectWillChange.send()
+            UserDefaults.standard.set(newValue, forKey: Self.separatorKey)
+        }
+    }
+
+    var separationIsFresh: Bool {
+        guard let separation, let original = document?.original else { return false }
+        return separation.sourceSHA256 == original.sha256
+    }
+
+    func refreshSeparationModels() {
+        separationModels = SeparationModels.installed()
+    }
+
+    /// Splits the song into a vocal and an accompaniment, both kept beside the
+    /// project; the original is not touched.
+    func separateVocal() {
+        guard activity == .idle, let store, let current = document, let original = current.original,
+              let source = store.originalURL(for: current),
+              let separator = separators.first(where: { $0.id == separatorId }) else { return }
+        importTask = Task { [weak self] in
+            guard let self else { return }
+            self.beginRendering(task: "separation", announcementKey: "announce.separation")
+            do {
+                try store.prepareRendersFolder(for: current.id)
+                // Two stereo float stems.
+                try store.ensureSpace(forBytes: Int64(Double(original.frames) / original.sampleRate * 48000 * 16) + 1_000_000)
+            } catch {
+                self.present(error) { .projectSaveFailed(detail: $0) }
+                self.activity = .idle
+                return
+            }
+            self.progressBase = 0
+            self.progressSpan = 1
+            let projectId = current.id
+            let token = UUID().uuidString
+            let vocalsTemporary = store.renderURL(for: projectId, fileName: "vocals-\(token).caf")
+            let restTemporary = store.renderURL(for: projectId, fileName: "accompaniment-\(token).caf")
+            let reportProgress: @Sendable (Double) -> Void = { [weak self] fraction in
+                Task { @MainActor in self?.renderProgress(fraction) }
+            }
+            let job = Task.detached(priority: .userInitiated) { () -> Result<(sampleRate: Double, frames: Int), Error> in
+                Result {
+                    try SeparationRenderer.separate(source: source, separator: separator, vocals: vocalsTemporary,
+                                                    accompaniment: restTemporary, progress: reportProgress)
+                }
+            }
+            let result = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
+            let cleanUp = { for url in [vocalsTemporary, restTemporary] { try? FileManager.default.removeItem(at: url) } }
+            guard !Task.isCancelled, self.document?.id == projectId else { cleanUp(); return }
+            switch result {
+            case .success(let stems):
+                do {
+                    try Self.replace(store.renderURL(for: projectId, fileName: SeparationInfo.vocalsFile), with: vocalsTemporary)
+                    try Self.replace(store.renderURL(for: projectId, fileName: SeparationInfo.accompanimentFile), with: restTemporary)
+                    let info = SeparationInfo(engineId: separator.id, sourceSHA256: original.sha256, separatedAt: Date(),
+                                              sampleRate: stems.sampleRate, frames: stems.frames)
+                    try store.saveSeparationInfo(info, for: projectId)
+                    self.separation = info
+                    self.listening = .vocals
+                    self.reloadKeepingPosition()
+                    self.announcer.announce(self.l10n("announce.separated"), important: true)
+                } catch {
+                    cleanUp()
+                    self.present(error) { .projectSaveFailed(detail: $0) }
+                }
+            case .failure(let failure):
+                cleanUp()
+                if !(failure is CancellationError) { self.present(failure) { .projectSaveFailed(detail: $0) } }
+            }
+            self.activity = .idle
+        }
+    }
+
+    /// A new project whose original is the separated vocal, ready for pitch
+    /// analysis, tuning and Auto Studio. The song's project keeps its stems.
+    func startProjectFromVocal() {
+        guard activity == .idle, separationIsFresh, let store, let current = document else { return }
+        let vocals = store.renderURL(for: current.id, fileName: SeparationInfo.vocalsFile)
+        importAudio(from: vocals, name: l10n("separation.projectname", current.name))
+    }
+
+    /// Compiles and checks a Core ML model, then offers it as an engine.
+    func installSeparationModel(from url: URL) {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let installed = try SeparationModels.install(from: url)
+            refreshSeparationModels()
+            separatorId = installed.id
+            announcer.announce(l10n("announce.modeladded", installed.name), important: true)
+        } catch {
+            present(error) { .separationModel(.unreadable(detail: $0)) }
+        }
+    }
+
+    func removeSeparationModel(_ model: CoreMLSeparator) {
+        try? SeparationModels.remove(model)
+        refreshSeparationModels()
     }
 
     // MARK: Maqam and tonic detection (phase 5)

@@ -15,7 +15,7 @@ VoiceOver.
 | 4 | Pitch correction: Natural/Strong/Robotic and every control, formant preservation and shift, manual note pinning, A/B with measured before/after | **Implemented (offline)**; live correction comes with the live mode |
 | 5 | Maqam and tonic detection with confidence, manual override | **Implemented** |
 | 6 | Auto Studio: analysis, adaptive chain, 12 genre profiles, decisions in words, Pro mode, A/B | **Implemented** |
-| 7 | Export, stem separation interface | Not started |
+| 7 | Export to WAV/FLAC/MP3 with loudness targets; vocal separation (built-in, plus a Core ML model slot) | **Implemented** |
 
 Nothing in the interface is a placeholder: a control appears only when the
 work behind it exists.
@@ -25,10 +25,12 @@ work behind it exists.
 ```
 MaqamStudio/
   Core/                 C++17 DSP core, no platform dependencies
-    include/maqam/      fft, levels, tuning, maqam, pitch_detector, notes
-    src/                implementations
+    include/maqam/      pitch, notes, maqam, correction, psola, detection, dsp,
+                        cleanup, studio, encode, export, separation
+    src/                implementations (and the generated MP3 tables)
     capi/maqam_core.h   the C interface Swift calls (plain C types only)
-    tests/              48 cases: quarter tones, maqam phrases, vibrato, melisma, noise
+    tests/              109 cases; third_party/ holds independent decoders
+                        used only by the tests (minimp3, dr_flac, dr_wav)
   App/
     Core/               Swift wrappers over the C API, AppError
     Audio/              AudioEngine (play + record), session, file reader
@@ -37,9 +39,11 @@ MaqamStudio/
     Localization/       L10n: runtime Arabic/English switching
     UI/                 SwiftUI views
     Resources/          ar.lproj, en.lproj, asset catalog
-  Tests/Unit            XCTest: projects, audio files, maqam, localization, undo
-  Tests/Fixtures        synthesised WAVs (tools/make_fixtures.py)
-  tools/                localization checker, fixture and icon generators
+  Tests/Unit            XCTest: projects, audio, maqam, tuning, detection, studio,
+                        export, separation, localization, undo
+  Tests/Fixtures        synthesised WAVs (tools/make_fixtures.py) and two tiny
+                        Core ML test models (tools/make_separation_fixtures.py)
+  tools/                localization checker; fixture, icon and MP3 table generators
   scripts/              ci-core.sh (any OS), ci-ios.sh (macOS)
   project.yml           XcodeGen project definition
 ```
@@ -169,6 +173,70 @@ peaks at or below -1 dBFS; hum drops by at least 20 dB against the voice;
 noise reduction removes about 13 dB of steady noise while the voice moves by
 less than 0.2 dB; the K-weighting filter matches the BS.1770 reference
 coefficients at 48 kHz.
+
+## Export
+
+WAV (16/24-bit or 32-bit float), FLAC (16/24-bit) and MP3 (128–320 kbit/s),
+at 44.1 or 48 kHz, stereo or mono, from the original, the tuned, the studio,
+or a separated stem — only versions that are current. All three encoders are
+written in the core, so export works offline and the same everywhere:
+
+* FLAC: fixed and LPC prediction, partitioned Rice residuals, the best of
+  four stereo decorrelations per block, and the audio's MD5 in STREAMINFO.
+* MP3: MPEG-1 Layer III with a polyphase filter bank and MDCT, a masking
+  model, rate and distortion loops, mid/side stereo and a bit reservoir.
+  Long blocks only, so a very sharp attack can smear slightly ahead of
+  itself; sung voice rarely has one. Its Huffman codes and window are
+  derived by `tools/make_mp3_tables.py` from the public-domain minimp3
+  decoder and checked (complete prefix codes; the window equals the
+  standard's coefficients); CI regenerates them to prove they still match.
+* Sample-rate conversion: windowed-sinc polyphase at the exact rational
+  ratio (128 taps per phase, aliases more than 90 dB down), no added delay.
+* A loudness target (−9, −14, −16 or −23 LUFS) measures the file, applies
+  the gain, and holds peaks under −1 dB true peak with a 4× oversampled
+  detector driving the limiter. Integer formats get TPDF dither.
+
+The numbers reported after an export (length, loudness, true peak, size,
+limiting, clipping) are measured from the samples written. Files go to
+`Documents/Exports`, visible in the Files app, and can be shared.
+
+Measured in the tests, with independent decoders (minimp3, dr_flac and
+dr_wav in the core tests; Apple's own decoders in the app tests): WAV and
+FLAC come back bit for bit; MP3 decodes at unity gain (within 1%) with
+32–53 dB SNR on a sung test signal, depending on bit rate, with a fixed
+1056-sample decoder delay; the file size follows the bit rate exactly.
+
+## Vocal separation
+
+For a song with music: separation makes a vocal stem and an accompaniment
+stem, which always add back up to the song exactly. Listen to either with
+the version picker, export either, or start a new project from the vocal and
+tune and process it on its own. The song itself is never changed.
+
+The built-in method is signal processing, not AI, and runs on the device:
+the accompaniment repeats and the voice does not (REPET-SIM: each moment is
+compared with the most similar moments elsewhere in the song, and what they
+share is the music); the voice is almost always mixed to the centre; and
+nothing below 80 Hz is voice. On a synthetic test song (a centred voice
+over a repeating, panned band) the vocal improves from −7.3 dB to +2.2 dB
+signal-to-distortion in stereo, and to +1.8 dB from a mono mix. Real songs
+vary more than a loop, so expect some music left in the vocal; it works best
+on stereo mixes with a centred voice.
+
+Separation is modular: an engine only decides how much of each
+time-frequency bin is voice. Any Core ML model that follows this contract
+can be added from the app (Methods and models…) and chosen instead:
+
+| | Name | Type and shape | Meaning |
+|---|---|---|---|
+| input | `magnitudes` | Float32 `[1, 256, 2049]` | magnitudes of the song's mid channel, 4096-point STFT, Hann, hop 1024 |
+| output | `vocal_mask` | Float32 `[1, 256, 2049]` | 0..1, how much of each bin is voice |
+| metadata | `maqam.sample_rate` | string, optional | the model's sample rate (default 44100); the song is converted to it |
+
+Models are compiled and checked when added, and refused with the reason if
+they break the contract. No model ships with the app, and models run on the
+device; no audio is uploaded. The tests prove the plumbing with two tiny
+fixture models (`tools/make_separation_fixtures.py`), not a separator.
 
 ## Projects
 

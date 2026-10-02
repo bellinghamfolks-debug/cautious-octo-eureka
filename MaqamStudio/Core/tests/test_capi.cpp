@@ -355,3 +355,27 @@ TEST_CASE("the C export path writes a file another decoder reads, and refuses ba
     settings.sample_rate = 48000.0;
     CHECK(mq_exporter_create(&settings, 48000.0, 1, "/nonexistent-folder/x.mp3") == nullptr);
 }
+
+TEST_CASE("the C separation path renders stems that add up to the mix") {
+    CHECK(mq_separation_create(0.0) == nullptr);
+    MQSeparation* separation = mq_separation_create(44100.0);
+    CHECK(separation != nullptr);
+    const std::vector<float> tone = synth::tone(330.0, 2.0, 44100.0, 0.3);
+    std::vector<float> stereo(2 * tone.size());
+    for (std::size_t i = 0; i < tone.size(); ++i) { stereo[2 * i] = tone[i]; stereo[2 * i + 1] = 0.5f * tone[i]; }
+    CHECK(mq_separation_analyse(separation, stereo.data(), tone.size()) == MQ_OK);
+    CHECK(mq_separation_finish_analysis(separation) == MQ_OK);
+    const std::size_t frames = mq_separation_frame_count(separation);
+    CHECK(frames == (tone.size() + 3 * 1024 + 1023) / 1024);
+    std::vector<float> magnitudes(10 * mq_separation_bins());
+    CHECK(mq_separation_magnitudes(separation, 0, 10, magnitudes.data()) == MQ_OK);
+    CHECK(mq_separation_estimate_classical(separation, 0, frames) == MQ_OK);
+    CHECK(mq_separation_render(separation, stereo.data(), tone.size()) == MQ_OK);
+    CHECK(mq_separation_finish_render(separation) == MQ_OK);
+    std::vector<float> vocals(stereo.size()), rest(stereo.size());
+    CHECK(mq_separation_pull(separation, vocals.data(), rest.data(), tone.size()) == tone.size());
+    double worst = 0.0;
+    for (std::size_t i = 0; i < stereo.size(); ++i) worst = std::max(worst, std::fabs(static_cast<double>(vocals[i]) + rest[i] - stereo[i]));
+    CHECK(worst < 1e-5);
+    mq_separation_destroy(separation);
+}

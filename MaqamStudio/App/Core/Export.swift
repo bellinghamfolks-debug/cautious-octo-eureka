@@ -24,7 +24,7 @@ enum ExportFormat: String, Codable, CaseIterable, Identifiable {
 
 /// Which version of the take to export.
 enum ExportSource: String, Codable, CaseIterable, Identifiable {
-    case original, tuned, studio
+    case original, tuned, studio, vocals, accompaniment
     var id: String { rawValue }
 }
 

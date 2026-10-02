@@ -22,6 +22,7 @@ add_library(maqam_core STATIC
     src/mp3.cpp
     src/mp3_tables.cpp
     src/export.cpp
+    src/separation.cpp
     capi/maqam_core.cpp)
 target_include_directories(maqam_core PUBLIC include capi)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
@@ -43,6 +44,7 @@ add_executable(maqam_core_tests
     tests/test_cleanup.cpp
     tests/test_studio.cpp
     tests/test_export.cpp
+    tests/test_separation.cpp
     tests/test_capi.cpp
     tests/third_party/decoders.cpp)
 target_link_libraries(maqam_core_tests PRIVATE maqam_core)

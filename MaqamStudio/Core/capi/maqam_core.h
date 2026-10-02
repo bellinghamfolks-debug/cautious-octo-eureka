@@ -478,6 +478,32 @@ MQStatus mq_exporter_push(MQExporter *exporter, const float *interleaved, size_t
 MQStatus mq_exporter_finish(MQExporter *exporter, MQExportStats *out);
 void mq_exporter_destroy(MQExporter *exporter);
 
+/* ---- Vocal separation --------------------------------------------------- */
+/* Two passes over a stereo song (duplicate mono into both channels):
+ * analyse, decide masks (classical estimate, or masks from a model fed with
+ * the magnitudes), then render the vocal and accompaniment stems, which add
+ * back up to the mix exactly. Frames are 4096-point STFT frames, hop 1024. */
+
+typedef struct MQSeparation MQSeparation;
+
+size_t mq_separation_bins(void);
+size_t mq_separation_hop(void);
+MQSeparation *mq_separation_create(double sample_rate);
+MQStatus mq_separation_analyse(MQSeparation *separation, const float *stereo, size_t frames);
+MQStatus mq_separation_finish_analysis(MQSeparation *separation);
+size_t mq_separation_frame_count(const MQSeparation *separation);
+/* The built-in, non-ML estimate for frames [first, first + count). */
+MQStatus mq_separation_estimate_classical(MQSeparation *separation, size_t first_frame, size_t count);
+/* Mid-channel magnitudes, [count][bins]; frames past the end read as zero. */
+MQStatus mq_separation_magnitudes(const MQSeparation *separation, size_t first_frame, size_t count, float *out);
+/* Vocal masks 0..1, [count][bins]. */
+MQStatus mq_separation_set_masks(MQSeparation *separation, size_t first_frame, size_t count, const float *masks);
+MQStatus mq_separation_render(MQSeparation *separation, const float *stereo, size_t frames);
+MQStatus mq_separation_finish_render(MQSeparation *separation);
+/* Takes up to `capacity` ready frames of each stem (interleaved stereo). */
+size_t mq_separation_pull(MQSeparation *separation, float *vocals, float *accompaniment, size_t capacity);
+void mq_separation_destroy(MQSeparation *separation);
+
 #ifdef __cplusplus
 }
 #endif
