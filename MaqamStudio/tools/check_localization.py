@@ -6,6 +6,7 @@ Fails when:
   * the two tables have different keys,
   * a value is empty,
   * a key's placeholders differ between languages (count, or positional order),
+  * a value has a % that is not a placeholder or %% (String(format:) would read it as one),
   * a key is defined twice in one table.
 
 Runs anywhere Python 3 does, so CI checks it before a Mac is involved.
@@ -57,6 +58,8 @@ def placeholders(value: str) -> list[str]:
     return [f"{index + 1}{kind}" for index, (_, kind) in enumerate(found)]
 
 
+# A % that does not start %@ or %n$@ (checked after removing %%).
+STRAY_PERCENT = re.compile(r"%(?!@|\d+\$@)")
 LITERAL = re.compile(r'"([a-z]+(?:\.[a-z0-9_]+)+)"')
 NOT_KEYS = re.compile(r"\.(json|bak|lock|tmp|wav|caf)$")
 SYMBOLS = re.compile(r"(systemName|systemImage):.*$", re.M)
@@ -98,6 +101,8 @@ def main() -> int:
         for key, value in entries.items():
             if not value.strip():
                 problems.append(f"{lang}: empty value for {key}")
+            if STRAY_PERCENT.search(value.replace("%%", "")):
+                problems.append(f"{lang}: stray % in {key} (write %% for a percent sign): {value!r}")
     for key in sorted(set(ar) & set(en)):
         if placeholders(ar[key]) != placeholders(en[key]):
             problems.append(f"placeholders differ for {key}: ar={ar[key]!r} en={en[key]!r}")
