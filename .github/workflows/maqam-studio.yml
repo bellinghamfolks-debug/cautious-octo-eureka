@@ -68,5 +68,6 @@ jobs:
           path: |
             MaqamStudio/build/ci/MaqamStudio-unsigned.ipa
             MaqamStudio/build/ci/*.log
+            MaqamStudio/build/ci/Tests.xcresult.zip
           if-no-files-found: warn
           retention-days: 14

@@ -31,6 +31,7 @@ workflows:
     artifacts:
       - $CM_BUILD_DIR/MaqamStudio/build/ci/MaqamStudio-unsigned.ipa
       - $CM_BUILD_DIR/MaqamStudio/build/ci/*.log
+      - $CM_BUILD_DIR/MaqamStudio/build/ci/Tests.xcresult.zip
     # Signing and TestFlight: add an App Store Connect integration in Codemagic,
     # then replace the unsigned archive with `xcode-project use-profiles` and
     # `xcode-project build-ipa`. No signing material is stored in this repository.

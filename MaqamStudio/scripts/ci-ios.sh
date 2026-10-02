@@ -67,6 +67,26 @@ for frame in crashed.get("frames", [])[:40]:
 PY
   done < <(find "$REPORTS" -maxdepth 2 \( -name 'MaqamStudio*.ips' -o -name 'xctest*.ips' \) -newer "$STAMP" 2>/dev/null | head -3)
   if [[ $found == 0 ]]; then echo "(no new crash reports in $REPORTS)" >&2; fi
+
+  # The app's own last words: an uncaught exception's reason, a Swift fatal
+  # error message, or a dyld failure, from the simulator's unified log.
+  echo "----- simulator log for MaqamStudio (last 10 minutes)" >&2
+  xcrun simctl spawn "$SIMULATOR_ID" log show --last 10m --style compact \
+    --predicate 'process == "MaqamStudio" AND (messageType == error OR messageType == fault OR eventMessage CONTAINS[c] "exception" OR eventMessage CONTAINS[c] "fatal" OR eventMessage CONTAINS[c] "abort" OR eventMessage CONTAINS[c] "dyld")' \
+    2>&1 | tail -80 >&2 || true
+
+  # Diagnostics xcodebuild kept in the result bundle (stdout/stderr, crash logs).
+  local diagnostics="$OUT/diagnostics"
+  rm -rf "$diagnostics"
+  if xcrun xcresulttool export diagnostics --path "$OUT/Tests.xcresult" --output-path "$diagnostics" >/dev/null 2>&1; then
+    while IFS= read -r file; do
+      echo "----- $file" >&2
+      tail -60 "$file" >&2
+    done < <(find "$diagnostics" -type f \( -name '*.crash' -o -name '*.ips' -o -name '*StandardOutputAndStandardError*' -o -name '*.txt' \) 2>/dev/null | head -8)
+  else
+    echo "(could not export diagnostics from the result bundle)" >&2
+  fi
+  (cd "$OUT" && zip -qry Tests.xcresult.zip Tests.xcresult) || true
 }
 
 if [[ "${SKIP_TESTS:-0}" != "1" ]]; then
