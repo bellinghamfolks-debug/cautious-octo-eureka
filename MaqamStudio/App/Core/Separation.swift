@@ -304,6 +304,9 @@ final class StereoReader {
 
         func readInput() throws -> Bool {
             try Task.checkCancellation()
+            // The converter keeps asking after the last chunk; reading at the
+            // end is an error in AVAudioFile, not an empty read.
+            guard file.framePosition < file.length else { return false }
             do { try file.read(into: inBuffer, frameCount: capacity) } catch { throw AppError.corruptedAudio }
             fraction = Double(file.framePosition) / Double(total)
             return inBuffer.frameLength > 0
