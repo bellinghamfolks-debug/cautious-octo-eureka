@@ -1174,7 +1174,7 @@ final class AppModel: ObservableObject {
     /// Core ML models the user added that follow the separation contract.
     @Published private(set) var separationModels: [CoreMLSeparator] = []
 
-    var separators: [VocalSeparator] { [ClassicalSeparator()] + separationModels }
+    var separators: [VocalSeparator] { [ClassicalSeparator() as VocalSeparator] + separationModels.map { $0 as VocalSeparator } }
 
     var separatorId: String {
         get {
