@@ -56,9 +56,9 @@ final class StudioTests: XCTestCase {
 
         let (plan, reasons) = try session.plan(for: .arabicPop)
         let codes = Set(reasons.map(\.code))
-        XCTAssertTrue(codes.contains(Int(MQ_REASON_DENOISE.rawValue)), "noise is found and removed")
-        XCTAssertTrue(codes.contains(Int(MQ_REASON_HUM.rawValue)), "hum is found and removed")
-        XCTAssertTrue(codes.contains(Int(MQ_REASON_LOUDNESS.rawValue)))
+        XCTAssertTrue(codes.contains(MQ_REASON_DENOISE), "noise is found and removed")
+        XCTAssertTrue(codes.contains(MQ_REASON_HUM), "hum is found and removed")
+        XCTAssertTrue(codes.contains(MQ_REASON_LOUDNESS))
         XCTAssertGreaterThan(plan.denoiseDb, 0)
         XCTAssertEqual(plan.humHz, 50)
 
@@ -157,7 +157,7 @@ final class StudioTests: XCTestCase {
                 XCTAssertNotEqual(l10n(profile.key + ".about"), profile.key + ".about")
             }
             let unknown = StudioText.reason(StudioReason(code: 0, a: 0, b: 0), l10n: l10n)
-            for code in Int(MQ_REASON_HIGH_PASS.rawValue)...Int(MQ_REASON_TONAL.rawValue) {
+            for code in MQ_REASON_HIGH_PASS...MQ_REASON_TONAL {
                 let sentence = StudioText.reason(StudioReason(code: code, a: 120, b: 6), l10n: l10n)
                 XCTAssertFalse(sentence.hasPrefix("reason."), "\(language) \(code)")
                 XCTAssertNotEqual(sentence, unknown, "\(language) \(code)")
