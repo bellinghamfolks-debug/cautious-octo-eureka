@@ -21,6 +21,8 @@ enum AppError: Error, Equatable {
     case maqamInvalid(name: String)
     case libraryUnreadable
     case libraryTooNew
+    case exportFailed(detail: String)
+    case exportSettings(problem: Int32)
 
     /// Short title for alerts.
     var titleKey: String {
@@ -37,6 +39,7 @@ enum AppError: Error, Equatable {
         case .projectCorrupted, .projectNotFound: return "error.project.title"
         case .projectSaveFailed: return "error.save.title"
         case .maqamInvalid, .libraryUnreadable, .libraryTooNew: return "error.library.title"
+        case .exportFailed, .exportSettings: return "error.export.title"
         }
     }
 
@@ -61,6 +64,12 @@ enum AppError: Error, Equatable {
         case .maqamInvalid(let name): return l10n("error.maqaminvalid.message", name)
         case .libraryUnreadable: return l10n("error.library.message")
         case .libraryTooNew: return l10n("error.librarynew.message")
+        case .exportFailed(let detail): return l10n("error.export.message", detail)
+        case .exportSettings(let problem):
+            switch problem {
+            case Int32(MQ_EXPORT_MP3_SAMPLE_RATE.rawValue): return l10n("error.export.mp3rate")
+            default: return l10n("error.export.settings")
+            }
         }
     }
 

@@ -202,6 +202,7 @@ final class AppModel: ObservableObject {
         analysis = nil
         tuningRender = nil
         studioRender = nil
+        exportResult = nil
         listening = .original
         detection = nil
         history.clear()
@@ -758,8 +759,11 @@ final class AppModel: ObservableObject {
 
     private var progressBase = 0.0
     private var progressSpan = 1.0
+    /// "tuning", "studio" or "export": what progress and cancellation announce.
+    private var renderTask = "tuning"
 
     private func beginRendering(task: String, announcementKey: String) {
+        renderTask = task
         stopTuner()
         if listening != .original {
             listening = .original
@@ -846,8 +850,8 @@ final class AppModel: ObservableObject {
     private func renderProgress(_ fraction: Double) {
         guard case .rendering = activity else { return }
         activity = .rendering(fraction: progressBase + progressSpan * min(1, max(0, fraction)))
-        announcer.progress(task: "tuning", fraction: fraction) { [l10n] reached in
-            l10n("announce.tuningprogress", l10n.percent(reached))
+        announcer.progress(task: renderTask, fraction: fraction) { [l10n, renderTask] reached in
+            l10n("announce.\(renderTask)progress", l10n.percent(reached))
         }
     }
 
@@ -855,7 +859,7 @@ final class AppModel: ObservableObject {
         guard case .rendering = activity else { return }
         importTask?.cancel()
         activity = .idle
-        announcer.announce(l10n("announce.tuningcancelled"))
+        announcer.announce(l10n("announce.\(renderTask)cancelled"))
     }
 
     /// Switches between the original and the tuned render at the same moment.
@@ -1039,6 +1043,114 @@ final class AppModel: ObservableObject {
         guard let render = studioRender else { return "" }
         return l10n("studio.result", l10n.number(render.before.integratedLufs, fractionDigits: 1),
                     l10n.number(render.afterLufs, fractionDigits: 1), l10n.number(render.afterPeakDbfs, fractionDigits: 1))
+    }
+
+    // MARK: Export (phase 7)
+
+    static let exportOptionsKey = "maqamstudio.export.options"
+
+    /// The last export's choices, kept between exports and launches.
+    var exportOptions: ExportOptions {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: Self.exportOptionsKey),
+                  let options = try? JSONDecoder().decode(ExportOptions.self, from: data) else { return ExportOptions() }
+            return options.normalized()
+        }
+        set {
+            objectWillChange.send()
+            UserDefaults.standard.set(try? JSONEncoder().encode(newValue.normalized()), forKey: Self.exportOptionsKey)
+        }
+    }
+
+    @Published private(set) var exportResult: ExportResult?
+
+    /// Versions that can be exported now: a render only while it is current.
+    var exportSources: [ExportSource] {
+        ExportSource.allCases.filter { exportURL(for: $0) != nil }
+    }
+
+    /// The most finished current version.
+    var preferredExportSource: ExportSource {
+        studioIsFresh ? .studio : tuningIsFresh ? .tuned : .original
+    }
+
+    private func exportURL(for source: ExportSource) -> URL? {
+        guard let store, let current = document else { return nil }
+        switch source {
+        case .original: return store.originalURL(for: current)
+        case .tuned:
+            guard tuningIsFresh, let render = tuningRender else { return nil }
+            return store.renderURL(for: current.id, fileName: render.fileName)
+        case .studio:
+            guard studioIsFresh else { return nil }
+            return store.renderURL(for: current.id, fileName: StudioRenderer.fileName)
+        }
+    }
+
+    /// Writes the chosen version to Documents/Exports, where the Files app and
+    /// the share sheet can reach it. The original stays untouched.
+    func export(_ source: ExportSource) {
+        guard activity == .idle, let store, let current = document, let original = current.original,
+              let input = exportURL(for: source) else { return }
+        let options = exportOptions
+        importTask = Task { [weak self] in
+            guard let self else { return }
+            self.beginRendering(task: "export", announcementKey: "announce.export")
+            self.exportResult = nil
+            let destination: URL
+            do {
+                let folder = try store.prepareExportsFolder()
+                // Uncompressed stereo float at the target rate is the most an export can need.
+                let seconds = Double(original.frames) / original.sampleRate
+                try store.ensureSpace(forBytes: Int64(seconds * Double(options.sampleRate) * 2 * 4) + 1_000_000)
+                destination = folder.appendingPathComponent(AudioExporter.fileName(
+                    projectName: current.name, source: source, format: options.format,
+                    suffix: self.l10n("export.suffix." + source.rawValue)))
+            } catch {
+                self.present(error) { .exportFailed(detail: $0) }
+                self.activity = .idle
+                return
+            }
+            self.progressBase = 0
+            self.progressSpan = 1
+            let reportProgress: @Sendable (Double) -> Void = { [weak self] fraction in
+                Task { @MainActor in self?.renderProgress(fraction) }
+            }
+            let job = Task.detached(priority: .userInitiated) { () -> Result<ExportResult, Error> in
+                Result {
+                    try AudioExporter.export(source: input, kind: source, options: options, destination: destination,
+                                             progress: reportProgress)
+                }
+            }
+            let result = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
+            guard !Task.isCancelled else { try? FileManager.default.removeItem(at: destination); return }
+            switch result {
+            case .success(let exported):
+                self.exportResult = exported
+                self.announcer.announce(self.exportResultText, important: true)
+            case .failure(let failure):
+                try? FileManager.default.removeItem(at: destination)
+                if !(failure is CancellationError) { self.present(failure) { .exportFailed(detail: $0) } }
+            }
+            self.activity = .idle
+        }
+    }
+
+    /// File, length, format, measured loudness and size, for the screen and VoiceOver.
+    var exportResultText: String {
+        guard let result = exportResult else { return "" }
+        var parts = [l10n("export.result.file", result.url.lastPathComponent, l10n.clock(result.seconds)),
+                     ExportText.format(result.options, l10n: l10n),
+                     l10n("export.result.level", l10n.number(result.lufs, fractionDigits: 1),
+                          l10n.number(result.truePeakDbtp, fractionDigits: 1)),
+                     l10n("export.result.size", l10n.number(Double(result.bytes) / 1_048_576, fractionDigits: 1))]
+        if result.limitingDb > 0.5 {
+            parts.append(l10n("export.result.limited", l10n.number(result.limitingDb, fractionDigits: 1)))
+        }
+        if result.clippedSamples > 0 {
+            parts.append(l10n("export.result.clipped", l10n.number(Double(result.clippedSamples))))
+        }
+        return parts.joined(separator: " ")
     }
 
     // MARK: Maqam and tonic detection (phase 5)

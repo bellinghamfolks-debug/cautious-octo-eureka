@@ -86,7 +86,8 @@ final class LocalizationTests: XCTestCase {
             .microphonePermissionDenied, .noInputDevice, .insufficientStorage(requiredMegabytes: 300),
             .audioEngineFailed(detail: "d"), .recordingFailed(detail: "d"), .playbackFailed(detail: "d"),
             .projectCorrupted(name: "n"), .projectSaveFailed(detail: "d"), .projectNotFound, .coreFailure(code: 2),
-            .maqamInvalid(name: "m"), .libraryUnreadable, .libraryTooNew,
+            .maqamInvalid(name: "m"), .libraryUnreadable, .libraryTooNew, .exportFailed(detail: "f"),
+            .exportSettings(problem: Int32(MQ_EXPORT_MP3_SAMPLE_RATE.rawValue)), .exportSettings(problem: 3),
         ]
         for language in L10n.Language.allCases {
             let l10n = L10n(language: language, defaults: isolatedDefaults())

@@ -161,6 +161,14 @@ final class ProjectStore {
 
     // MARK: Renders (derived audio, never the original)
 
+    /// Finished exports, beside the projects: Documents/Exports, visible in Files.
+    var exportsFolder: URL { root.deletingLastPathComponent().appendingPathComponent("Exports", isDirectory: true) }
+
+    func prepareExportsFolder() throws -> URL {
+        try fileManager.createDirectory(at: exportsFolder, withIntermediateDirectories: true)
+        return exportsFolder
+    }
+
     func renderURL(for id: UUID, fileName: String) -> URL {
         folder(for: id).appendingPathComponent(Self.rendersFolder, isDirectory: true).appendingPathComponent(fileName)
     }

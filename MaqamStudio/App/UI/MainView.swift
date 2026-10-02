@@ -114,6 +114,7 @@ struct MainView: View {
             TuningSection { showingMaqam = true }
             StudioSection()
         }
+        ExportSection()
         if let analysis = model.analysis, let original = model.document?.original {
             AnalysisSummaryView(levels: analysis.levels, original: original)
         }
