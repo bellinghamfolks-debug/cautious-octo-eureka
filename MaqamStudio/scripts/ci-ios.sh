@@ -119,8 +119,18 @@ if [[ "${SKIP_TESTS:-0}" != "1" ]]; then
     run_tests
   fi
   if ! grep -q "\*\* TEST SUCCEEDED \*\*" "$OUT/test.log"; then
-    grep -E "error:|failed|XCTAssert|crashed|signal" "$OUT/test.log" | head -100 >&2 || true
+    # Long diagnostics first; the summary comes last so it is inside the
+    # last lines a CI page shows by default.
     print_crash_reports
+    {
+      echo
+      echo "================ WHY THE TESTS FAILED ================"
+      echo "Xcode: $(xcodebuild -version | head -1); simulator: $DEVICE_TYPE on $RUNTIME_ID"
+      grep -E "Executed [0-9]+ tests" "$OUT/test.log" | tail -1 || true
+      grep -E "Test Case .* failed|: error: |XCTAssert|crashed|never finished bootstrapping|Fatal error|Terminating app" "$OUT/test.log" \
+        | grep -v "warning: " | sed 's/^[[:space:]]*//' | awk '!seen[$0]++' | head -30 || true
+      echo "======================================================"
+    } | tee "$OUT/failure-summary.txt" >&2
     echo "Tests failed" >&2
     exit 1
   fi

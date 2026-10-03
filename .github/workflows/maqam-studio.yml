@@ -74,5 +74,6 @@ jobs:
             MaqamStudio/build/ci/MaqamStudio-unsigned.ipa
             MaqamStudio/build/ci/*.log
             MaqamStudio/build/ci/Tests.xcresult.zip
+            MaqamStudio/build/ci/failure-summary.txt
           if-no-files-found: warn
           retention-days: 14
