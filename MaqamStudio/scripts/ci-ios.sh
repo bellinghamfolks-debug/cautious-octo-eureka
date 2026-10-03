@@ -14,25 +14,32 @@ command -v xcodegen >/dev/null || brew install xcodegen
 xcodebuild -version
 xcodegen generate
 
-# The newest available iPhone simulator, whatever this Xcode ships with.
-SIMULATOR_ID="$(xcrun simctl list devices available -j | python3 -c '
-import json, sys
-runtimes = json.load(sys.stdin)["devices"]
-best = None
-for runtime, devices in runtimes.items():
-    if "iOS" not in runtime:
-        continue
-    version = tuple(int(p) for p in runtime.rsplit("iOS-", 1)[-1].split("-") if p.isdigit())
-    for device in devices:
-        if device["name"].startswith("iPhone") and (best is None or version > best[0]):
-            best = (version, device["udid"], device["name"])
-print(best[1] if best else "")
+# A fresh iPhone simulator on the runtime that matches this Xcode's SDK.
+# Reusing a machine's pre-made simulator crashed the app at launch on
+# Codemagic ("signal abrt before establishing connection", no crash report)
+# while the same Xcode build passed on a clean device elsewhere.
+SDK_VERSION="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+read -r RUNTIME_ID DEVICE_TYPE <<<"$(xcrun simctl list -j runtimes devicetypes | SDK="$SDK_VERSION" python3 -c '
+import json, os, sys
+data = json.load(sys.stdin)
+def version(text):
+    return tuple(int(p) for p in text.split(".") if p.isdigit())
+sdk = version(os.environ["SDK"])
+runtimes = [r for r in data["runtimes"] if r.get("isAvailable") and r.get("platform", "iOS") == "iOS" and "iOS" in r["identifier"]]
+# The SDK'"'"'s own runtime if installed, else the newest one not newer than the SDK.
+fitting = [r for r in runtimes if version(r["version"])[:2] <= sdk[:2]] or runtimes
+runtime = max(fitting, key=lambda r: version(r["version"]))
+supported = {d["identifier"] for d in runtime.get("supportedDeviceTypes", [])}
+phones = [d for d in data["devicetypes"] if d["name"].startswith("iPhone") and (not supported or d["identifier"] in supported)]
+# Prefer a Pro model, newest first by name.
+phones.sort(key=lambda d: ("Pro" in d["name"], d["name"]))
+print(runtime["identifier"], phones[-1]["identifier"])
 ')"
-if [[ -z "$SIMULATOR_ID" ]]; then
-  echo "No iPhone simulator available" >&2
-  exit 1
-fi
-echo "Simulator: $SIMULATOR_ID"
+SIMULATOR_ID="$(xcrun simctl create "MaqamStudio CI" "$DEVICE_TYPE" "$RUNTIME_ID")"
+cleanup_simulator() { xcrun simctl shutdown "$SIMULATOR_ID" >/dev/null 2>&1 || true; xcrun simctl delete "$SIMULATOR_ID" >/dev/null 2>&1 || true; }
+trap cleanup_simulator EXIT
+xcrun simctl bootstatus "$SIMULATOR_ID" -b
+echo "Simulator: $SIMULATOR_ID ($DEVICE_TYPE, $RUNTIME_ID, SDK $SDK_VERSION)"
 
 # Crash reports from before this run, so only new ones are shown on failure.
 REPORTS="$HOME/Library/Logs/DiagnosticReports"
@@ -90,13 +97,27 @@ PY
 }
 
 if [[ "${SKIP_TESTS:-0}" != "1" ]]; then
-  xcodebuild test \
-    -project MaqamStudio.xcodeproj \
-    -scheme MaqamStudio \
-    -destination "id=$SIMULATOR_ID" \
-    -resultBundlePath "$OUT/Tests.xcresult" \
-    CODE_SIGNING_ALLOWED=NO \
-    | tee "$OUT/test.log" | grep -E "error:|warning: .*MaqamStudio/App|Test Case .* (passed|failed)|Executed|\*\* TEST" || true
+  run_tests() {
+    rm -rf "$OUT/Tests.xcresult"
+    xcodebuild test \
+      -project MaqamStudio.xcodeproj \
+      -scheme MaqamStudio \
+      -destination "id=$SIMULATOR_ID" \
+      -resultBundlePath "$OUT/Tests.xcresult" \
+      CODE_SIGNING_ALLOWED=NO \
+      | tee "$OUT/test.log" | grep -E "error:|warning: .*MaqamStudio/App|Test Case .* (passed|failed)|Executed|\*\* TEST" || true
+  }
+  run_tests
+  # A launch that never reached the tests is the simulator's failure, not a
+  # test result: restart the device and try once more.
+  if ! grep -q "\*\* TEST SUCCEEDED \*\*" "$OUT/test.log" && grep -q "never finished bootstrapping\|before establishing connection" "$OUT/test.log"; then
+    echo "The app did not start on the simulator; rebooting it and running the tests again." >&2
+    print_crash_reports
+    xcrun simctl shutdown "$SIMULATOR_ID" >/dev/null 2>&1 || true
+    xcrun simctl erase "$SIMULATOR_ID"
+    xcrun simctl bootstatus "$SIMULATOR_ID" -b
+    run_tests
+  fi
   if ! grep -q "\*\* TEST SUCCEEDED \*\*" "$OUT/test.log"; then
     grep -E "error:|failed|XCTAssert|crashed|signal" "$OUT/test.log" | head -100 >&2 || true
     print_crash_reports
