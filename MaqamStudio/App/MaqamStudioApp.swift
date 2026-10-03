@@ -17,7 +17,12 @@ struct MaqamStudioApp: App {
                 .environmentObject(l10n)
                 .environmentObject(model)
                 .environmentObject(model.library)
-                .task { model.start() }
+                .task {
+                    // As the host of the unit tests the app only has to start:
+                    // no project restore, no audio. The tests build their own objects.
+                    guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
+                    model.start()
+                }
         }
     }
 }

@@ -93,13 +93,10 @@ final class AppModel: ObservableObject {
         observeSystemEvents()
     }
 
-    /// Runs once at launch: audio session, project list, crash recovery.
+    /// Runs once at launch: project list and crash recovery. The audio session
+    /// is configured when sound is first needed (play, record, tune), so
+    /// launching never waits on the system audio service.
     func start() {
-        do {
-            try session.configure()
-        } catch let failure as AppError {
-            error = failure
-        } catch {}
         refreshProjects()
         refreshSeparationModels()
         if let crashed = projects.first(where: { $0.needsRecovery }) {
@@ -555,6 +552,7 @@ final class AppModel: ObservableObject {
         guard hasAudio, activity == .idle else { return }
         stopTuner()
         do {
+            try session.configure()
             if position >= duration - 0.05 { try engine.seek(to: 0) }
             try engine.play()
             playbackState = engine.state

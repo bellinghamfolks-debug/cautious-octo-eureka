@@ -18,7 +18,21 @@ final class AudioEngine {
         var clipped: Bool
     }
 
-    private let engine = AVAudioEngine()
+    /// Created on first use (play, record, tune), never at launch. Building
+    /// the graph opens the audio device; at launch that made the app wait on
+    /// the system audio service, and where the service did not answer
+    /// (CoreAudio "RPC timeout ... deadlocked") the system aborted the app.
+    private var engineStorage: AVAudioEngine?
+    private var engine: AVAudioEngine {
+        if let engineStorage { return engineStorage }
+        let created = AVAudioEngine()
+        created.attach(player)
+        created.connect(player, to: created.mainMixerNode, format: playbackFile?.processingFormat)
+        NotificationCenter.default.addObserver(self, selector: #selector(configurationChanged),
+                                               name: .AVAudioEngineConfigurationChange, object: created)
+        engineStorage = created
+        return created
+    }
     private let player = AVAudioPlayerNode()
     private let writerQueue = DispatchQueue(label: "maqamstudio.recording-writer", qos: .userInitiated)
     /// Live pitch detection runs here, fed copies of the input; never on the render thread.
@@ -43,18 +57,11 @@ final class AudioEngine {
     var onLivePitch: ((LivePitch) -> Void)?
     private var lastPitchReport = Date.distantPast
 
-    init() {
-        engine.attach(player)
-        // Connected from the start so the graph is complete even before a file
-        // is loaded; load(url:) reconnects with the file's own format.
-        engine.connect(player, to: engine.mainMixerNode, format: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(configurationChanged),
-                                               name: .AVAudioEngineConfigurationChange, object: engine)
-    }
+    init() {}
 
     deinit {
         NotificationCenter.default.removeObserver(self)
-        engine.stop()
+        engineStorage?.stop()
     }
 
     // MARK: Playback
@@ -69,8 +76,12 @@ final class AudioEngine {
         do {
             let file = try AVAudioFile(forReading: url)
             playbackFile = file
-            engine.disconnectNodeOutput(player)
-            engine.connect(player, to: engine.mainMixerNode, format: file.processingFormat)
+            // Only an engine that already exists is rewired; a new one is
+            // built with this file's format when playback starts.
+            if let engine = engineStorage {
+                engine.disconnectNodeOutput(player)
+                engine.connect(player, to: engine.mainMixerNode, format: file.processingFormat)
+            }
             segmentStartFrame = 0
         } catch {
             playbackFile = nil
@@ -305,9 +316,9 @@ final class AudioEngine {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             if self.state == .playing { self.pause() }
-            if let file = self.playbackFile {
-                self.engine.disconnectNodeOutput(self.player)
-                self.engine.connect(self.player, to: self.engine.mainMixerNode, format: file.processingFormat)
+            if let file = self.playbackFile, let engine = self.engineStorage {
+                engine.disconnectNodeOutput(self.player)
+                engine.connect(self.player, to: engine.mainMixerNode, format: file.processingFormat)
             }
         }
     }
@@ -318,6 +329,6 @@ final class AudioEngine {
     func interrupt() {
         if state == .playing { pause() }
         stopMonitoring()
-        engine.pause()
+        engineStorage?.pause()
     }
 }
