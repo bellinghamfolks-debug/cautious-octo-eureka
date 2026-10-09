@@ -3,7 +3,7 @@ name: Experiment - force Flutter to load Arabic asset
 on:
   push:
     branches: [delonghi-arabic-talkback-apk]
-    paths: [.github/workflows/test-flutter-arabic-route.yml]
+    paths: [.github/workflows/test-flutter-arabic-route.yml, tools/patch_flutter_arabic_asset_route.py]
   workflow_dispatch:
 
 permissions:
@@ -56,13 +56,13 @@ jobs:
             --ks-key-alias test --ks-pass "pass:$PASSWORD" --key-pass "pass:$PASSWORD" \
             --v2-signing-enabled true --v3-signing-enabled true \
             --out "$OUT" /tmp/delonghi-exp/aligned.apk
-          echo "CHECKPOINT: signed APK bytes $(wc -c < \"$OUT\")"
+          stat -c 'CHECKPOINT: signed APK size %s bytes' "$OUT"
           "$BUILD/apksigner" verify --verbose --print-certs --min-sdk-version 36 "$OUT" > /tmp/delonghi-exp/verify-36.txt
           echo "CHECKPOINT: Android 16 signature verified"
           "$BUILD/apksigner" verify --verbose --min-sdk-version 24 "$OUT" > /tmp/delonghi-exp/verify-24.txt
           echo "CHECKPOINT: Android 24 signature verified"
           "$BUILD/aapt" dump badging "$OUT" > /tmp/delonghi-exp/badging-signed.txt
-          echo "CHECKPOINT: validating size for git; size=$(wc -c < \"$OUT\")"
+          stat -c 'CHECKPOINT: GitHub APK limit check, size %s bytes' "$OUT"
           test "$(wc -c < "$OUT")" -lt 100000000
           echo 'Experimental only. Not proven to translate UI. Uses a DIFFERENT test signing key.' > releases/DeLonghi_Arabic_AssetPath_Experiment_Verification.txt
           echo 'Uninstalling existing beta may erase local data. Do not uninstall a working official app.' >> releases/DeLonghi_Arabic_AssetPath_Experiment_Verification.txt
