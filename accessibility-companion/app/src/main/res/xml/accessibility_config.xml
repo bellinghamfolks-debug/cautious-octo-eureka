@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/service_description"
+    android:accessibilityEventTypes="typeWindowContentChanged|typeWindowStateChanged|typeViewClicked|typeViewFocused|typeViewScrolled"
+    android:packageNames="com.delonghigroup.daedalus"
+    android:accessibilityFeedbackType="feedbackSpoken"
+    android:notificationTimeout="300"
+    android:canRetrieveWindowContent="true"
+    android:canPerformGestures="false"
+    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews" />
