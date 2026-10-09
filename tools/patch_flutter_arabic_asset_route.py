@@ -37,7 +37,10 @@ def main():
             patched=transform(name,blob)
             if blob!=patched:changed.append(name)
             out=zipfile.ZipInfo(name,inf.date_time)
-            out.compress_type=zipfile.ZIP_STORED if name in (APP,'resources.arsc') else inf.compress_type
+            # One DEX is safely DEFLATE-compressed to keep the 100 MB GitHub limit.
+            # The Android manifest does not enable useEmbeddedDex.
+            out.compress_type=(zipfile.ZIP_DEFLATED if name=='classes5.dex' else
+                zipfile.ZIP_STORED if name in (APP,'resources.arsc') else inf.compress_type)
             out.external_attr=inf.external_attr
             zout.writestr(out,patched)
     assert sorted(changed)==sorted([MANIFEST,APP]),changed
