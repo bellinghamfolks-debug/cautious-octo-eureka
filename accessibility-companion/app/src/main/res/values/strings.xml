@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">مساعد ديلونجي الناطق</string>
+    <string name="service_name">مساعد إمكانية الوصول إلى ديلونجي</string>
+    <string name="service_description">أداة تجريبية لمساعدة قارئ الشاشة في تطبيق My Coffee Lounge. تعرض عناصره القابلة للوصول بأسماء عربية وتقرأ بعض تنبيهات الماكينة. لا تقرأ كلمات المرور أو ترسل البيانات إلى الإنترنت. لا تعدّل التطبيق الأصلي ولا تضمن إصلاح جميع المشكلات.</string>
+</resources>
