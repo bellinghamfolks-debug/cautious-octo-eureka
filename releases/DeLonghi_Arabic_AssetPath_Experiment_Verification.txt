@@ -1,0 +1,21 @@
+Experimental only. Not proven to translate UI. Uses a DIFFERENT test signing key.
+Uninstalling existing beta may erase local data. Do not uninstall a working official app.
+Modified only: assets/flutter_assets/AssetManifest.bin, lib/arm64-v8a/libapp.so unsigned bytes 96985772
+ccf3cbc0d24eae34bb7e920856fefc17d5586a118b4222c7c065294079c8c974  releases/DeLonghi_Arabic_AssetPath_Experiment.apk
+Verifies
+Verified using v1 scheme (JAR signing): false
+Verified using v2 scheme (APK Signature Scheme v2): false
+Verified using v3 scheme (APK Signature Scheme v3): true
+Verified using v3.1 scheme (APK Signature Scheme v3.1): false
+Verified using v4 scheme (APK Signature Scheme v4): false
+Verified for SourceStamp: false
+Number of signers: 1
+Signer #1 certificate DN: CN=Experimental Flutter Arabic Route, OU=Accessibility research, O=Independent Test, C=SA
+Signer #1 certificate SHA-256 digest: 93edecd82049b8ca265c98e81d01c7a28031f6713c6ec522744953ba17e4434c
+Signer #1 certificate SHA-1 digest: 1b5af1cf18f43d8dd2c9104bffa08991f020ddd6
+Signer #1 certificate MD5 digest: 12c11b7bd161c7389a0ba11f8327e31f
+Signer #1 key algorithm: RSA
+Signer #1 key size (bits): 3072
+Signer #1 public key SHA-256 digest: baa171c880c6db272f6d89f31464cd3899e9bd67386dcabbd205d3fcedd17ba2
+Signer #1 public key SHA-1 digest: 61e6594e6dec32b2e1fe0a4dc2e80afcde95598e
+Signer #1 public key MD5 digest: 02bb5c05b303df9687dee58282e9a238
