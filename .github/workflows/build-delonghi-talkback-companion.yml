@@ -34,7 +34,7 @@ jobs:
           gradle -p accessibility-companion :app:assembleDebug --no-daemon
           mkdir -p releases
           cp accessibility-companion/app/build/outputs/apk/debug/app-debug.apk releases/DeLonghi_TalkBack_Companion_AR_v0.1-debug.apk
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --min-sdk-version 35 releases/DeLonghi_TalkBack_Companion_AR_v0.1-debug.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --min-sdk-version 36 releases/DeLonghi_TalkBack_Companion_AR_v0.1-debug.apk
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --min-sdk-version 26 releases/DeLonghi_TalkBack_Companion_AR_v0.1-debug.apk
           "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging releases/DeLonghi_TalkBack_Companion_AR_v0.1-debug.apk | head -n 15
           sha256sum releases/DeLonghi_TalkBack_Companion_AR_v0.1-debug.apk > releases/DeLonghi_TalkBack_Companion_AR_v0.1.sha256
