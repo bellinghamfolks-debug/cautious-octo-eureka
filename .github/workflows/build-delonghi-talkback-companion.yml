@@ -1,0 +1,50 @@
+name: Build DeLonghi TalkBack companion APK
+
+on:
+  push:
+    branches: [delonghi-talkback-repair]
+    paths:
+      - 'accessibility-companion/**'
+      - '.github/workflows/build-delonghi-talkback-companion.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: delonghi-talkback-repair
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Build and run Android lint
+        run: |
+          set -euo pipefail
+          gradle -p accessibility-companion :app:assembleDebug --no-daemon
+          mkdir -p releases
+          cp accessibility-companion/app/build/outputs/apk/debug/app-debug.apk releases/DeLonghi_TalkBack_Companion_AR_v0.1-debug.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --min-sdk-version 35 releases/DeLonghi_TalkBack_Companion_AR_v0.1-debug.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --min-sdk-version 26 releases/DeLonghi_TalkBack_Companion_AR_v0.1-debug.apk
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging releases/DeLonghi_TalkBack_Companion_AR_v0.1-debug.apk | head -n 15
+          sha256sum releases/DeLonghi_TalkBack_Companion_AR_v0.1-debug.apk > releases/DeLonghi_TalkBack_Companion_AR_v0.1.sha256
+      - name: Commit APK in this isolated branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add releases/DeLonghi_TalkBack_Companion_AR_v0.1-debug.apk releases/DeLonghi_TalkBack_Companion_AR_v0.1.sha256
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Build independent accessibility companion debug APK'
+          git fetch origin delonghi-talkback-repair
+          git rebase origin/delonghi-talkback-repair
+          git push origin HEAD:delonghi-talkback-repair
