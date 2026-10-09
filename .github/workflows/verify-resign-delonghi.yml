@@ -1,0 +1,118 @@
+name: Verify and re-sign DeLonghi beta for Android 16
+
+on:
+  push:
+    branches:
+      - delonghi-arabic-talkback-apk
+    paths:
+      - .github/workflows/verify-resign-delonghi.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  resign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout the isolated branch
+        uses: actions/checkout@v4
+        with:
+          ref: delonghi-arabic-talkback-apk
+
+      - name: Remove existing signing material, align, sign and verify with Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE="releases/DeLonghi_MyCoffeeLounge_Arabic_ARM64_APK_Repaired_Experimental.apk"
+          test -s "$SOURCE"
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ ! -x "$SDK/build-tools/35.0.0/apksigner" ]; then
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" "build-tools;35.0.0" >/dev/null
+          fi
+          BUILD="$SDK/build-tools/35.0.0"
+          OUTDIR="$(mktemp -d)"
+          trap 'rm -rf "$OUTDIR"' EXIT
+          echo "=== PREVIOUS SIGNATURE VERIFICATION ==="
+          "$BUILD/apksigner" verify --verbose --print-certs --min-sdk-version 36 "$SOURCE" > "$OUTDIR/old_verify.txt" 2>&1 || true
+          cat "$OUTDIR/old_verify.txt"
+          echo "=== REBUILD UNSIGNED ZIP; DISCARD ALL PREVIOUS V1/V2/V3 SIGNING ==="
+          python3 - "$SOURCE" "$OUTDIR/unsigned.apk" <<'PY'
+          import zipfile,sys,re
+          old,new=sys.argv[1:3]
+          pattern=re.compile(r'^META-INF/[^/]+\\.(?:SF|RSA|DSA|EC|MF)$',re.I)
+          with zipfile.ZipFile(old,'r') as z, zipfile.ZipFile(new,'w',allowZip64=True) as o:
+              for i in z.infolist():
+                  if pattern.match(i.filename):continue
+                  with z.open(i) as src, o.open(i,'w') as dst:
+                      while True:
+                          chunk=src.read(1024*1024)
+                          if not chunk:break
+                          dst.write(chunk)
+          with zipfile.ZipFile(new) as z:
+              assert z.testzip() is None
+              assert 'AndroidManifest.xml' in z.namelist()
+              assert 'resources.arsc' in z.namelist()
+          PY
+          echo "=== VERIFY STRUCTURE ==="
+          "$BUILD/aapt" dump badging "$OUTDIR/unsigned.apk" > "$OUTDIR/badging.txt"
+          head -n 12 "$OUTDIR/badging.txt"
+          echo "=== ZIPALIGN ==="
+          "$BUILD/zipalign" -f -p 4 "$OUTDIR/unsigned.apk" "$OUTDIR/aligned.apk"
+          "$BUILD/zipalign" -c -v 4 "$OUTDIR/aligned.apk" | tail -n 3
+          echo "=== GENERATE EPHEMERAL TEST KEY AND SIGN (v1+v2+v3) ==="
+          PASS="$(openssl rand -hex 20)"
+          keytool -genkeypair -alias delonghi-test -keyalg RSA -keysize 3072 \
+            -sigalg SHA256withRSA -validity 3650 -dname \
+            'CN=Delonghi Arabic accessibility experiment, OU=Independent testing, O=Community, C=SA' \
+            -keystore "$OUTDIR/test.jks" -storetype PKCS12 \
+            -storepass "$PASS" -keypass "$PASS" -noprompt >/dev/null 2>&1
+          "$BUILD/apksigner" sign \
+            --ks "$OUTDIR/test.jks" --ks-key-alias delonghi-test \
+            --ks-pass "pass:$PASS" --key-pass "pass:$PASS" \
+            --v1-signing-enabled true --v2-signing-enabled true \
+            --v3-signing-enabled true --v4-signing-enabled false \
+            --out "$OUTDIR/repaired.apk" "$OUTDIR/aligned.apk"
+          echo "=== OFFICIAL ANDROID SDK VERIFICATION ==="
+          "$BUILD/apksigner" verify --verbose --print-certs --min-sdk-version 32 \
+            "$OUTDIR/repaired.apk" | tee "$OUTDIR/new_verify_sdk32.txt"
+          "$BUILD/apksigner" verify --verbose --print-certs --min-sdk-version 36 \
+            "$OUTDIR/repaired.apk" | tee "$OUTDIR/new_verify_sdk36.txt"
+          "$BUILD/aapt" dump badging "$OUTDIR/repaired.apk" > /dev/null
+          python3 - "$OUTDIR/unsigned.apk" "$OUTDIR/repaired.apk" <<'PY'
+          import zipfile,sys,hashlib,re
+          signature=re.compile(r'^META-INF/[^/]+\\.(?:SF|RSA|DSA|EC|MF)$',re.I)
+          def digests(path):
+              with zipfile.ZipFile(path) as z:
+                  assert z.testzip() is None
+                  return {x.filename:hashlib.sha256(z.read(x)).hexdigest() for x in z.infolist() if not signature.match(x.filename)}
+          a,b=map(digests,sys.argv[1:3])
+          if a!=b:
+              diff=(set(a)^set(b))|{x for x in a.keys()&b.keys() if a[x]!=b[x]}
+              raise SystemExit('Payload changed: '+str(sorted(diff)[:20]))
+          print('Verified payload unchanged,',len(a),'entries')
+          PY
+          cp "$OUTDIR/repaired.apk" "$SOURCE"
+          {
+            echo "Android SDK Build Tools: 35.0.0"
+            echo "This is a locally re-signed, experimental, non-official APK."
+            echo "This is NOT proof of actual installation or accessibility."
+            echo ""
+            echo "APK:"
+            sha256sum "$SOURCE"
+            echo ""
+            echo "SDK 32 signature verification:"
+            cat "$OUTDIR/new_verify_sdk32.txt"
+            echo ""
+            echo "SDK 36 signature verification:"
+            cat "$OUTDIR/new_verify_sdk36.txt"
+            echo ""
+            echo "Pre-repair signature verifier output:"
+            cat "$OUTDIR/old_verify.txt"
+          } > releases/DeLonghi_Android16_Signing_Verification.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$SOURCE" releases/DeLonghi_Android16_Signing_Verification.txt
+          git commit -m "Re-sign experimental DeLonghi APK via Android SDK (v1 v2 v3)"
+          git push origin HEAD:delonghi-arabic-talkback-apk
