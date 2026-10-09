@@ -50,14 +50,19 @@ jobs:
             -alias test -keystore /tmp/delonghi-exp/key.p12 -storetype PKCS12 \
             -storepass "$PASSWORD" -keypass "$PASSWORD" -noprompt \
             -dname 'CN=Experimental Flutter Arabic Route, OU=Accessibility research, O=Independent Test, C=SA' >/dev/null 2>&1
+          echo 'CHECKPOINT: test signing certificate generated'
           OUT=releases/DeLonghi_Arabic_AssetPath_Experiment.apk
           "$BUILD/apksigner" sign --ks /tmp/delonghi-exp/key.p12 \
             --ks-key-alias test --ks-pass "pass:$PASSWORD" --key-pass "pass:$PASSWORD" \
             --v2-signing-enabled true --v3-signing-enabled true \
             --out "$OUT" /tmp/delonghi-exp/aligned.apk
+          echo "CHECKPOINT: signed APK bytes $(wc -c < \"$OUT\")"
           "$BUILD/apksigner" verify --verbose --print-certs --min-sdk-version 36 "$OUT" > /tmp/delonghi-exp/verify-36.txt
+          echo "CHECKPOINT: Android 16 signature verified"
           "$BUILD/apksigner" verify --verbose --min-sdk-version 24 "$OUT" > /tmp/delonghi-exp/verify-24.txt
+          echo "CHECKPOINT: Android 24 signature verified"
           "$BUILD/aapt" dump badging "$OUT" > /tmp/delonghi-exp/badging-signed.txt
+          echo "CHECKPOINT: validating size for git; size=$(wc -c < \"$OUT\")"
           test "$(wc -c < "$OUT")" -lt 100000000
           echo 'Experimental only. Not proven to translate UI. Uses a DIFFERENT test signing key.' > releases/DeLonghi_Arabic_AssetPath_Experiment_Verification.txt
           echo 'Uninstalling existing beta may erase local data. Do not uninstall a working official app.' >> releases/DeLonghi_Arabic_AssetPath_Experiment_Verification.txt
