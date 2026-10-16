@@ -29,7 +29,9 @@ class EvidenceVideoPlanTest {
 
     @Test fun placementFitsCentresAndNeverStretches() {
         val canvas = EvidenceVideoPlan.Canvas(720, 960)
-        assertEquals(EvidenceVideoPlan.Placement(0, 0, 720, 960), EvidenceVideoPlan.placement(canvas, 1199, 1600))
+        // 1199×1600 is a hair narrower than 3:4, so it keeps its own shape: 719 wide, centred.
+        assertEquals(EvidenceVideoPlan.Placement(0, 0, 719, 960), EvidenceVideoPlan.placement(canvas, 1199, 1600))
+        assertEquals(EvidenceVideoPlan.Placement(0, 0, 720, 960), EvidenceVideoPlan.placement(canvas, 1200, 1600))
         val wide = EvidenceVideoPlan.placement(canvas, 1600, 800)
         assertEquals(720, wide.width)
         assertEquals(360, wide.height)
