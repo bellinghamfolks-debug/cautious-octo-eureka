@@ -43,7 +43,17 @@ jobs:
       - name: Validate measurement harness
         run: python3 -m unittest discover -s scripts/tests -v
       - name: Required project gate
-        run: ./scripts/codex-check.sh
+        shell: bash
+        run: |
+          status=0
+          ./scripts/codex-check.sh > gate.log 2>&1 || status=$?
+          cat gate.log
+          if [ "$status" -ne 0 ]; then
+            # Compile, lint and test failures as annotations, readable without the raw log.
+            grep -E '^e: |: Error: |Error: |FAILED|AssertionError|Exception:|What went wrong' -A1 gate.log \
+              | grep -v '^--$' | head -40 | while IFS= read -r line; do echo "::error::${line}"; done
+          fi
+          exit "$status"
       - name: Upload synthetic test reports only
         if: always()
         uses: actions/upload-artifact@v4
