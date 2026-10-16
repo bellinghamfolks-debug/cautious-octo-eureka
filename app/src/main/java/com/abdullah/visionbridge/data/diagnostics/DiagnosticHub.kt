@@ -24,13 +24,14 @@ import kotlin.coroutines.CoroutineContext
  *
  * The recorder is always active once the application container is created. Visual evidence is stored
  * as aggregate fingerprints when evidence capture is disabled. When explicitly enabled, bounded
- * local bitmap copies are encoded by the evidence worker. Export remains a queue barrier for
+ * local bitmap copies are encoded into compressed video segments by the evidence worker. Export remains a queue barrier for
  * accepted evidence and events; capacity drops are recorded explicitly.
  */
 // DENSE_DIAGNOSTIC_EVIDENCE_V381
 // TEN_MINUTE_DIAGNOSTIC_TIMELINE_V382
 // TEN_MINUTE_DIAGNOSTIC_TIMELINE_HARDENING_V382
 // EVERY_ANALYSIS_INPUT_EVIDENCE_V383
+// COMPRESSED_VIDEO_EVIDENCE_V316
 object DiagnosticHub {
     private const val FATAL_FLUSH_TIMEOUT_MS = 2_000L
     // The 10-minute timeline is the primary visual record. Selected-input snapshots are
@@ -78,6 +79,8 @@ object DiagnosticHub {
         data class Capture(val bitmap: Bitmap,val frameId: String,val reason: String,
                            val fields: Map<String,Any?>,val epoch: Long,val queuedAt: Long):EvidenceTask
         data class Barrier(val completion: CompletableDeferred<Unit>):EvidenceTask
+        /** Closes the growing video segments, so what was captured is playable on disk. */
+        data object Finish:EvidenceTask
     }
     private val evidenceTasks=Channel<EvidenceTask>(3)
     private val evidenceSlots=java.util.concurrent.Semaphore(2)
@@ -88,14 +91,16 @@ object DiagnosticHub {
         scope.launch {
             for(task in evidenceTasks) when(task) {
                 is EvidenceTask.Barrier -> task.completion.complete(Unit)
+                is EvidenceTask.Finish -> runCatching { synchronized(evidenceWriteLock) { evidence?.finishOpenSegments() } }
                 is EvidenceTask.Capture -> try {
                     synchronized(evidenceWriteLock) {
                         if(task.epoch==evidenceEpoch.get()) {
                             val start=SystemClock.elapsedRealtimeNanos()
                             val name=evidence?.capture(task.bitmap,task.frameId,task.reason,capturedWhileEnabled=true,sessionId=task.fields["evidenceSessionId"].toString())
+                            val skippedBecause=if(name==null) evidence?.lastSkipReason() else null
                             record(if(name==null) "EVIDENCE_FRAME_SKIPPED" else "EVIDENCE_FRAME_CAPTURED",
                                 task.fields+mapOf("frameId" to task.frameId,"reason" to task.reason,
-                                    "file" to name,"evidenceQueueMs" to (start-task.queuedAt)/1e6,
+                                    "file" to name,"skipReason" to skippedBecause,"evidenceQueueMs" to (start-task.queuedAt)/1e6,
                                     "evidenceWriteMs" to (SystemClock.elapsedRealtimeNanos()-start)/1e6))
                         } else record("EVIDENCE_FRAME_SKIPPED",task.fields+mapOf("frameId" to task.frameId,
                             "reason" to "explicit_discard_invalidated_pending_write"))
@@ -109,7 +114,7 @@ object DiagnosticHub {
     private val latestTrace = AtomicReference<DiagnosticTrace?>(null)
     private val lastDenseEvidenceAtElapsedMs = AtomicLong(0L)
     private val timelineWindowStartedAtElapsedMs = AtomicLong(0L)
-    // Absolute one-second slots avoid cumulative drift from JPEG encoding time.
+    // Absolute one-second slots avoid cumulative drift from encoding time.
     private val lastTimelineEvidenceSecond = AtomicLong(-1L)
     private val timelineCompletionRecorded = AtomicLong(0L)
 
@@ -190,6 +195,7 @@ object DiagnosticHub {
         val store = evidence ?: return
         if (store.enabled == enabled) return
         store.enabled = enabled
+        if (!enabled) evidenceTasks.trySend(EvidenceTask.Finish)
         timelineWindowStartedAtElapsedMs.set(0L)
         lastTimelineEvidenceSecond.set(-1L)
         timelineCompletionRecorded.set(0L)
@@ -199,7 +205,7 @@ object DiagnosticHub {
             mapOf(
                 "enabled" to enabled,
                 "framesHeld" to store.frameCount(),
-                "captureMode" to "ten_minute_timeline_plus_supplemental_failures",
+                "captureMode" to "ten_minute_compressed_video_timeline_plus_every_input",
                 "timelineIntervalMs" to TIMELINE_EVIDENCE_INTERVAL_MS,
                 "timelineWindowMs" to TIMELINE_EVIDENCE_WINDOW_MS,
                 "selectedInputCapturePolicy" to "bounded_async_with_explicit_skips",
@@ -213,7 +219,7 @@ object DiagnosticHub {
         synchronized(evidenceWriteLock) {
             evidenceEpoch.incrementAndGet()
             val held = store.frameCount()
-            store.clear()
+            store.clear(recordAsDiscarded = true)
             record("EVIDENCE_FRAMES_DISCARDED", mapOf("framesDeleted" to held))
         }
     }
@@ -237,14 +243,33 @@ object DiagnosticHub {
         }
         val epoch=evidenceEpoch.get()
         val started=SystemClock.elapsedRealtimeNanos()
-        val snapshot=try { bitmap.copy(Bitmap.Config.ARGB_8888,false) } catch(error:Exception) { null }
+        val snapshot=try { evidenceSnapshot(bitmap) } catch(error:Exception) { null }
         if(snapshot==null) { evidenceSlots.release();record("EVIDENCE_FRAME_SKIPPED",fields+mapOf("reason" to "snapshot_failed"));return }
         val task=EvidenceTask.Capture(snapshot,frameId,reason,fields+mapOf("evidenceSessionId" to store.currentSessionId,
+            "sourceWidth" to bitmap.width,"sourceHeight" to bitmap.height,
             "evidenceSnapshotCopyMs" to (SystemClock.elapsedRealtimeNanos()-started)/1e6),epoch,started)
         if(!evidenceTasks.trySend(task).isSuccess) {
             snapshot.recycle();evidenceSlots.release()
             record("EVIDENCE_FRAME_SKIPPED",fields+mapOf("frameId" to frameId,"reason" to "writer_queue_full"))
         }
+    }
+
+    /**
+     * The copy the evidence worker owns, already at the size it will be encoded at. Copying a
+     * full-resolution frame only to shrink it on the worker cost memory and time on the capture
+     * path for pixels that were never kept.
+     */
+    private fun evidenceSnapshot(bitmap: Bitmap): Bitmap {
+        val longEdge = maxOf(bitmap.width, bitmap.height)
+        if (longEdge <= EvidenceVideoPlan.LONG_EDGE_PX) return bitmap.copy(Bitmap.Config.ARGB_8888, false)
+        val factor = EvidenceVideoPlan.LONG_EDGE_PX.toDouble() / longEdge
+        val scaled = Bitmap.createScaledBitmap(
+            bitmap,
+            (bitmap.width * factor).toInt().coerceAtLeast(1),
+            (bitmap.height * factor).toInt().coerceAtLeast(1),
+            true,
+        )
+        return if (scaled === bitmap) bitmap.copy(Bitmap.Config.ARGB_8888, false) else scaled
     }
 
     /**

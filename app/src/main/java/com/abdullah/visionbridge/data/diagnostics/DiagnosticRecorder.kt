@@ -204,49 +204,69 @@ class DiagnosticRecorder(context: Context) {
                     "VisionBridge-automatic-diagnostics-${timestamp()}-NO-IMAGES.zip"
                 },
             )
-            val evidenceFiles=evidenceStore.files()
-            val evidencePaths=evidenceFiles.map { it.relativeTo(evidenceStore.directory).invariantSeparatorsPath }
+            // A growing segment is not playable until it is finished; the bundle gets finished ones.
+            evidenceStore.finishOpenSegments()
+            val selection=EvidenceExportSelection.select(
+                evidenceStore.files().map { EvidenceExportSelection.Item(
+                    it.relativeTo(evidenceStore.directory).invariantSeparatorsPath,it.length(),it.lastModified()) },
+                EvidenceVideoPlan.EVIDENCE_BYTE_CAP)
+            val evidencePaths=selection.included.map { it.path }.filter(EvidenceExportSelection::isMedia)
             val evidenceReferences=mutableListOf<String>()
             sessionFiles().forEach { session -> forEachEvent(session) { e ->
                 if(e.optString("type")=="EVIDENCE_FRAME_CAPTURED") evidenceReferences+=e.optString("file")
             } }
-            val evidenceAudit=EvidenceArchiveAudit.check(evidencePaths,evidenceReferences)
+            val absent=evidenceStore.absentReferences()
+            val evidenceAudit=EvidenceArchiveAudit.check(evidencePaths,evidenceReferences,
+                accountedFor=absent.keys+selection.omitted.map { it.path })
             val summary = buildSummaryLocked()
             val findings = buildAutomaticFindingsLocked()
             val traceAnalysis = buildTraceAnalysisLocked()
             val verdict = buildSessionVerdictLocked()
+            val evidenceBytes=selection.included.sumOf { it.bytes }
+            // Newest first, so when the bundle has to stop somewhere it stops at the oldest history.
+            val sessionBudget=EvidenceVideoPlan.EXPORT_BYTE_LIMIT-evidenceBytes-SUMMARY_RESERVE_BYTES
+            val omittedSessions=mutableListOf<String>()
+            val counter=CountingOutputStream(FileOutputStream(output))
 
-            ZipOutputStream(FileOutputStream(output)).use { zip ->
+            ZipOutputStream(counter).use { zip ->
                 zip.setLevel(Deflater.BEST_COMPRESSION)
-                sessionFiles().forEach { session ->
-                    session.walkTopDown()
-                        .filter { it.isFile && !isImageFile(it) }
-                        .forEach { file ->
-                            val relative = file.relativeTo(root).path.replace(File.separatorChar, '/')
-                            zip.putNextEntry(ZipEntry(relative))
-                            file.inputStream().use { it.copyTo(zip) }
-                            zip.closeEntry()
-                        }
+                sessionFiles().sortedByDescending { it.name }.forEachIndexed { position, session ->
+                    val files=session.walkTopDown().filter { it.isFile && !isImageFile(it) }.toList()
+                    val estimate=files.sumOf { it.length() }/TEXT_COMPRESSION_ESTIMATE
+                    if (position > 0 && counter.count + estimate > sessionBudget) {
+                        omittedSessions += session.name
+                        return@forEachIndexed
+                    }
+                    files.forEach { file ->
+                        val relative = file.relativeTo(root).path.replace(File.separatorChar, '/')
+                        zip.putNextEntry(ZipEntry(relative))
+                        file.inputStream().use { it.copyTo(zip) }
+                        zip.closeEntry()
+                    }
                 }
-                // First in the archive and first by name, because it is what should be read first.
-                // Evidence frames, when the user switched capture on. Named after the failure that
-                // kept them, so each file answers "why is this here" on its own.
-                evidenceFiles.forEach { file ->
-                    zip.putNextEntry(ZipEntry("evidence/${file.relativeTo(evidenceStore.directory).invariantSeparatorsPath}"))
-                    file.inputStream().use { it.copyTo(zip) }
+                // Evidence, when the user switched capture on. Video and JPEG are already
+                // compressed; deflating them again costs time and saves nothing.
+                selection.included.forEach { item ->
+                    zip.setLevel(if (EvidenceExportSelection.isMedia(item.path)) Deflater.NO_COMPRESSION else Deflater.BEST_COMPRESSION)
+                    zip.putNextEntry(ZipEntry("evidence/${item.path}"))
+                    File(evidenceStore.directory, item.path).inputStream().use { it.copyTo(zip) }
                     zip.closeEntry()
                 }
+                zip.setLevel(Deflater.BEST_COMPRESSION)
                 writeZipText(zip, "00_VERDICT_AR.txt", (if(!evidenceAudit.valid)
                     "فشل التحقق من اكتمال الصور: راجع EVIDENCE_INTEGRITY.json؛ لا تعتمد على اكتمال هذه الحزمة.\n" else "")+renderVerdictText(verdict))
                 writeZipText(zip,"EVIDENCE_INTEGRITY.json",JSONObject(mapOf(
                     "valid" to evidenceAudit.valid,"exportedFiles" to evidencePaths.size,
                     "referencedFiles" to evidenceReferences.size,"missingReferences" to evidenceAudit.missing,
-                    "collidingReferences" to evidenceAudit.colliding)).toString(2))
+                    "collidingReferences" to evidenceAudit.colliding,
+                    "accountedAbsentReferences" to evidenceAudit.accounted.size,
+                    "absentReasons" to JSONObject(absent.values.groupingBy { it }.eachCount() as Map<*, *>),
+                    "omittedForSize" to selection.omitted.map { it.path })).toString(2))
                 writeZipText(zip, "00_session_verdict.json", verdict.toString(2))
                 writeZipText(zip, "diagnostic_summary.json", summary.toString(2))
                 writeZipText(zip, "automatic_findings.json", findings.toString(2))
                 writeZipText(zip, "trace_analysis.json", traceAnalysis.toString(2))
-                writeZipText(zip, "README_AR.txt", readmeFor(evidenceStore.frameCount()))
+                writeZipText(zip, "README_AR.txt", readmeFor(evidenceStore.frameCount(), evidenceStore.manifest()["evidenceFormat"] as? String))
                 writeZipText(
                     zip,
                     "export_manifest.json",
@@ -271,16 +291,19 @@ class DiagnosticRecorder(context: Context) {
                         // The truth about images, whichever way it falls. A bundle that carries
                         // screen frames must never look like one that does not.
                         evidenceStore.manifest().forEach { (key, value) -> put(key, value) }
-                        put("evidenceFrameCount",evidencePaths.size)
-                        put("evidenceBytes",evidenceFiles.sumOf { it.length() })
+                        put("evidenceFileCount",evidencePaths.size)
+                        put("evidenceBytes",evidenceBytes)
+                        put("evidenceFilesOmittedForSize",selection.omitted.size)
                         put("evidenceIntegrityValid",evidenceAudit.valid)
                         put("sessionCount", sessionFiles().size)
+                        put("sessionsOmittedForSize", JSONArray(omittedSessions))
+                        put("exportByteLimit", EvidenceVideoPlan.EXPORT_BYTE_LIMIT)
                         put("retentionDays", RETENTION_DAYS)
                         put("maximumRawBytes", MAX_TOTAL_BYTES)
                         put(
                             "privacyWarning",
                             if (evidenceStore.frameCount() > 0) {
-                                "Contains recognized text, model output, app settings, timing data and opt-in screen evidence frames. Excludes API keys and authorization headers."
+                                "Contains recognized text, model output, app settings, timing data and opt-in screen evidence frames, stored as compressed video. Excludes API keys and authorization headers."
                             } else {
                                 "Contains recognized text, model output, app settings and timing data. It contains no screen images and excludes API keys and authorization headers."
                             },
@@ -659,7 +682,7 @@ class DiagnosticRecorder(context: Context) {
                     put("eventCount", eventCount)
                     put("automaticFindingCount", findingCount)
                     put("visualFingerprintCount", fingerprintCount)
-                    put("imageCount", evidenceStore.files().count { it.relativeTo(evidenceStore.directory).invariantSeparatorsPath.startsWith(session.name+"/") })
+                    put("imageCount", evidenceStore.frameCountForSession(session.name))
                     put("firstEpochMs", firstEpoch ?: JSONObject.NULL)
                     put("lastEpochMs", lastEpoch ?: JSONObject.NULL)
                     put("bytes", directoryBytes(session))
@@ -1048,6 +1071,10 @@ class DiagnosticRecorder(context: Context) {
 
     private companion object {
         const val SCHEMA_VERSION = 3
+        /** Room for the verdict, summaries and trace analysis, which are written after the sessions. */
+        const val SUMMARY_RESERVE_BYTES = 1_500_000L
+        /** Event logs deflate about tenfold; eight keeps the estimate on the safe side. */
+        const val TEXT_COMPRESSION_ESTIMATE = 8L
         const val RETENTION_DAYS = 14
         const val MAX_TOTAL_BYTES = 256L * 1024L * 1024L
         const val MAX_STACK_CHARS = 80_000
@@ -1097,22 +1124,33 @@ class DiagnosticRecorder(context: Context) {
          * "no screen images" while carrying forty of them would be worse than not offering capture
          * at all.
          */
-        fun readmeFor(evidenceFrames: Int): String = if (evidenceFrames == 0) {
+        fun readmeFor(evidenceFrames: Int, format: String? = null): String = if (evidenceFrames == 0) {
             README_AR
         } else {
+            val video = format == null || format.endsWith("mp4_segments")
             README_AR
                 .replace(
                     "- الحزمة لا تحتوي أي صورة أو معاينة أو شبكة بكسلات.",
                     "- الحزمة تحتوي $evidenceFrames لقطة تشخيص بصرية، حفظتها بنفسك بتفعيل خيار " +
-                        "«حفظ تشخيص بصري لمدة 10 دقائق». تشمل لقطة زمنية كل ثانية ولقطات فشل إضافية. مجلد evidence/.",
+                        "«حفظ تشخيص بصري لمدة 10 دقائق». تشمل لقطة كل ثانية وكل صورة دخلت التحليل. مجلد evidence/.",
                 )
                 .replace(
                     "- لا توجد صور شاشة.",
-                    "- توجد $evidenceFrames لقطة تشخيص في مجلد evidence/. اللقطات المسماة " +
-                        "timeline_1s تكوّن الخط الزمني، صورة كل ثانية حتى عشر دقائق، وselected_input_dense " +
-                        "عينات إضافية من مدخلات التحليل، مع لقطات أعطال الجودة. إيقاف الحفظ من إشعار " +
-                        "VisionBridge أو من الإعدادات يوقف حفظ لقطات جديدة ويُبقي المحفوظ؛ " +
-                        "«حذف اللقطات المحفوظة» في الإعدادات يمسحها فتعود الحزم بلا صور.",
+                    if (video) {
+                        "- توجد $evidenceFrames لقطة تشخيص في مجلد evidence/، محفوظة فيديو مضغوطاً " +
+                            "(H.265 أو H.264) بدقة 960 بكسل على الضلع الأطول، بحد أقصى 24 ميجابايت للصور " +
+                            "و30 ميجابايت للحزمة كلها. ملفات timeline-NNNN.mp4 هي الخط الزمني، صورة كل ثانية " +
+                            "حتى عشر دقائق، وملفات inputs-NNNN.mp4 كل صورة دخلت القراءة أو الوصف. كل حدث " +
+                            "EVIDENCE_FRAME_CAPTURED يشير إلى لقطته بصيغة ملف.mp4#t=الثانية، والملف frames.jsonl " +
+                            "في مجلد كل جلسة يسرد كل لقطة وسببها ووقتها. لاستخراج اللقطات صوراً: " +
+                            "ffmpeg -i inputs-0001.mp4 -vsync 0 frame_%04d.png. إيقاف الحفظ من إشعار " +
+                            "VisionBridge أو من الإعدادات يوقف حفظ لقطات جديدة ويُبقي المحفوظ؛ " +
+                            "«حذف اللقطات المحفوظة» في الإعدادات يمسحها فتعود الحزم بلا صور."
+                    } else {
+                        "- توجد $evidenceFrames لقطة تشخيص في مجلد evidence/ بصيغة JPEG مصغّرة، لأن الجهاز " +
+                            "لم يشغّل أي مرمّز فيديو. اللقطات المسماة timeline_1s تكوّن الخط الزمني. إيقاف " +
+                            "الحفظ يُبقي المحفوظ؛ «حذف اللقطات المحفوظة» في الإعدادات يمسحها."
+                    },
                 )
         }
 

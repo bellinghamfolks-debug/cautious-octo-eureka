@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.abdullah.visionbridge.data.diagnostics.DiagnosticRecorder
 import com.abdullah.visionbridge.data.diagnostics.EvidenceStore
+import com.abdullah.visionbridge.data.diagnostics.EvidenceVideoPlan
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -42,14 +43,16 @@ class EvidenceNamespaceOnDeviceTest {
                 recorder.endSession("synthetic_test")
             }
             assertEquals(2,names.distinct().size)
+            // A second store on the same directory treats unfinished segments as lost, so finish first.
+            recorder.evidenceStore.finishOpenSegments()
             assertEquals(2,EvidenceStore(recorder.evidenceStore.directory).frameCount())
             ZipFile(recorder.export()).use { zip ->
                 fun json(name:String)=JSONObject(zip.getInputStream(zip.getEntry(name)).bufferedReader().readText())
-                val images=zip.entries().asSequence().filter { it.name.endsWith(".jpg") }.toList()
-                assertEquals(2,images.size)
+                val media=zip.entries().asSequence().filter { it.name.endsWith(".mp4")||it.name.endsWith(".jpg") }.toList()
+                assertEquals(2,media.size)
                 assertEquals(2,json("export_manifest.json").getInt("evidenceFrameCount"))
                 assertTrue(json("EVIDENCE_INTEGRITY.json").getBoolean("valid"))
-                names.forEach { assertNotNull(zip.getEntry("evidence/$it")) }
+                names.forEach { assertNotNull(zip.getEntry("evidence/${EvidenceVideoPlan.referencedFile(it)}")) }
                 val summary=json("diagnostic_summary.json")
                 val text=summary.toString()
                 assertTrue(text.contains("\"imageCount\":1"))

@@ -61,7 +61,7 @@ object EvidenceShortcut {
             enable = true,
             announcement = buildString {
                 append("شُغّل التشخيص البصري لعشر دقائق.")
-                append(" سيُحفظ نحو ٦٠٠ لقطة زمنية، صورة كل ثانية، مع مساحة للقطات فشل إضافية. الحد الكلي $FRAME_LIMIT لقطة.")
+                append(" تُحفظ صورة كل ثانية وكل صورة تدخل القراءة، في فيديو مضغوط لا يتجاوز $BYTE_LIMIT_MB ميجابايت.")
                 if (!captureRunning) {
                     append(" مشاركة الشاشة متوقفة الآن، لذلك لن تُحفظ لقطة حتى تبدأ الالتقاط.")
                 } else {
@@ -76,6 +76,6 @@ object EvidenceShortcut {
     const val NOT_READY_ANNOUNCEMENT =
         "VisionBridge لم يكتمل تشغيله بعد، لذلك لم يتغير حفظ لقطات التشخيص. أعد المحاولة بعد لحظة."
 
-    /** Mirrors [com.abdullah.visionbridge.data.diagnostics.EvidenceStore]'s own ceiling. */
-    const val FRAME_LIMIT = 820
+    /** Mirrors [com.abdullah.visionbridge.data.diagnostics.EvidenceVideoPlan.EVIDENCE_BYTE_CAP]. */
+    const val BYTE_LIMIT_MB = 24
 }

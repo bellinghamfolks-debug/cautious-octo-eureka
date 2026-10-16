@@ -88,7 +88,11 @@ class EvidenceShortcutTest {
     @Test
     fun `the announced ceiling matches the store's own limit`() {
         val action = EvidenceShortcut.press(false, 0, true)
-        assertTrue(action.announcement.contains(EvidenceShortcut.FRAME_LIMIT.toString()))
+        assertTrue(action.announcement.contains(EvidenceShortcut.BYTE_LIMIT_MB.toString()))
+        assertEquals(
+            com.abdullah.visionbridge.data.diagnostics.EvidenceVideoPlan.EVIDENCE_BYTE_CAP,
+            EvidenceShortcut.BYTE_LIMIT_MB * 1_000_000L,
+        )
     }
 
     /** Two presses return to where they started; a toggle that drifts is unusable unseen. */
